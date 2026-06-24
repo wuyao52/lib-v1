@@ -126,7 +126,22 @@ export class AIService {
         console.log('响应数据:', data);
 
         if (response.ok) {
-          const modelCount = data.data?.models?.length || 0;
+          // 尝试多种数据格式
+          let models = [];
+          if (data.data?.models) {
+            models = data.data.models;
+          } else if (data.models) {
+            models = data.models;
+          } else if (Array.isArray(data.data)) {
+            models = data.data;
+          } else if (Array.isArray(data)) {
+            models = data;
+          }
+
+          const modelCount = models.length;
+          console.log('解析到的模型:', models);
+          console.log('模型数量:', modelCount);
+
           return { success: true, message: `连接成功！可用模型 ${modelCount} 个` };
         } else {
           return {
