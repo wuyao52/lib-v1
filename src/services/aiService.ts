@@ -300,9 +300,11 @@ export class SeedanceService extends AIService {
 
   // 轮询视频任务
   private async pollVideoResult(taskId: string): Promise<GenerationResponse> {
-    const maxAttempts = 60;
+    const maxAttempts = 90; // 增加到 90 次（约 4.5 分钟）
     const pollInterval = 3000;
     const baseUrl = this.config.baseUrl.replace(/\/v1\/?$/, '');
+
+    console.log('开始轮询视频任务:', taskId);
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       await new Promise(resolve => setTimeout(resolve, pollInterval));
@@ -320,32 +322,60 @@ export class SeedanceService extends AIService {
         });
 
         const data = await safeJsonParse(response);
-        console.log('轮询响应:', data);
+        console.log('轮询响应:', JSON.stringify(data, null, 2));
 
-        if (data.status === 'completed') {
-          const videoUrl = data.video_url || data.result?.video_url || data.url;
-          return {
-            success: true,
-            data: { url: videoUrl, thumbnail: data.thumbnail_url, metadata: data },
-          };
+        // 检查任务状态
+        const status = data.status || data.state;
+        console.log('任务状态:', status);
+
+        if (status === 'completed' || status === 'success') {
+          // 尝试所有可能的视频 URL 字段
+          const videoUrl = data.video_url ||
+                          data.result?.video_url ||
+                          data.output?.video_url ||
+                          data.data?.video_url ||
+                          data.data?.url ||
+                          data.url ||
+                          data.result?.url ||
+                          data.output?.url;
+
+          console.log('找到视频 URL:', videoUrl);
+
+          if (videoUrl) {
+            return {
+              success: true,
+              data: {
+                url: videoUrl,
+                thumbnail: data.thumbnail_url || data.result?.thumbnail_url,
+                metadata: data,
+              },
+            };
+          } else {
+            // 如果没有找到 URL，返回完整响应供调试
+            console.warn('完成但未找到视频 URL，完整响应:', data);
+            throw new Error('视频生成完成但未返回视频 URL');
+          }
         }
 
-        if (data.status === 'failed') {
-          throw new Error(data.error?.message || '视频生成失败');
+        if (status === 'failed' || status === 'error') {
+          const errorMsg = data.error?.message || data.message || data.error || '视频生成失败';
+          throw new Error(errorMsg);
         }
 
-        if (data.progress !== undefined) {
-          console.log(`生成进度: ${data.progress}%`);
+        // 更新进度
+        const progress = data.progress || data.percent || 0;
+        if (progress > 0) {
+          console.log(`生成进度: ${progress}%`);
         }
       } catch (error: any) {
-        if (error.message.includes('视频生成失败')) {
+        if (error.message.includes('视频生成失败') || error.message.includes('未返回视频 URL')) {
           throw error;
         }
-        console.warn('轮询失败:', error.message);
+        console.warn('轮询请求失败:', error.message);
       }
     }
 
-    throw new Error('视频生成超时');
+    throw new Error('视频生成超时（约 4.5 分钟）');
   }
 
   // 创建图片任务
