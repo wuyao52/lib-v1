@@ -4,8 +4,8 @@
   "framework": "vite",
   "rewrites": [
     {
-      "source": "/api/(.*)",
-      "destination": "https://open.hongniaoai.com/api/$1"
+      "source": "/api/hongniaoai/:path*",
+      "destination": "https://open.hongniaoai.com/api/:path*"
     },
     {
       "source": "/(.*)",
