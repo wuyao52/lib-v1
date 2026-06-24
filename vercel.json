@@ -1,22 +1,8 @@
 {
-  "version": 2,
-  "builds": [
+  "rewrites": [
     {
-      "src": "package.json",
-      "use": "@vercel/static-build",
-      "config": {
-        "distDir": "dist"
-      }
-    }
-  ],
-  "routes": [
-    {
-      "src": "/api/hongniaoai/(.*)",
-      "dest": "/api/proxy?path=hongniaoai/$1"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/index.html"
+      "source": "/api/hongniaoai/:path*",
+      "destination": "/api/proxy?path=hongniaoai/:path*"
     }
   ]
 }
