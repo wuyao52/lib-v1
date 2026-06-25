@@ -1,9 +1,9 @@
 # Netlify 配置
 
-# API 代理重定向
+# API 代理重定向 - 使用查询参数传递路径
 [[redirects]]
   from = "/api/hongniaoai/*"
-  to = "/.netlify/functions/proxy/:splat"
+  to = "/.netlify/functions/proxy?path=:splat"
   status = 200
 
 # SPA 路由重定向（放在最后）
