@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Type, Image, Video, Music, Wand2, Clock, Sparkles, AtSign } from 'lucide-react';
 import useProjectStore from '@/store/useProjectStore';
@@ -11,62 +11,124 @@ const typeIcons: Record<string, React.ReactNode> = {
   transition: <Wand2 className="w-5 h-5" />,
 };
 
+// 为节点生成简短名称
+function getShortName(node: any, index: number): string {
+  const typeNames: Record<string, string> = {
+    text: '文本',
+    image: '图片',
+    video: '视频',
+    audio: '音频',
+    transition: '转场',
+  };
+  return `${typeNames[node.data.type] || '场景'}${index + 1}`;
+}
+
 export default function NodePropertiesPanel() {
   const { selectedNode, project, updateNodeData, setSelectedNode } = useProjectStore();
   const [showMentionMenu, setShowMentionMenu] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
-  const [mentionTarget, setMentionTarget] = useState<'content' | 'prompt'>('content');
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [cursorPosition, setCursorPosition] = useState(0);
 
   if (!project) return null;
 
   const node = project.nodes.find((n) => n.id === selectedNode);
-
   if (!node) return null;
 
   const data = node.data as any;
 
-  // 获取可引用的节点列表（包括连接的节点）
+  // 获取可引用的节点列表（带简短名称）
   const getMentionableNodes = () => {
     if (!project) return [];
 
-    // 获取所有连接到当前节点的节点
     const connectedNodeIds = new Set<string>();
     project.edges.forEach(edge => {
-      if (edge.target === selectedNode) {
-        connectedNodeIds.add(edge.source);
-      }
-      if (edge.source === selectedNode) {
-        connectedNodeIds.add(edge.target);
-      }
+      if (edge.target === selectedNode) connectedNodeIds.add(edge.source);
+      if (edge.source === selectedNode) connectedNodeIds.add(edge.target);
     });
 
     return project.nodes
-      .filter(n => n.id !== selectedNode) // 排除自己
+      .filter(n => n.id !== selectedNode)
+      .map((n, index) => ({
+        ...n,
+        shortName: getShortName(n, index),
+        isConnected: connectedNodeIds.has(n.id),
+      }))
       .filter(n => {
         if (!mentionFilter) return true;
-        return n.data.label?.toLowerCase().includes(mentionFilter.toLowerCase());
+        return n.shortName.toLowerCase().includes(mentionFilter.toLowerCase()) ||
+               n.data.label?.toLowerCase().includes(mentionFilter.toLowerCase());
       })
-      .sort((a, b) => {
-        // 连接的节点排在前面
-        const aConnected = connectedNodeIds.has(a.id) ? 0 : 1;
-        const bConnected = connectedNodeIds.has(b.id) ? 0 : 1;
-        return aConnected - bConnected;
-      });
+      .sort((a, b) => (a.isConnected ? 0 : 1) - (b.isConnected ? 0 : 1));
   };
 
-  // 处理@引用
-  const handleMention = (nodeId: string, nodeLabel: string) => {
-    const mentionText = `@[${nodeLabel}](${nodeId})`;
-    const currentPrompt = data.prompt || data.content || '';
+  // 处理文本变化，检测@输入
+  const handleTextChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const value = e.target.value;
+    const cursorPos = e.target.selectionStart || 0;
 
-    // 同时更新 prompt 和 content
     updateNodeData(selectedNode, {
-      prompt: currentPrompt + mentionText,
-      content: currentPrompt + mentionText,
+      prompt: value,
+      content: value,
     });
+
+    setCursorPosition(cursorPos);
+
+    // 检测@输入
+    const textBeforeCursor = value.substring(0, cursorPos);
+    const lastAtIndex = textBeforeCursor.lastIndexOf('@');
+
+    if (lastAtIndex !== -1) {
+      // 检查@后面是否已经有内容（可能是已插入的引用）
+      const textAfterAt = textBeforeCursor.substring(lastAtIndex + 1);
+      // 如果@后面没有空格或换行，说明正在输入
+      if (!textAfterAt.includes(' ') && !textAfterAt.includes('\n')) {
+        setShowMentionMenu(true);
+        setMentionFilter(textAfterAt);
+      } else {
+        setShowMentionMenu(false);
+      }
+    } else {
+      setShowMentionMenu(false);
+    }
+  }, [selectedNode, updateNodeData]);
+
+  // 插入引用
+  const handleMention = useCallback((nodeId: string, shortName: string) => {
+    const currentValue = data.prompt || data.content || '';
+    const textBeforeCursor = currentValue.substring(0, cursorPosition);
+    const lastAtIndex = textBeforeCursor.lastIndexOf('@');
+
+    if (lastAtIndex !== -1) {
+      // 替换@及其后面的内容为引用
+      const before = currentValue.substring(0, lastAtIndex);
+      const after = currentValue.substring(cursorPosition);
+      const mention = `@[${shortName}](${nodeId})`;
+      const newValue = before + mention + ' ' + after;
+
+      updateNodeData(selectedNode, {
+        prompt: newValue,
+        content: newValue,
+      });
+    }
+
     setShowMentionMenu(false);
     setMentionFilter('');
-  };
+
+    // 重新聚焦到文本框
+    setTimeout(() => {
+      if (textareaRef.current) {
+        textareaRef.current.focus();
+      }
+    }, 100);
+  }, [data.prompt, data.content, cursorPosition, selectedNode, updateNodeData]);
+
+  // 处理键盘事件
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      setShowMentionMenu(false);
+    }
+  }, []);
 
   return (
     <AnimatePresence>
@@ -111,119 +173,124 @@ export default function NodePropertiesPanel() {
                 />
               </div>
 
-              {/* AI 提示词（合并内容描述） */}
+              {/* AI 提示词 */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-medium text-dark-300 flex items-center gap-2">
                     <Sparkles className="w-3 h-3 text-primary-400" />
                     AI 提示词
                   </label>
-                  <button
-                    onClick={() => {
-                      setMentionTarget('prompt');
-                      setShowMentionMenu(!showMentionMenu);
-                    }}
-                    className="text-xs text-primary-400 hover:text-primary-300 flex items-center gap-1"
-                  >
-                    <AtSign className="w-3 h-3" />
-                    添加引用
-                  </button>
+                  <span className="text-[10px] text-dark-500">输入 @ 引用其他节点</span>
                 </div>
-                <textarea
-                  value={data.prompt || data.content || ''}
-                  onChange={(e) => {
-                    // 同时更新 prompt 和 content
-                    updateNodeData(selectedNode, {
-                      prompt: e.target.value,
-                      content: e.target.value
-                    });
-                  }}
-                  rows={5}
-                  className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg
-                    text-white text-sm focus:outline-none focus:border-primary-500 resize-none"
-                  placeholder="输入用于 AI 生成的提示词...&#10;&#10;例如：大殿门口一群人路过，电影感，自然光"
-                />
+                <div className="relative">
+                  <textarea
+                    ref={textareaRef}
+                    value={data.prompt || data.content || ''}
+                    onChange={handleTextChange}
+                    onKeyDown={handleKeyDown}
+                    rows={5}
+                    className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg
+                      text-white text-sm focus:outline-none focus:border-primary-500 resize-none"
+                    placeholder="输入提示词... 输入 @ 引用其他节点"
+                  />
+
+                  {/* @引用菜单 */}
+                  <AnimatePresence>
+                    {showMentionMenu && (
+                      <motion.div
+                        initial={{ opacity: 0, y: -10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -10 }}
+                        className="absolute left-0 right-0 bottom-full mb-2 bg-dark-700 border border-dark-600
+                          rounded-lg shadow-xl z-50 overflow-hidden"
+                      >
+                        <div className="p-2 border-b border-dark-600">
+                          <input
+                            type="text"
+                            value={mentionFilter}
+                            onChange={(e) => setMentionFilter(e.target.value)}
+                            placeholder="搜索节点..."
+                            className="w-full px-2 py-1 bg-dark-600 border border-dark-500 rounded text-xs
+                              text-white placeholder:text-dark-400 focus:outline-none focus:border-primary-500"
+                            autoFocus
+                          />
+                        </div>
+                        <div className="max-h-48 overflow-y-auto">
+                          {getMentionableNodes().length > 0 ? (
+                            <>
+                              {getMentionableNodes().filter(n => n.isConnected).length > 0 && (
+                                <div className="px-3 py-1.5 text-[10px] text-primary-400 bg-primary-500/10 border-b border-dark-600">
+                                  🔗 已连接的节点
+                                </div>
+                              )}
+                              {getMentionableNodes().map((n) => (
+                                <button
+                                  key={n.id}
+                                  onClick={() => handleMention(n.id, n.shortName)}
+                                  className={`w-full px-3 py-2 text-xs text-left transition-colors flex items-center gap-2
+                                    ${n.isConnected
+                                      ? 'text-white hover:bg-primary-500/20 bg-primary-500/5'
+                                      : 'text-dark-300 hover:bg-dark-600'
+                                    }`}
+                                >
+                                  <span className="font-bold text-primary-400">@</span>
+                                  <span className="flex-1 font-medium">{n.shortName}</span>
+                                  <span className="text-[10px] text-dark-500 truncate max-w-[100px]">
+                                    {n.data.label}
+                                  </span>
+                                  {n.isConnected && (
+                                    <span className="text-[10px] text-primary-400">🔗</span>
+                                  )}
+                                </button>
+                              ))}
+                            </>
+                          ) : (
+                            <div className="px-3 py-3 text-xs text-dark-500 text-center">
+                              暂无其他节点
+                            </div>
+                          )}
+                        </div>
+                        <div className="p-2 border-t border-dark-600 flex justify-between items-center">
+                          <span className="text-[10px] text-dark-500">
+                            共 {getMentionableNodes().length} 个节点
+                          </span>
+                          <button
+                            onClick={() => setShowMentionMenu(false)}
+                            className="px-2 py-0.5 text-[10px] text-dark-400 hover:text-white bg-dark-600 rounded"
+                          >
+                            ESC 关闭
+                          </button>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
                 <div className="text-[10px] text-dark-500">
-                  💡 提示词越详细，生成效果越好。可以包含风格、情绪、镜头等描述。
+                  💡 输入 @ 自动弹出引用菜单，选择节点插入引用
                 </div>
               </div>
 
-              {/* @引用菜单 */}
-              {showMentionMenu && (
-                <div className="bg-dark-700 border border-dark-600 rounded-lg overflow-hidden">
-                  <div className="p-2 border-b border-dark-600">
-                    <input
-                      type="text"
-                      value={mentionFilter}
-                      onChange={(e) => setMentionFilter(e.target.value)}
-                      placeholder="搜索节点..."
-                      className="w-full px-2 py-1 bg-dark-600 border border-dark-500 rounded text-xs
-                        text-white placeholder:text-dark-400 focus:outline-none focus:border-primary-500"
-                      autoFocus
-                    />
-                  </div>
-                  <div className="max-h-48 overflow-y-auto">
-                    {getMentionableNodes().length > 0 ? (
-                      <>
-                        {/* 连接的节点 */}
-                        {getMentionableNodes().filter(n =>
-                          project.edges.some(e =>
-                            (e.target === selectedNode && e.source === n.id) ||
-                            (e.source === selectedNode && e.target === n.id)
-                          )
-                        ).length > 0 && (
-                          <div className="px-3 py-1.5 text-[10px] text-primary-400 bg-primary-500/10 border-b border-dark-600">
-                            🔗 已连接的节点
-                          </div>
-                        )}
-                        {getMentionableNodes().map((n) => {
-                          const isConnected = project.edges.some(e =>
-                            (e.target === selectedNode && e.source === n.id) ||
-                            (e.source === selectedNode && e.target === n.id)
-                          );
-                          return (
-                            <button
-                              key={n.id}
-                              onClick={() => handleMention(n.id, n.data.label || '未命名')}
-                              className={`w-full px-3 py-2 text-xs text-left transition-colors flex items-center gap-2
-                                ${isConnected
-                                  ? 'text-white hover:bg-primary-500/20 bg-primary-500/5'
-                                  : 'text-dark-300 hover:bg-dark-600'
-                                }`}
-                            >
-                              <span className={`font-bold ${isConnected ? 'text-primary-400' : 'text-dark-500'}`}>@</span>
-                              <span className="truncate flex-1">{n.data.label || '未命名'}</span>
-                              <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                                isConnected ? 'bg-primary-500/30 text-primary-300' : 'bg-dark-600 text-dark-500'
-                              }`}>
-                                {n.data.type}
-                              </span>
-                              {isConnected && (
-                                <span className="text-[10px] text-primary-400">🔗</span>
-                              )}
-                            </button>
-                          );
-                        })}
-                      </>
-                    ) : (
-                      <div className="px-3 py-3 text-xs text-dark-500 text-center">
-                        暂无其他节点，请先添加场景
-                      </div>
-                    )}
-                  </div>
-                  <div className="p-2 border-t border-dark-600 flex justify-between items-center">
-                    <span className="text-[10px] text-dark-500">
-                      共 {getMentionableNodes().length} 个节点
-                    </span>
-                    <button
-                      onClick={() => {
-                        setShowMentionMenu(false);
-                        setMentionFilter('');
-                      }}
-                      className="px-3 py-1 text-xs text-dark-400 hover:text-white transition-colors bg-dark-600 rounded"
-                    >
-                      关闭
-                    </button>
+              {/* 引用列表 */}
+              {data.prompt && data.prompt.includes('@[') && (
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-dark-300">已引用的节点</label>
+                  <div className="flex flex-wrap gap-1">
+                    {project.nodes.map((n, index) => {
+                      const shortName = getShortName(n, index);
+                      const isReferenced = data.prompt.includes(`@[${shortName}](${n.id})`);
+                      if (!isReferenced) return null;
+                      return (
+                        <span
+                          key={n.id}
+                          className="inline-flex items-center gap-1 px-2 py-1 bg-primary-500/20 text-primary-300
+                            rounded-md text-[10px] cursor-pointer hover:bg-primary-500/30"
+                          onClick={() => setSelectedNode(n.id)}
+                        >
+                          <AtSign className="w-2.5 h-2.5" />
+                          {shortName}
+                        </span>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -239,9 +306,7 @@ export default function NodePropertiesPanel() {
                   min={1}
                   max={30}
                   value={data.duration}
-                  onChange={(e) =>
-                    updateNodeData(selectedNode, { duration: Number(e.target.value) })
-                  }
+                  onChange={(e) => updateNodeData(selectedNode, { duration: Number(e.target.value) })}
                   className="w-full accent-primary-500"
                 />
                 <div className="flex justify-between text-xs text-dark-400">
@@ -265,119 +330,14 @@ export default function NodePropertiesPanel() {
                   ].map((style) => (
                     <button
                       key={style.id}
-                      onClick={() =>
-                        updateNodeData(selectedNode, {
-                          settings: { ...data.settings, style: style.id },
-                        })
-                      }
-                      className={`
-                        py-1.5 rounded-lg text-[10px] font-medium transition-colors
+                      onClick={() => updateNodeData(selectedNode, { settings: { ...data.settings, style: style.id } })}
+                      className={`py-1.5 rounded-lg text-[10px] font-medium transition-colors
                         ${data.settings.style === style.id
                           ? 'bg-primary-600 text-white'
                           : 'bg-dark-700 text-dark-400 hover:bg-dark-600'
-                        }
-                      `}
+                        }`}
                     >
                       {style.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* 情绪 */}
-              <div className="space-y-2">
-                <label className="text-xs font-medium text-dark-300">情绪</label>
-                <div className="grid grid-cols-3 gap-2">
-                  {[
-                    { id: 'peaceful', label: '平和' },
-                    { id: 'dramatic', label: '戏剧性' },
-                    { id: 'mysterious', label: '神秘' },
-                    { id: 'romantic', label: '浪漫' },
-                    { id: 'exciting', label: '刺激' },
-                    { id: 'melancholy', label: '忧郁' },
-                  ].map((mood) => (
-                    <button
-                      key={mood.id}
-                      onClick={() =>
-                        updateNodeData(selectedNode, {
-                          settings: { ...data.settings, mood: mood.id },
-                        })
-                      }
-                      className={`
-                        py-1.5 rounded-lg text-[10px] font-medium transition-colors
-                        ${data.settings.mood === mood.id
-                          ? 'bg-primary-600 text-white'
-                          : 'bg-dark-700 text-dark-400 hover:bg-dark-600'
-                        }
-                      `}
-                    >
-                      {mood.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* 镜头 */}
-              <div className="space-y-2">
-                <label className="text-xs font-medium text-dark-300">镜头</label>
-                <div className="grid grid-cols-2 gap-2">
-                  {[
-                    { id: 'wide shot', label: '远景' },
-                    { id: 'medium shot', label: '中景' },
-                    { id: 'close-up', label: '特写' },
-                    { id: 'extreme close-up', label: '大特写' },
-                    { id: 'over shoulder', label: '过肩镜头' },
-                    { id: 'bird eye', label: '俯瞰' },
-                  ].map((camera) => (
-                    <button
-                      key={camera.id}
-                      onClick={() =>
-                        updateNodeData(selectedNode, {
-                          settings: { ...data.settings, camera: camera.id },
-                        })
-                      }
-                      className={`
-                        py-1.5 rounded-lg text-[10px] font-medium transition-colors
-                        ${data.settings.camera === camera.id
-                          ? 'bg-primary-600 text-white'
-                          : 'bg-dark-700 text-dark-400 hover:bg-dark-600'
-                        }
-                      `}
-                    >
-                      {camera.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* 光照 */}
-              <div className="space-y-2">
-                <label className="text-xs font-medium text-dark-300">光照</label>
-                <div className="grid grid-cols-2 gap-2">
-                  {[
-                    { id: 'natural light', label: '自然光' },
-                    { id: 'dramatic lighting', label: '戏剧光' },
-                    { id: 'soft light', label: '柔光' },
-                    { id: 'backlight', label: '逆光' },
-                    { id: 'neon light', label: '霓虹灯' },
-                    { id: 'candlelight', label: '烛光' },
-                  ].map((lighting) => (
-                    <button
-                      key={lighting.id}
-                      onClick={() =>
-                        updateNodeData(selectedNode, {
-                          settings: { ...data.settings, lighting: lighting.id },
-                        })
-                      }
-                      className={`
-                        py-1.5 rounded-lg text-[10px] font-medium transition-colors
-                        ${data.settings.lighting === lighting.id
-                          ? 'bg-primary-600 text-white'
-                          : 'bg-dark-700 text-dark-400 hover:bg-dark-600'
-                        }
-                      `}
-                    >
-                      {lighting.label}
                     </button>
                   ))}
                 </div>
