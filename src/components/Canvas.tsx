@@ -242,41 +242,18 @@ export default function Canvas() {
 
       if (clientX === undefined || clientY === undefined) return;
 
-      // 检查鼠标是否在某个节点上（如果是，则不弹出菜单，让 React Flow 处理连接）
-      const nodes = getNodes();
-      const mousePos = screenToFlowPosition({ x: clientX, y: clientY });
-
-      const isOverNode = nodes.some(node => {
-        const nodeWidth = 320; // 节点宽度
-        const nodeHeight = 200; // 节点高度（大约）
-        const nodeX = node.position.x;
-        const nodeY = node.position.y;
-
-        return (
-          mousePos.x >= nodeX &&
-          mousePos.x <= nodeX + nodeWidth &&
-          mousePos.y >= nodeY &&
-          mousePos.y <= nodeY + nodeHeight
-        );
-      });
-
-      // 如果鼠标在节点上，不弹出菜单（让 React Flow 处理连接）
-      if (isOverNode) {
-        console.log('鼠标在节点上，不弹出生成菜单');
-        return;
-      }
-
-      // 只有在空白区域才弹出生成菜单
+      // 转换为画布坐标
       const position = screenToFlowPosition({
         x: clientX,
         y: clientY,
       });
 
+      // 弹出生成菜单
       setGenerationSourceNode(sourceNodeId);
       setGenerationPosition(position);
       setShowGenerationModal(true);
     },
-    [screenToFlowPosition, getNodes]
+    [screenToFlowPosition]
   );
 
   // 处理普通连接（支持批量连接）
