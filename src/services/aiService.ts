@@ -128,14 +128,29 @@ export class AIService {
         if (response.ok) {
           // 尝试多种数据格式
           let models = [];
+          console.log('解析响应数据:', JSON.stringify(data, null, 2));
+
           if (data.data?.models) {
             models = data.data.models;
+            console.log('使用 data.data.models 格式');
           } else if (data.models) {
             models = data.models;
+            console.log('使用 data.models 格式');
           } else if (Array.isArray(data.data)) {
             models = data.data;
+            console.log('使用 data.data 数组格式');
           } else if (Array.isArray(data)) {
             models = data;
+            console.log('使用 data 数组格式');
+          } else if (data.data?.data) {
+            models = data.data.data;
+            console.log('使用 data.data.data 格式');
+          } else if (data.items) {
+            models = data.items;
+            console.log('使用 data.items 格式');
+          } else {
+            console.log('未识别的数据格式，完整响应:', data);
+            // 如果没有找到模型列表，返回成功但模型数为 0
           }
 
           const modelCount = models.length;
