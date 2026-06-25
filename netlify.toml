@@ -1,15 +1,13 @@
-# Netlify 配置 - 直接使用预构建文件
-[build]
-  publish = "dist"
+# Netlify 配置
 
-# SPA 路由重定向
-[[redirects]]
-  from = "/*"
-  to = "/index.html"
-  status = 200
-
-# API 代理重定向
+# API 代理重定向（必须在 SPA 重定向之前）
 [[redirects]]
   from = "/api/hongniaoai/*"
   to = "/.netlify/functions/proxy?path=hongniaoai/:splat"
+  status = 200
+
+# SPA 路由重定向（放在最后）
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
   status = 200
