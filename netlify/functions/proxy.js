@@ -17,35 +17,33 @@ exports.handler = async (event, context) => {
   }
 
   // 获取请求路径
-  // 当请求 /api/hongniaoai/v1/models 时
-  // 重定向到 /.netlify/functions/proxy?path=v1/models
-  // event.path 会是 /.netlify/functions/proxy
-  // event.queryStringParameters.path 会是 v1/models
+  const eventPath = event.path || '';
+  const queryParams = event.queryStringParameters || {};
 
-  console.log('原始路径:', event.path);
-  console.log('查询参数:', event.queryStringParameters);
+  console.log('请求路径:', eventPath);
+  console.log('查询参数:', queryParams);
 
+  // 直接从路径中提取目标路径
+  // event.path 可能是 /api/hongniaoai/v1/models 或 /.netlify/functions/proxy
   let targetPath = '';
 
   // 方式1：从查询参数获取
-  if (event.queryStringParameters && event.queryStringParameters.path) {
-    targetPath = event.queryStringParameters.path;
+  if (queryParams.path) {
+    targetPath = queryParams.path;
   }
 
-  // 方式2：从 event.path 获取（如果重定向传递了路径）
-  if (!targetPath && event.path) {
-    const pathMatch = event.path.match(/\/.netlify\/functions\/proxy\/?(.*)/);
-    if (pathMatch && pathMatch[1]) {
-      targetPath = pathMatch[1];
+  // 方式2：从 event.path 获取
+  if (!targetPath) {
+    // 匹配 /api/hongniaoai/v1/xxx 或 /.netlify/functions/proxy/v1/xxx
+    const match = eventPath.match(/(?:\/api\/hongniaoai|\/.netlify\/functions\/proxy)\/?(.*)/);
+    if (match && match[1]) {
+      targetPath = match[1];
     }
   }
 
-  // 方式3：从原始请求路径获取
-  if (!targetPath && event.headers && event.headers.referer) {
-    const refererMatch = event.headers.referer.match(/\/api\/hongniaoai\/(.*)/);
-    if (refererMatch && refererMatch[1]) {
-      targetPath = refererMatch[1];
-    }
+  // 方式3：如果路径是 /api/hongniaoai/v1/models，直接提取 v1/models
+  if (!targetPath && eventPath.includes('/api/hongniaoai/')) {
+    targetPath = eventPath.split('/api/hongniaoai/')[1] || '';
   }
 
   // 如果还是为空，返回错误
@@ -55,8 +53,8 @@ exports.handler = async (event, context) => {
       headers,
       body: JSON.stringify({
         error: 'Missing path',
-        eventPath: event.path,
-        queryParams: event.queryStringParameters
+        eventPath: eventPath,
+        queryParams: queryParams
       }),
     };
   }
@@ -64,12 +62,8 @@ exports.handler = async (event, context) => {
   // 构建目标 URL
   const targetUrl = `https://open.hongniaoai.com/api/${targetPath}`;
 
-  console.log('代理请求:', {
-    eventPath: event.path,
-    targetPath,
-    targetUrl,
-    method: event.httpMethod,
-  });
+  console.log('目标路径:', targetPath);
+  console.log('目标URL:', targetUrl);
 
   try {
     // 构建请求头
@@ -96,13 +90,11 @@ exports.handler = async (event, context) => {
       fetchOptions.body = event.body;
     }
 
-    console.log('发送请求到:', targetUrl);
-
     // 发送请求
     const response = await fetch(targetUrl, fetchOptions);
     const data = await response.json();
 
-    console.log('响应:', { status: response.status, data });
+    console.log('响应状态:', response.status);
 
     return {
       statusCode: response.status,
