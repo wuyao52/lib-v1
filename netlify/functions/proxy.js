@@ -18,24 +18,34 @@ exports.handler = async (event, context) => {
 
   // 获取请求路径
   // 当请求 /api/hongniaoai/v1/models 时
-  // Netlify 重定向到 /.netlify/functions/proxy/v1/models
-  // event.path 会是 /.netlify/functions/proxy/v1/models
+  // 重定向到 /.netlify/functions/proxy?path=v1/models
+  // event.path 会是 /.netlify/functions/proxy
+  // event.queryStringParameters.path 会是 v1/models
 
   console.log('原始路径:', event.path);
   console.log('查询参数:', event.queryStringParameters);
 
-  // 从路径中提取目标路径
   let targetPath = '';
 
-  // 尝试从 event.path 获取
-  const pathMatch = event.path.match(/\/.netlify\/functions\/proxy\/?(.*)/);
-  if (pathMatch && pathMatch[1]) {
-    targetPath = pathMatch[1];
+  // 方式1：从查询参数获取
+  if (event.queryStringParameters && event.queryStringParameters.path) {
+    targetPath = event.queryStringParameters.path;
   }
 
-  // 如果路径为空，尝试从查询参数获取
-  if (!targetPath && event.queryStringParameters && event.queryStringParameters.path) {
-    targetPath = event.queryStringParameters.path.replace(/^hongniaoai\//, '');
+  // 方式2：从 event.path 获取（如果重定向传递了路径）
+  if (!targetPath && event.path) {
+    const pathMatch = event.path.match(/\/.netlify\/functions\/proxy\/?(.*)/);
+    if (pathMatch && pathMatch[1]) {
+      targetPath = pathMatch[1];
+    }
+  }
+
+  // 方式3：从原始请求路径获取
+  if (!targetPath && event.headers && event.headers.referer) {
+    const refererMatch = event.headers.referer.match(/\/api\/hongniaoai\/(.*)/);
+    if (refererMatch && refererMatch[1]) {
+      targetPath = refererMatch[1];
+    }
   }
 
   // 如果还是为空，返回错误
@@ -86,7 +96,7 @@ exports.handler = async (event, context) => {
       fetchOptions.body = event.body;
     }
 
-    console.log('发送请求到:', targetUrl, fetchOptions);
+    console.log('发送请求到:', targetUrl);
 
     // 发送请求
     const response = await fetch(targetUrl, fetchOptions);
