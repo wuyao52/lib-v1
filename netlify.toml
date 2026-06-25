@@ -3,7 +3,6 @@
 # API 代理重定向（必须在 SPA 重定向之前）
 [[redirects]]
   from = "/api/hongniaoai/*"
-  to = "/.netlify/functions/proxy?path=hongniaoai/:splat"
   status = 200
 
 # SPA 路由重定向（放在最后）
