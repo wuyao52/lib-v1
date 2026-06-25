@@ -17,23 +17,37 @@ exports.handler = async (event, context) => {
   }
 
   // 获取请求路径
-  // Netlify 会将 /api/hongniaoai/v1/models 重定向到 /.netlify/functions/proxy/v1/models
+  // 当请求 /api/hongniaoai/v1/models 时
+  // Netlify 重定向到 /.netlify/functions/proxy/v1/models
   // event.path 会是 /.netlify/functions/proxy/v1/models
-  let targetPath = event.path.replace(/^\/.netlify\/functions\/proxy\/?/, '');
 
-  // 如果路径为空，尝试从查询参数获取
-  if (!targetPath) {
-    const { path } = event.queryStringParameters || {};
-    if (path) {
-      targetPath = path.replace(/^hongniaoai\//, '');
-    }
+  console.log('原始路径:', event.path);
+  console.log('查询参数:', event.queryStringParameters);
+
+  // 从路径中提取目标路径
+  let targetPath = '';
+
+  // 尝试从 event.path 获取
+  const pathMatch = event.path.match(/\/.netlify\/functions\/proxy\/?(.*)/);
+  if (pathMatch && pathMatch[1]) {
+    targetPath = pathMatch[1];
   }
 
+  // 如果路径为空，尝试从查询参数获取
+  if (!targetPath && event.queryStringParameters && event.queryStringParameters.path) {
+    targetPath = event.queryStringParameters.path.replace(/^hongniaoai\//, '');
+  }
+
+  // 如果还是为空，返回错误
   if (!targetPath) {
     return {
       statusCode: 400,
       headers,
-      body: JSON.stringify({ error: 'Missing path parameter', path: event.path }),
+      body: JSON.stringify({
+        error: 'Missing path',
+        eventPath: event.path,
+        queryParams: event.queryStringParameters
+      }),
     };
   }
 
@@ -72,7 +86,7 @@ exports.handler = async (event, context) => {
       fetchOptions.body = event.body;
     }
 
-    console.log('发送请求到:', targetUrl);
+    console.log('发送请求到:', targetUrl, fetchOptions);
 
     // 发送请求
     const response = await fetch(targetUrl, fetchOptions);
