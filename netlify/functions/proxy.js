@@ -16,24 +16,36 @@ exports.handler = async (event, context) => {
     };
   }
 
-  // 获取路径参数
-  const { path } = event.queryStringParameters || {};
+  // 获取请求路径
+  // Netlify 会将 /api/hongniaoai/v1/models 重定向到 /.netlify/functions/proxy/v1/models
+  // event.path 会是 /.netlify/functions/proxy/v1/models
+  let targetPath = event.path.replace(/^\/.netlify\/functions\/proxy\/?/, '');
 
-  if (!path) {
+  // 如果路径为空，尝试从查询参数获取
+  if (!targetPath) {
+    const { path } = event.queryStringParameters || {};
+    if (path) {
+      targetPath = path.replace(/^hongniaoai\//, '');
+    }
+  }
+
+  if (!targetPath) {
     return {
       statusCode: 400,
       headers,
-      body: JSON.stringify({ error: 'Missing path parameter' }),
+      body: JSON.stringify({ error: 'Missing path parameter', path: event.path }),
     };
   }
-
-  // 移除路径开头的 hongniaoai/
-  const targetPath = path.replace(/^hongniaoai\//, '');
 
   // 构建目标 URL
   const targetUrl = `https://open.hongniaoai.com/api/${targetPath}`;
 
-  console.log('代理请求:', { path, targetPath, targetUrl, method: event.httpMethod });
+  console.log('代理请求:', {
+    eventPath: event.path,
+    targetPath,
+    targetUrl,
+    method: event.httpMethod,
+  });
 
   try {
     // 构建请求头
