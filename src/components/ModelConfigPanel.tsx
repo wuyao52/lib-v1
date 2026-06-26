@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   X,
@@ -8,11 +8,8 @@ import {
   Settings,
   TestTube,
   CheckCircle,
-  XCircle,
-  AlertTriangle,
   Video,
   Image,
-  Wand2,
   Eye,
   EyeOff,
   Copy,
@@ -75,17 +72,15 @@ export default function ModelConfigPanel() {
 
   const activeModel = activeTab === 'video' ? multiModel.videoModel : multiModel.imageModel;
 
-  // 更新配置
+  // 更新配置（独立更新当前标签对应的模型）
   const updateActiveModel = (updates: Partial<AIModelConfig>) => {
     const newMultiModel = { ...multiModel };
+    // 只更新当前标签对应的模型，不互相影响
     if (activeTab === 'video') {
       newMultiModel.videoModel = { ...newMultiModel.videoModel, ...updates };
       newMultiModel.textModel = { ...newMultiModel.textModel, ...updates };
-      newMultiModel.imageModel = { ...newMultiModel.imageModel, ...updates };
     } else {
       newMultiModel.imageModel = { ...newMultiModel.imageModel, ...updates };
-      newMultiModel.videoModel = { ...newMultiModel.videoModel, ...updates };
-      newMultiModel.textModel = { ...newMultiModel.textModel, ...updates };
     }
     updateProjectSettings({ multiModel: newMultiModel });
   };
