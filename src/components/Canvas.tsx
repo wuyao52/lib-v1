@@ -1,5 +1,4 @@
 import { useRef, useState } from 'react';
-import type { DragEvent as ReactDragEvent } from 'react';
 import {
   ReactFlow,
   Background,
@@ -53,6 +52,9 @@ export default function Canvas() {
   const [watermarkSourceUrl, setWatermarkSourceUrl] = useState('');
   const [watermarkSourceType, setWatermarkSourceType] = useState<'image' | 'video'>('image');
 
+  // 检查是否有弹窗打开
+  const hasModalOpen = showGenerationModal || showWatermarkModal;
+
   const hasFiles = (event: React.DragEvent) => event.dataTransfer.types.includes('Files');
 
   const getFileType = (file: File): 'image' | 'video' | null => {
@@ -72,16 +74,19 @@ export default function Canvas() {
   // 拖放处理
   const onDragEnter = (event: React.DragEvent) => {
     event.preventDefault();
+    if (hasModalOpen) return; // 弹窗打开时忽略
     if (hasFiles(event)) setIsDraggingFile(true);
   };
 
   const onDragOver = (event: React.DragEvent) => {
     event.preventDefault();
+    if (hasModalOpen) return; // 弹窗打开时忽略
     event.dataTransfer.dropEffect = hasFiles(event) ? 'copy' : 'move';
   };
 
   const onDragLeave = (event: React.DragEvent) => {
     event.preventDefault();
+    if (hasModalOpen) return; // 弹窗打开时忽略
     const rect = reactFlowWrapper.current?.getBoundingClientRect();
     if (rect) {
       const { clientX, clientY } = event;
@@ -92,7 +97,7 @@ export default function Canvas() {
   };
 
   const handleFileDrop = async (event: React.DragEvent) => {
-    if (!project) return;
+    if (!project || hasModalOpen) return; // 弹窗打开时忽略
     const files = Array.from(event.dataTransfer.files);
 
     for (const file of files) {
