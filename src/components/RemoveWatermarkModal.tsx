@@ -61,6 +61,28 @@ export default function RemoveWatermarkModal({
     }
   };
 
+  // 模拟处理（演示模式）
+  const simulateProcessing = async () => {
+    const steps = [
+      { progress: 10, message: '正在分析文件...' },
+      { progress: 25, message: '正在检测水印/字幕区域...' },
+      { progress: 40, message: '正在识别内容边界...' },
+      { progress: 55, message: '正在生成修复内容...' },
+      { progress: 70, message: '正在融合处理...' },
+      { progress: 85, message: '正在优化细节...' },
+      { progress: 95, message: '正在完成处理...' },
+      { progress: 100, message: '处理完成！' },
+    ];
+
+    for (const step of steps) {
+      await new Promise(resolve => setTimeout(resolve, 400));
+      setProgress(step.progress);
+    }
+
+    setResultUrl(previewUrl);
+    setStatus('completed');
+  };
+
   const handleProcess = async () => {
     if (!previewUrl && !file) return;
 
