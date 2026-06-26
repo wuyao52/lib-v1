@@ -1,29 +1,15 @@
 # Netlify 配置
 
-# API 代理重定向
+# 无痕AI API 代理
 [[redirects]]
-  from = "/api/hongniaoai/v1/models"
-  to = "/.netlify/functions/proxy?path=v1/models"
+  from = "/api/wuhenai/*"
+  to = "/.netlify/functions/proxy?service=wuhenai&path=:splat"
   status = 200
 
+# 红鸟AI API 代理
 [[redirects]]
-  from = "/api/hongniaoai/v1/videos"
-  to = "/.netlify/functions/proxy?path=v1/videos"
-  status = 200
-
-[[redirects]]
-  from = "/api/hongniaoai/v1/videos/*"
-  to = "/.netlify/functions/proxy?path=v1/videos/:splat"
-  status = 200
-
-[[redirects]]
-  from = "/api/hongniaoai/v1/images"
-  to = "/.netlify/functions/proxy?path=v1/images"
-  status = 200
-
-[[redirects]]
-  from = "/api/hongniaoai/v1/images/*"
-  to = "/.netlify/functions/proxy?path=v1/images/:splat"
+  from = "/api/hongniaoai/*"
+  to = "/.netlify/functions/proxy?service=hongniaoai&path=:splat"
   status = 200
 
 # SPA 路由重定向（放在最后）
