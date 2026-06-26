@@ -226,6 +226,7 @@ interface ProjectStore {
   duplicateNode: (nodeId: string) => void;
 
   // 生成操作
+  activeGenerations: Map<string, AbortController>;
   startGeneration: (nodeId: string) => void;
   startGenerationWithType: (
     nodeId: string,
@@ -239,6 +240,7 @@ interface ProjectStore {
     },
     position?: { x: number; y: number }
   ) => void;
+  cancelGeneration: (nodeId: string) => void;
   updateGenerationProgress: (nodeId: string, progress: GenerationProgress) => void;
 
   // 设置操作
@@ -276,6 +278,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
   showSettings: false,
   showModelConfig: false,
   generationProgress: new Map(),
+  activeGenerations: new Map(),
 
   // 撤销/重做初始状态
   history: [],
@@ -722,6 +725,46 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
         }, 1000);
       }
     })();
+  },
+
+  // 取消生成
+  cancelGeneration: (nodeId) => {
+    const { activeGenerations, project } = get();
+    if (!project) return;
+
+    // 查找该节点相关的所有生成任务
+    const nodesToCancel: string[] = [nodeId];
+
+    // 查找所有由该节点生成的子节点
+    project.edges.forEach(edge => {
+      if (edge.source === nodeId) {
+        const targetNode = project.nodes.find(n => n.id === edge.target);
+        if (targetNode && targetNode.data.status === 'generating') {
+          nodesToCancel.push(edge.target);
+        }
+      }
+    });
+
+    // 取消所有相关的生成任务
+    nodesToCancel.forEach(id => {
+      const controller = activeGenerations.get(id);
+      if (controller) {
+        controller.abort();
+        activeGenerations.delete(id);
+      }
+
+      // 更新节点状态
+      get().updateNodeData(id, {
+        status: 'error',
+        error: '用户取消生成',
+        progress: 0,
+      });
+    });
+
+    set({
+      activeGenerations: new Map(activeGenerations),
+      isGenerating: false,
+    });
   },
 
   // 带类型的生成操作（用于拖拽到空白区域时的生成）
