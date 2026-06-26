@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useRef, useState, useEffect } from 'react';
 import {
   ReactFlow,
   Background,
@@ -8,7 +8,7 @@ import {
   SelectionMode,
   useReactFlow,
 } from '@xyflow/react';
-import type { NodeTypes, OnConnectEnd, Connection, Edge } from '@xyflow/react';
+import type { NodeTypes, OnConnectEnd, Connection } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import useProjectStore from '@/store/useProjectStore';
 import SceneNodeComponent from './SceneNode';
@@ -44,6 +44,11 @@ export default function Canvas() {
 
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition } = useReactFlow();
+  const screenToFlowPositionRef = useRef(screenToFlowPosition);
+
+  useEffect(() => {
+    screenToFlowPositionRef.current = screenToFlowPosition;
+  }, [screenToFlowPosition]);
 
   // 框选模式状态
   const [isSelectionMode, setIsSelectionMode] = useState(false);
@@ -229,7 +234,7 @@ export default function Canvas() {
 
       if (clientX === undefined || clientY === undefined) return;
 
-      const position = screenToFlowPosition({
+      const position = screenToFlowPositionRef.current({
         x: clientX,
         y: clientY,
       });
@@ -238,7 +243,7 @@ export default function Canvas() {
       setGenerationPosition(position);
       setShowGenerationModal(true);
     },
-    [screenToFlowPosition]
+    []
   );
 
   // 处理普通连接
