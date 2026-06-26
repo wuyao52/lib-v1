@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState, useEffect } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import {
   ReactFlow,
   Background,
@@ -6,7 +6,6 @@ import {
   MiniMap,
   BackgroundVariant,
   SelectionMode,
-  useReactFlow,
 } from '@xyflow/react';
 import type { NodeTypes, OnConnectEnd, Connection } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -43,12 +42,6 @@ export default function Canvas() {
   } = useProjectStore();
 
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
-  const { screenToFlowPosition } = useReactFlow();
-  const screenToFlowPositionRef = useRef(screenToFlowPosition);
-
-  useEffect(() => {
-    screenToFlowPositionRef.current = screenToFlowPosition;
-  }, [screenToFlowPosition]);
 
   // 框选模式状态
   const [isSelectionMode, setIsSelectionMode] = useState(false);
@@ -221,7 +214,7 @@ export default function Canvas() {
     [project, addNode, handleFileDrop]
   );
 
-  // 处理连接结束事件（拖拽到空白区域才弹出菜单）
+  // 处理连接结束事件
   const onConnectEnd: OnConnectEnd = useCallback(
     (event, connectionState) => {
       if (connectionState.isValid) return;
@@ -234,13 +227,16 @@ export default function Canvas() {
 
       if (clientX === undefined || clientY === undefined) return;
 
-      const position = screenToFlowPositionRef.current({
-        x: clientX,
-        y: clientY,
-      });
+      // 简单的坐标转换
+      const wrapper = reactFlowWrapper.current;
+      if (!wrapper) return;
+
+      const rect = wrapper.getBoundingClientRect();
+      const x = clientX - rect.left;
+      const y = clientY - rect.top;
 
       setGenerationSourceNode(sourceNodeId);
-      setGenerationPosition(position);
+      setGenerationPosition({ x, y });
       setShowGenerationModal(true);
     },
     []
@@ -257,9 +253,10 @@ export default function Canvas() {
   // 处理生成类型选择
   const handleGenerationSelect = useCallback(
     (type: 'video' | 'image' | 'img2img', settings: GenerationSettings) => {
-      if (!generationSourceNode || !project) return;
+      const sourceNode = generationSourceNode;
+      if (!sourceNode || !project) return;
 
-      startGenerationWithType(generationSourceNode, type, settings, generationPosition);
+      startGenerationWithType(sourceNode, type, settings, generationPosition);
 
       setShowGenerationModal(false);
       setGenerationSourceNode(null);
@@ -274,7 +271,7 @@ export default function Canvas() {
     setShowWatermarkModal(true);
   }, []);
 
-  // 处理画布点击（取消选中）
+  // 处理画布点击
   const onPaneClick = useCallback(() => {
     setSelectedNode(null);
   }, [setSelectedNode]);
@@ -286,6 +283,9 @@ export default function Canvas() {
 
   if (!project) return null;
 
+  // 获取源节点信息
+  const sourceNode = project.nodes.find(n => n.id === generationSourceNode);
+
   return (
     <div
       ref={reactFlowWrapper}
@@ -295,7 +295,6 @@ export default function Canvas() {
     >
       {/* 工具按钮区域 */}
       <div className="absolute top-20 right-4 z-50 flex flex-col gap-2">
-        {/* 框选模式切换按钮 */}
         <button
           onClick={toggleSelectionMode}
           className={`
@@ -308,27 +307,16 @@ export default function Canvas() {
           `}
           title={isSelectionMode ? '点击切换为拖拽模式' : '点击切换为框选模式'}
         >
-          <svg
-            width="16"
-            height="16"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeDasharray="3 2"
-          >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeDasharray="3 2">
             <rect x="2" y="2" width="12" height="12" rx="1" />
           </svg>
           {isSelectionMode ? '框选模式' : '拖拽模式'}
         </button>
 
-        {/* 去水印按钮 */}
         <button
           onClick={() => handleOpenWatermarkModal()}
-          className="flex items-center gap-2 px-3 py-2 rounded-lg
-            text-xs font-medium transition-all
-            bg-dark-800/90 text-dark-300 hover:text-white border border-dark-600/50
-            hover:border-cyan-500/50 hover:bg-cyan-500/10"
+          className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-all
+            bg-dark-800/90 text-dark-300 hover:text-white border border-dark-600/50 hover:border-cyan-500/50 hover:bg-cyan-500/10"
           title="去除水印"
         >
           <Droplets className="w-4 h-4" />
@@ -342,8 +330,7 @@ export default function Canvas() {
         animate={{ opacity: 1 }}
         className="absolute bottom-16 left-1/2 -translate-x-1/2 z-40"
       >
-        <div className="bg-dark-800/90 backdrop-blur-xl rounded-full px-4 py-2
-          border border-dark-600/50 shadow-xl">
+        <div className="bg-dark-800/90 backdrop-blur-xl rounded-full px-4 py-2 border border-dark-600/50 shadow-xl">
           <div className="flex items-center gap-2 text-xs text-dark-400">
             <Wand2 className="w-3 h-3 text-primary-400" />
             <span>从节点连接点拖拽到空白处可选择生成类型</span>
@@ -360,8 +347,7 @@ export default function Canvas() {
             exit={{ opacity: 0 }}
             className="absolute inset-0 z-[100] pointer-events-none"
           >
-            <div className="absolute inset-4 border-2 border-dashed border-primary-500 rounded-2xl
-              bg-primary-500/10 backdrop-blur-sm flex items-center justify-center">
+            <div className="absolute inset-4 border-2 border-dashed border-primary-500 rounded-2xl bg-primary-500/10 backdrop-blur-sm flex items-center justify-center">
               <div className="text-center">
                 <div className="flex justify-center gap-6 mb-4">
                   <div className="flex flex-col items-center gap-2">
@@ -414,18 +400,8 @@ export default function Canvas() {
         }}
         className="bg-dark-950"
       >
-        <Background
-          variant={BackgroundVariant.Dots}
-          gap={24}
-          size={1.5}
-          color="#334155"
-        />
-
-        <Controls
-          className="!bg-dark-800 !border-dark-600 !rounded-xl !shadow-xl"
-          showInteractive={false}
-        />
-
+        <Background variant={BackgroundVariant.Dots} gap={24} size={1.5} color="#334155" />
+        <Controls className="!bg-dark-800 !border-dark-600 !rounded-xl !shadow-xl" showInteractive={false} />
         <MiniMap
           style={minimapStyle}
           nodeColor={(node) => {
@@ -452,8 +428,8 @@ export default function Canvas() {
           setGenerationSourceNode(null);
         }}
         onSelect={handleGenerationSelect}
-        sourceImageUrl={project?.nodes.find(n => n.id === generationSourceNode)?.data?.generatedContent}
-        sourceNodeType={project?.nodes.find(n => n.id === generationSourceNode)?.data?.type}
+        sourceImageUrl={sourceNode?.data?.generatedContent}
+        sourceNodeType={sourceNode?.data?.type}
       />
 
       {/* 去水印弹窗 */}
