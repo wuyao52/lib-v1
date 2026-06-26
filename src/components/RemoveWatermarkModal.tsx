@@ -6,9 +6,9 @@ import {
   Droplets,
   Loader2,
   CheckCircle2,
-  AlertCircle,
   Download,
   Type,
+  Info,
 } from 'lucide-react';
 import useProjectStore from '@/store/useProjectStore';
 
@@ -31,7 +31,6 @@ export default function RemoveWatermarkModal({
   const [resultUrl, setResultUrl] = useState<string>('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [status, setStatus] = useState<'idle' | 'processing' | 'completed' | 'error'>('idle');
-  const [errorMessage, setErrorMessage] = useState('');
   const [progress, setProgress] = useState(0);
   const [processType, setProcessType] = useState<'watermark' | 'subtitle'>('watermark');
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -50,7 +49,7 @@ export default function RemoveWatermarkModal({
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
-    e.stopPropagation(); // 阻止事件冒泡到主画布
+    e.stopPropagation();
     const droppedFile = e.dataTransfer.files[0];
     if (droppedFile) {
       setFile(droppedFile);
@@ -68,115 +67,28 @@ export default function RemoveWatermarkModal({
     setIsProcessing(true);
     setStatus('processing');
     setProgress(0);
-    setErrorMessage('');
 
-    try {
-      // 获取 API 配置
-      const aiModel = project?.settings.multiModel?.imageModel || project?.settings.aiModel;
-
-      if (!aiModel?.apiKey) {
-        // 没有 API Key，使用演示模式
-        await simulateProcessing();
-        return;
-      }
-
-      setProgress(10);
-
-      // 将文件转换为 base64 或使用 URL
-      let imageData = previewUrl;
-      if (file) {
-        imageData = await readFileAsDataURL(file);
-      }
-
-      setProgress(30);
-
-      // 尝试调用去水印 API（多个可能的端点）
-      const possibleEndpoints = [
-        `${aiModel.baseUrl}/v1/edit/remove-watermark`,
-        `${aiModel.baseUrl}/v1/image/remove-watermark`,
-        `${aiModel.baseUrl}/v1/images/inpaint`,
-        `${aiModel.baseUrl}/v1/edit/inpaint`,
-      ];
-
-      let apiSuccess = false;
-
-      for (const endpoint of possibleEndpoints) {
-        try {
-          console.log('尝试 API 端点:', endpoint);
-          const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${aiModel.apiKey}`,
-              'X-API-Key': aiModel.apiKey,
-            },
-            body: JSON.stringify({
-              image: imageData,
-              type: processType,
-              model: aiModel.modelId,
-              prompt: processType === 'watermark' ? 'remove watermark' : 'remove subtitle',
-            }),
-          });
-
-          if (response.ok) {
-            const data = await response.json();
-            const resultUrl = data.output?.image_url || data.image_url || data.result?.image_url || data.url;
-
-            if (resultUrl) {
-              setProgress(100);
-              setResultUrl(resultUrl);
-              setStatus('completed');
-              apiSuccess = true;
-              break;
-            }
-          }
-        } catch (e) {
-          console.log('端点失败:', endpoint);
-        }
-      }
-
-      if (!apiSuccess) {
-        // 所有 API 端点都失败，使用演示模式
-        console.warn('所有 API 端点都失败，使用演示模式');
-        await simulateProcessing();
-      }
-    } catch (error: any) {
-      console.error('处理失败:', error);
-      await simulateProcessing();
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  // 模拟处理（演示模式）
-  const simulateProcessing = async () => {
+    // 使用演示模式模拟处理
     const steps = [
-      { progress: 15, message: '正在分析图片...' },
-      { progress: 35, message: '正在检测水印区域...' },
+      { progress: 10, message: '正在分析文件...' },
+      { progress: 25, message: '正在检测水印/字幕区域...' },
+      { progress: 40, message: '正在识别内容边界...' },
       { progress: 55, message: '正在生成修复内容...' },
-      { progress: 75, message: '正在融合处理...' },
-      { progress: 90, message: '正在优化细节...' },
+      { progress: 70, message: '正在融合处理...' },
+      { progress: 85, message: '正在优化细节...' },
+      { progress: 95, message: '正在完成处理...' },
       { progress: 100, message: '处理完成！' },
     ];
 
     for (const step of steps) {
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise(resolve => setTimeout(resolve, 400));
       setProgress(step.progress);
     }
 
     // 使用原图作为结果（演示模式）
     setResultUrl(previewUrl);
     setStatus('completed');
-    setErrorMessage('演示模式：实际使用需要配置 API');
-  };
-
-  const readFileAsDataURL = (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
+    setIsProcessing(false);
   };
 
   const handleDownload = () => {
@@ -194,7 +106,6 @@ export default function RemoveWatermarkModal({
     setResultUrl('');
     setStatus('idle');
     setProgress(0);
-    setErrorMessage('');
   };
 
   return (
@@ -205,19 +116,16 @@ export default function RemoveWatermarkModal({
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           className="fixed inset-0 z-[300] flex items-center justify-center p-4"
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => e.preventDefault()}
         >
-          <div
-            className="absolute inset-0 bg-black/70 backdrop-blur-sm"
-            onClick={onClose}
-          />
+          <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
 
           <motion.div
             initial={{ scale: 0.9, opacity: 0, y: 20 }}
             animate={{ scale: 1, opacity: 1, y: 0 }}
             exit={{ scale: 0.9, opacity: 0, y: 20 }}
             className="relative w-full max-w-3xl bg-dark-800 rounded-2xl border border-dark-600/50 shadow-2xl overflow-hidden"
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => e.preventDefault()}
           >
             {/* 头部 */}
             <div className="flex items-center justify-between p-5 border-b border-dark-600/50 bg-gradient-to-r from-cyan-600/10 to-blue-600/10">
@@ -271,6 +179,19 @@ export default function RemoveWatermarkModal({
                 </button>
               </div>
 
+              {/* 提示信息 */}
+              <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/30">
+                <div className="flex items-start gap-2">
+                  <Info className="w-4 h-4 text-blue-400 mt-0.5 flex-shrink-0" />
+                  <div className="text-xs text-blue-300">
+                    <p className="font-medium mb-1">演示模式</p>
+                    <p className="text-blue-400/70">
+                      当前使用演示模式展示功能效果。实际使用需要配置支持去水印/去字幕的专用 API。
+                    </p>
+                  </div>
+                </div>
+              </div>
+
               {/* 上传区域 */}
               {!previewUrl && (
                 <div
@@ -309,10 +230,7 @@ export default function RemoveWatermarkModal({
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
                       <label className="text-sm font-medium text-dark-200">原始文件</label>
-                      <button
-                        onClick={resetState}
-                        className="text-xs text-primary-400 hover:text-primary-300"
-                      >
+                      <button onClick={resetState} className="text-xs text-primary-400 hover:text-primary-300">
                         重新选择
                       </button>
                     </div>
@@ -350,11 +268,6 @@ export default function RemoveWatermarkModal({
                             />
                           </div>
                         </div>
-                      ) : status === 'error' ? (
-                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
-                          <AlertCircle className="w-8 h-8 text-red-400" />
-                          <p className="text-sm text-red-400">{errorMessage}</p>
-                        </div>
                       ) : (
                         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
                           <Droplets className="w-8 h-8 text-dark-600" />
@@ -372,37 +285,12 @@ export default function RemoveWatermarkModal({
                   <div className="flex items-center gap-3">
                     <CheckCircle2 className="w-5 h-5 text-green-400" />
                     <div>
-                      <p className="text-sm text-green-400 font-medium">处理完成！</p>
-                      {errorMessage && (
-                        <p className="text-xs text-yellow-400 mt-1">{errorMessage}</p>
-                      )}
+                      <p className="text-sm text-green-400 font-medium">演示处理完成！</p>
+                      <p className="text-xs text-yellow-400 mt-1">这是演示结果，实际效果需要配置专用 API</p>
                     </div>
                   </div>
                 </div>
               )}
-
-              {/* 功能说明 */}
-              <div className="bg-dark-700/30 rounded-xl p-4">
-                <h4 className="text-sm font-medium text-dark-200 mb-2">
-                  {processType === 'watermark' ? '去水印功能说明' : '去字幕功能说明'}
-                </h4>
-                <ul className="space-y-1 text-xs text-dark-400">
-                  {processType === 'watermark' ? (
-                    <>
-                      <li>• 智能检测图片和视频中的水印区域</li>
-                      <li>• 使用 AI 技术自动填充去除后的区域</li>
-                      <li>• 支持批量处理和高分辨率输出</li>
-                    </>
-                  ) : (
-                    <>
-                      <li>• 智能检测视频中的字幕区域</li>
-                      <li>• 自动识别并去除字幕文字</li>
-                      <li>• 保持视频画面完整性</li>
-                    </>
-                  )}
-                  <li>• 需要配置 API Key 才能使用完整功能</li>
-                </ul>
-              </div>
             </div>
 
             {/* 底部按钮 */}
