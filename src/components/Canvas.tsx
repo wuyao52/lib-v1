@@ -43,16 +43,16 @@ export default function Canvas() {
 
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
 
+  // 使用 ref 存储可变值，避免 useCallback 依赖
+  const generationSourceNodeRef = useRef<string | null>(null);
+  const generationPositionRef = useRef({ x: 0, y: 0 });
+
   // 框选模式状态
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   // 拖放状态
   const [isDraggingFile, setIsDraggingFile] = useState(false);
-
   // 生成弹窗状态
   const [showGenerationModal, setShowGenerationModal] = useState(false);
-  const [generationSourceNode, setGenerationSourceNode] = useState<string | null>(null);
-  const [generationPosition, setGenerationPosition] = useState({ x: 0, y: 0 });
-
   // 去水印弹窗状态
   const [showWatermarkModal, setShowWatermarkModal] = useState(false);
   const [watermarkSourceUrl, setWatermarkSourceUrl] = useState<string>('');
@@ -171,13 +171,11 @@ export default function Canvas() {
     (event: React.DragEvent) => {
       event.preventDefault();
 
-      // 处理文件拖放
       if (hasFiles(event)) {
         handleFileDrop(event);
         return;
       }
 
-      // 处理内部节点拖放
       if (!project) return;
 
       const type = event.dataTransfer.getData('application/reactflow');
@@ -227,7 +225,6 @@ export default function Canvas() {
 
       if (clientX === undefined || clientY === undefined) return;
 
-      // 简单的坐标转换
       const wrapper = reactFlowWrapper.current;
       if (!wrapper) return;
 
@@ -235,8 +232,9 @@ export default function Canvas() {
       const x = clientX - rect.left;
       const y = clientY - rect.top;
 
-      setGenerationSourceNode(sourceNodeId);
-      setGenerationPosition({ x, y });
+      // 使用 ref 存储值
+      generationSourceNodeRef.current = sourceNodeId;
+      generationPositionRef.current = { x, y };
       setShowGenerationModal(true);
     },
     []
@@ -253,15 +251,15 @@ export default function Canvas() {
   // 处理生成类型选择
   const handleGenerationSelect = useCallback(
     (type: 'video' | 'image' | 'img2img', settings: GenerationSettings) => {
-      const sourceNode = generationSourceNode;
+      const sourceNode = generationSourceNodeRef.current;
       if (!sourceNode || !project) return;
 
-      startGenerationWithType(sourceNode, type, settings, generationPosition);
+      startGenerationWithType(sourceNode, type, settings, generationPositionRef.current);
 
       setShowGenerationModal(false);
-      setGenerationSourceNode(null);
+      generationSourceNodeRef.current = null;
     },
-    [generationSourceNode, generationPosition, project, startGenerationWithType]
+    [project, startGenerationWithType]
   );
 
   // 打开去水印弹窗
@@ -284,7 +282,7 @@ export default function Canvas() {
   if (!project) return null;
 
   // 获取源节点信息
-  const sourceNode = project.nodes.find(n => n.id === generationSourceNode);
+  const sourceNode = project.nodes.find(n => n.id === generationSourceNodeRef.current);
 
   return (
     <div
@@ -425,7 +423,7 @@ export default function Canvas() {
         isOpen={showGenerationModal}
         onClose={() => {
           setShowGenerationModal(false);
-          setGenerationSourceNode(null);
+          generationSourceNodeRef.current = null;
         }}
         onSelect={handleGenerationSelect}
         sourceImageUrl={sourceNode?.data?.generatedContent}
