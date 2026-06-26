@@ -7,7 +7,6 @@ import {
   BackgroundVariant,
   SelectionMode,
   useReactFlow,
-  useOnSelectionChange,
 } from '@xyflow/react';
 import type { NodeTypes, OnConnectEnd, Connection, Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -16,7 +15,7 @@ import SceneNodeComponent from './SceneNode';
 import GenerationModal, { GenerationSettings } from './GenerationModal';
 import RemoveWatermarkModal from './RemoveWatermarkModal';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Upload, Image, Video, Droplets, Wand2, Link2 } from 'lucide-react';
+import { Upload, Image, Video, Droplets, Wand2 } from 'lucide-react';
 
 // 自定义节点类型
 const nodeTypes: NodeTypes = {
@@ -44,14 +43,12 @@ export default function Canvas() {
   } = useProjectStore();
 
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
-  const { screenToFlowPosition, getNodes } = useReactFlow();
+  const { screenToFlowPosition } = useReactFlow();
 
   // 框选模式状态
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   // 拖放状态
   const [isDraggingFile, setIsDraggingFile] = useState(false);
-  // 选中的节点
-  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
 
   // 生成弹窗状态
   const [showGenerationModal, setShowGenerationModal] = useState(false);
@@ -62,13 +59,6 @@ export default function Canvas() {
   const [showWatermarkModal, setShowWatermarkModal] = useState(false);
   const [watermarkSourceUrl, setWatermarkSourceUrl] = useState<string>('');
   const [watermarkSourceType, setWatermarkSourceType] = useState<'image' | 'video'>('image');
-
-  // 监听选中节点变化
-  const onSelectionChange = useCallback(({ nodes }: { nodes: any[] }) => {
-    setSelectedNodeIds(nodes.map(n => n.id));
-  }, []);
-
-  useOnSelectionChange({ onChange: onSelectionChange });
 
   // 检测是否为文件拖放
   const hasFiles = (event: React.DragEvent) => {
@@ -144,7 +134,7 @@ export default function Canvas() {
           const fileName = file.name.replace(/\.[^/.]+$/, '');
 
           const newNode = {
-            id: `scene-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            id: `scene-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
             type: 'sceneNode' as const,
             position: {
               x: position.x + (files.indexOf(file) * 50),
@@ -229,26 +219,21 @@ export default function Canvas() {
   // 处理连接结束事件（拖拽到空白区域才弹出菜单）
   const onConnectEnd: OnConnectEnd = useCallback(
     (event, connectionState) => {
-      // 如果连接成功，不处理
       if (connectionState.isValid) return;
 
-      // 获取拖拽起始节点
       const sourceNodeId = connectionState.fromNode?.id;
       if (!sourceNodeId) return;
 
-      // 获取鼠标位置
       const clientX = 'clientX' in event ? event.clientX : (event as TouchEvent).touches?.[0]?.clientX;
       const clientY = 'clientY' in event ? event.clientY : (event as TouchEvent).touches?.[0]?.clientY;
 
       if (clientX === undefined || clientY === undefined) return;
 
-      // 转换为画布坐标
       const position = screenToFlowPosition({
         x: clientX,
         y: clientY,
       });
 
-      // 弹出生成菜单
       setGenerationSourceNode(sourceNodeId);
       setGenerationPosition(position);
       setShowGenerationModal(true);
@@ -256,43 +241,12 @@ export default function Canvas() {
     [screenToFlowPosition]
   );
 
-  // 处理普通连接（支持批量连接）
+  // 处理普通连接
   const handleConnect = useCallback(
     (connection: Connection) => {
-      if (!project) return;
-
-      const sourceId = connection.source;
-      const targetId = connection.target;
-
-      // 如果有多个节点被选中，且源节点是选中的节点之一，则批量连接
-      if (selectedNodeIds.length > 1 && selectedNodeIds.includes(sourceId!)) {
-        console.log('批量连接:', selectedNodeIds, '->', targetId);
-
-        // 为所有选中的节点创建连接
-        const newEdges: Edge[] = selectedNodeIds
-          .filter(nodeId => nodeId !== targetId) // 排除目标节点自身
-          .map(nodeId => ({
-            id: `edge-${nodeId}-${targetId}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-            source: nodeId,
-            target: targetId!,
-            type: 'smoothstep',
-            animated: true,
-            style: { stroke: '#8b5cf6', strokeWidth: 2 },
-          }));
-
-        // 批量添加边
-        onEdgesChange(
-          newEdges.map(edge => ({
-            type: 'add' as const,
-            item: edge,
-          }))
-        );
-      } else {
-        // 单个连接
-        onConnect(connection);
-      }
+      onConnect(connection);
     },
-    [project, selectedNodeIds, onConnect, onEdgesChange]
+    [onConnect]
   );
 
   // 处理生成类型选择
@@ -300,7 +254,6 @@ export default function Canvas() {
     (type: 'video' | 'image' | 'img2img', settings: GenerationSettings) => {
       if (!generationSourceNode || !project) return;
 
-      // 调用 store 中的生成方法
       startGenerationWithType(generationSourceNode, type, settings, generationPosition);
 
       setShowGenerationModal(false);
@@ -325,16 +278,6 @@ export default function Canvas() {
   const toggleSelectionMode = useCallback(() => {
     setIsSelectionMode((prev) => !prev);
   }, []);
-
-  // 获取源节点的图片（用于图生图）
-  const getSourceImageUrl = useCallback(() => {
-    if (!generationSourceNode || !project) return undefined;
-    const node = project.nodes.find(n => n.id === generationSourceNode);
-    if (node && node.data.type === 'image' && node.data.generatedContent) {
-      return node.data.generatedContent;
-    }
-    return undefined;
-  }, [generationSourceNode, project]);
 
   if (!project) return null;
 
@@ -440,23 +383,6 @@ export default function Canvas() {
         )}
       </AnimatePresence>
 
-      {/* 选中节点数量提示 */}
-      {selectedNodeIds.length > 1 && (
-        <motion.div
-          initial={{ opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="absolute top-4 left-1/2 -translate-x-1/2 z-50"
-        >
-          <div className="bg-primary-600/90 backdrop-blur-xl rounded-full px-4 py-2
-            border border-primary-400/50 shadow-xl flex items-center gap-2">
-            <Link2 className="w-4 h-4 text-white" />
-            <span className="text-sm text-white font-medium">
-              已选中 {selectedNodeIds.length} 个节点 - 拖拽连接可批量连接
-            </span>
-          </div>
-        </motion.div>
-      )}
-
       <ReactFlow
         nodes={project.nodes}
         edges={project.edges}
@@ -521,8 +447,8 @@ export default function Canvas() {
           setGenerationSourceNode(null);
         }}
         onSelect={handleGenerationSelect}
-        sourceImageUrl={getSourceImageUrl()}
-        sourceNodeType={project.nodes.find(n => n.id === generationSourceNode)?.data.type}
+        sourceImageUrl={project?.nodes.find(n => n.id === generationSourceNode)?.data?.generatedContent}
+        sourceNodeType={project?.nodes.find(n => n.id === generationSourceNode)?.data?.type}
       />
 
       {/* 去水印弹窗 */}
