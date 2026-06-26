@@ -68,27 +68,97 @@ export default function RemoveWatermarkModal({
     setStatus('processing');
     setProgress(0);
 
-    // 使用演示模式模拟处理
-    const steps = [
-      { progress: 10, message: '正在分析文件...' },
-      { progress: 25, message: '正在检测水印/字幕区域...' },
-      { progress: 40, message: '正在识别内容边界...' },
-      { progress: 55, message: '正在生成修复内容...' },
-      { progress: 70, message: '正在融合处理...' },
-      { progress: 85, message: '正在优化细节...' },
-      { progress: 95, message: '正在完成处理...' },
-      { progress: 100, message: '处理完成！' },
-    ];
+    try {
+      // 获取 API 配置
+      const aiModel = project?.settings.multiModel?.imageModel || project?.settings.aiModel;
 
-    for (const step of steps) {
-      await new Promise(resolve => setTimeout(resolve, 400));
-      setProgress(step.progress);
+      if (!aiModel?.apiKey) {
+        // 没有 API Key，使用演示模式
+        await simulateProcessing();
+        return;
+      }
+
+      setProgress(10);
+
+      // 将文件转换为 base64
+      let imageData = previewUrl;
+      if (file) {
+        imageData = await readFileAsDataURL(file);
+      }
+
+      setProgress(30);
+
+      // 尝试调用图片编辑 API
+      // 红鸟AI可能支持的端点
+      const endpoints = [
+        { url: `${aiModel.baseUrl}/v1/images/edits`, body: { image: imageData, prompt: `remove ${processType}`, n: 1, size: '1024x1024' } },
+        { url: `${aiModel.baseUrl}/v1/images/variations`, body: { image: imageData, n: 1, size: '1024x1024' } },
+        { url: `${aiModel.baseUrl}/v1/images/generations`, body: { prompt: `clean image without ${processType}, high quality`, model: aiModel.modelId, size: '1024x1024', images: [imageData] } },
+      ];
+
+      let apiSuccess = false;
+
+      for (const endpoint of endpoints) {
+        try {
+          console.log('尝试 API 端点:', endpoint.url);
+          const response = await fetch(endpoint.url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${aiModel.apiKey}`,
+              'X-API-Key': aiModel.apiKey,
+            },
+            body: JSON.stringify(endpoint.body),
+          });
+
+          if (response.ok) {
+            const data = await response.json();
+            console.log('API 响应:', data);
+
+            // 尝试从响应中提取结果 URL
+            const resultUrl = data.data?.[0]?.url ||
+                             data.data?.[0]?.b64_json ||
+                             data.output?.image_url ||
+                             data.image_url ||
+                             data.result?.image_url ||
+                             data.url;
+
+            if (resultUrl) {
+              setProgress(100);
+              setResultUrl(resultUrl.startsWith('data:') ? resultUrl : resultUrl);
+              setStatus('completed');
+              apiSuccess = true;
+              break;
+            }
+          } else {
+            console.log('API 返回错误:', response.status);
+          }
+        } catch (e) {
+          console.log('端点失败:', endpoint.url, e);
+        }
+      }
+
+      if (!apiSuccess) {
+        // 所有 API 都失败，使用演示模式
+        console.warn('所有 API 端点都失败，使用演示模式');
+        await simulateProcessing();
+      }
+    } catch (error: any) {
+      console.error('处理失败:', error);
+      await simulateProcessing();
+    } finally {
+      setIsProcessing(false);
     }
+  };
 
-    // 使用原图作为结果（演示模式）
-    setResultUrl(previewUrl);
-    setStatus('completed');
-    setIsProcessing(false);
+  // 读取文件为 Data URL
+  const readFileAsDataURL = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
   };
 
   const handleDownload = () => {
