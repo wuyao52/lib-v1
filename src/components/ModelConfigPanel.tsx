@@ -24,6 +24,7 @@ import type { AIModelConfig } from '@/types';
 const presetModels = {
   video: [
     { id: 'hongniao-seedance', name: '红鸟AI Seedance', provider: '红鸟AI', baseUrl: '/api/hongniaoai', description: '🔥 推荐' },
+    { id: 'wuhen-ai', name: '无痕AI', provider: '无痕AI', baseUrl: '/api/wuhenai', description: '去水印/消除' },
     { id: 'seedance-2.0', name: 'Seedance 2.0', provider: 'Seedance', baseUrl: '/api/seedance', description: 'Seedance 官方' },
     { id: 'seedream', name: 'Seedream', provider: 'Seedream', baseUrl: 'https://api.seedream.com', description: '创意视频' },
     { id: 'gemini-video', name: 'Gemini Video', provider: 'Google', baseUrl: 'https://generativelanguage.googleapis.com', description: 'Google 视频' },
@@ -35,6 +36,7 @@ const presetModels = {
   ],
   image: [
     { id: 'hongniao-seedance', name: '红鸟AI Seedance', provider: '红鸟AI', baseUrl: '/api/hongniaoai', description: '🔥 推荐' },
+    { id: 'wuhen-ai', name: '无痕AI', provider: '无痕AI', baseUrl: '/api/wuhenai', description: '去水印/消除' },
     { id: 'seedance-2.0', name: 'Seedance 2.0', provider: 'Seedance', baseUrl: '/api/seedance', description: 'Seedance 官方' },
     { id: 'seedream', name: 'Seedream', provider: 'Seedream', baseUrl: 'https://api.seedream.com', description: '创意图片' },
     { id: 'gemini-image', name: 'Gemini Image', provider: 'Google', baseUrl: 'https://generativelanguage.googleapis.com', description: 'Google 图片' },
