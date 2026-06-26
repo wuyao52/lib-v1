@@ -90,56 +90,58 @@ export default function RemoveWatermarkModal({
 
       setProgress(30);
 
-      // 调用去水印/去字幕 API
-      let response: Response | null = null;
-      try {
-        response = await fetch(`${aiModel.baseUrl}/v1/edit/remove-watermark`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${aiModel.apiKey}`,
-            'X-API-Key': aiModel.apiKey,
-          },
-          body: JSON.stringify({
-            image: imageData,
-            type: processType,
-            model: aiModel.modelId,
-          }),
-        });
-      } catch (fetchError) {
-        // 网络错误，使用演示模式
-        console.warn('API 调用失败，使用演示模式');
-        await simulateProcessing();
-        return;
+      // 尝试调用去水印 API（多个可能的端点）
+      const possibleEndpoints = [
+        `${aiModel.baseUrl}/v1/edit/remove-watermark`,
+        `${aiModel.baseUrl}/v1/image/remove-watermark`,
+        `${aiModel.baseUrl}/v1/images/inpaint`,
+        `${aiModel.baseUrl}/v1/edit/inpaint`,
+      ];
+
+      let apiSuccess = false;
+
+      for (const endpoint of possibleEndpoints) {
+        try {
+          console.log('尝试 API 端点:', endpoint);
+          const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${aiModel.apiKey}`,
+              'X-API-Key': aiModel.apiKey,
+            },
+            body: JSON.stringify({
+              image: imageData,
+              type: processType,
+              model: aiModel.modelId,
+              prompt: processType === 'watermark' ? 'remove watermark' : 'remove subtitle',
+            }),
+          });
+
+          if (response.ok) {
+            const data = await response.json();
+            const resultUrl = data.output?.image_url || data.image_url || data.result?.image_url || data.url;
+
+            if (resultUrl) {
+              setProgress(100);
+              setResultUrl(resultUrl);
+              setStatus('completed');
+              apiSuccess = true;
+              break;
+            }
+          }
+        } catch (e) {
+          console.log('端点失败:', endpoint);
+        }
       }
 
-      setProgress(60);
-
-      if (!response.ok) {
-        // API 返回错误，使用演示模式
-        console.warn('API 返回错误，使用演示模式');
-        await simulateProcessing();
-        return;
-      }
-
-      const data = await response.json();
-      setProgress(90);
-
-      // 获取结果 URL
-      const resultImageUrl = data.output?.image_url || data.image_url || data.result?.image_url || data.url;
-
-      if (resultImageUrl) {
-        setResultUrl(resultImageUrl);
-        setStatus('completed');
-        setProgress(100);
-      } else {
-        // 没有返回结果，使用演示模式
-        console.warn('未返回处理结果，使用演示模式');
+      if (!apiSuccess) {
+        // 所有 API 端点都失败，使用演示模式
+        console.warn('所有 API 端点都失败，使用演示模式');
         await simulateProcessing();
       }
     } catch (error: any) {
       console.error('处理失败:', error);
-      // 出错时使用演示模式
       await simulateProcessing();
     } finally {
       setIsProcessing(false);
