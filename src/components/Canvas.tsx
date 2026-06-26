@@ -1,4 +1,5 @@
-import React, { useCallback, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
+import type { DragEvent as ReactDragEvent } from 'react';
 import {
   ReactFlow,
   Background,
@@ -42,246 +43,150 @@ export default function Canvas() {
   } = useProjectStore();
 
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
-
-  // 使用 ref 存储可变值，避免 useCallback 依赖
   const generationSourceNodeRef = useRef<string | null>(null);
   const generationPositionRef = useRef({ x: 0, y: 0 });
 
-  // 框选模式状态
   const [isSelectionMode, setIsSelectionMode] = useState(false);
-  // 拖放状态
   const [isDraggingFile, setIsDraggingFile] = useState(false);
-  // 生成弹窗状态
   const [showGenerationModal, setShowGenerationModal] = useState(false);
-  // 去水印弹窗状态
   const [showWatermarkModal, setShowWatermarkModal] = useState(false);
-  const [watermarkSourceUrl, setWatermarkSourceUrl] = useState<string>('');
+  const [watermarkSourceUrl, setWatermarkSourceUrl] = useState('');
   const [watermarkSourceType, setWatermarkSourceType] = useState<'image' | 'video'>('image');
 
-  // 检测是否为文件拖放
-  const hasFiles = (event: React.DragEvent) => {
-    return event.dataTransfer.types.includes('Files');
-  };
+  const hasFiles = (event: React.DragEvent) => event.dataTransfer.types.includes('Files');
 
-  // 获取文件类型
   const getFileType = (file: File): 'image' | 'video' | null => {
     if (file.type.startsWith('image/')) return 'image';
     if (file.type.startsWith('video/')) return 'video';
     return null;
   };
 
-  // 读取文件为 Data URL
-  const readFileAsDataURL = (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
+  const readFileAsDataURL = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(reader.result as string);
       reader.onerror = reject;
       reader.readAsDataURL(file);
     });
+
+  // 拖放处理
+  const onDragEnter = (event: React.DragEvent) => {
+    event.preventDefault();
+    if (hasFiles(event)) setIsDraggingFile(true);
   };
 
-  // 处理拖放进入
-  const onDragEnter = useCallback((event: React.DragEvent) => {
-    event.preventDefault();
-    if (hasFiles(event)) {
-      setIsDraggingFile(true);
-    }
-  }, []);
-
-  // 处理拖放
-  const onDragOver = useCallback((event: React.DragEvent) => {
+  const onDragOver = (event: React.DragEvent) => {
     event.preventDefault();
     event.dataTransfer.dropEffect = hasFiles(event) ? 'copy' : 'move';
-  }, []);
+  };
 
-  // 处理拖放离开
-  const onDragLeave = useCallback((event: React.DragEvent) => {
+  const onDragLeave = (event: React.DragEvent) => {
     event.preventDefault();
     const rect = reactFlowWrapper.current?.getBoundingClientRect();
     if (rect) {
       const { clientX, clientY } = event;
-      if (
-        clientX <= rect.left ||
-        clientX >= rect.right ||
-        clientY <= rect.top ||
-        clientY >= rect.bottom
-      ) {
+      if (clientX <= rect.left || clientX >= rect.right || clientY <= rect.top || clientY >= rect.bottom) {
         setIsDraggingFile(false);
       }
     }
-  }, []);
+  };
 
-  // 处理文件拖放
-  const handleFileDrop = useCallback(
-    async (event: React.DragEvent) => {
-      if (!project) return;
+  const handleFileDrop = async (event: React.DragEvent) => {
+    if (!project) return;
+    const files = Array.from(event.dataTransfer.files);
 
-      const files = Array.from(event.dataTransfer.files);
+    for (const file of files) {
+      const fileType = getFileType(file);
+      if (!fileType) continue;
 
-      for (const file of files) {
-        const fileType = getFileType(file);
-        if (!fileType) continue;
+      try {
+        const dataUrl = await readFileAsDataURL(file);
+        const fileName = file.name.replace(/\.[^/.]+$/, '');
 
-        const position = {
-          x: event.clientX - 200,
-          y: event.clientY - 100,
-        };
-
-        try {
-          const dataUrl = await readFileAsDataURL(file);
-          const fileName = file.name.replace(/\.[^/.]+$/, '');
-
-          const newNode = {
-            id: `scene-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
-            type: 'sceneNode' as const,
-            position: {
-              x: position.x + (files.indexOf(file) * 50),
-              y: position.y + (files.indexOf(file) * 50),
-            },
-            data: {
-              label: fileName || `${fileType === 'image' ? '图片' : '视频'}场景`,
-              type: fileType,
-              content: file.name,
-              duration: fileType === 'video' ? 10 : 5,
-              prompt: '',
-              generatedContent: dataUrl,
-              settings: {
-                style: project.settings.defaultStyle,
-                mood: '',
-                camera: '',
-                lighting: '',
-              },
-              status: 'completed' as const,
-              progress: 100,
-            },
-          };
-
-          addNode(newNode);
-        } catch (error) {
-          console.error('读取文件失败:', error);
-        }
-      }
-
-      setIsDraggingFile(false);
-    },
-    [project, addNode]
-  );
-
-  const onDrop = useCallback(
-    (event: React.DragEvent) => {
-      event.preventDefault();
-
-      if (hasFiles(event)) {
-        handleFileDrop(event);
-        return;
-      }
-
-      if (!project) return;
-
-      const type = event.dataTransfer.getData('application/reactflow');
-      if (!type) return;
-
-      const position = {
-        x: event.clientX - 200,
-        y: event.clientY - 100,
-      };
-
-      const newNode = {
-        id: `scene-${Date.now()}`,
-        type: 'sceneNode' as const,
-        position,
-        data: {
-          label: `新场景 ${project.nodes.length + 1}`,
-          type: type as any,
-          content: '',
-          duration: 5,
-          prompt: '',
-          settings: {
-            style: project.settings.defaultStyle,
-            mood: '',
-            camera: '',
-            lighting: '',
+        addNode({
+          id: `scene-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
+          type: 'sceneNode',
+          position: { x: event.clientX - 200, y: event.clientY - 100 },
+          data: {
+            label: fileName || `${fileType === 'image' ? '图片' : '视频'}场景`,
+            type: fileType,
+            content: file.name,
+            duration: fileType === 'video' ? 10 : 5,
+            prompt: '',
+            generatedContent: dataUrl,
+            settings: { style: project.settings.defaultStyle, mood: '', camera: '', lighting: '' },
+            status: 'completed',
+            progress: 100,
           },
-          status: 'idle' as const,
-          progress: 0,
-        },
-      };
+        });
+      } catch (error) {
+        console.error('读取文件失败:', error);
+      }
+    }
+    setIsDraggingFile(false);
+  };
 
-      addNode(newNode);
-    },
-    [project, addNode, handleFileDrop]
-  );
+  const onDrop = (event: React.DragEvent) => {
+    event.preventDefault();
+    if (hasFiles(event)) {
+      handleFileDrop(event);
+      return;
+    }
+    if (!project) return;
 
-  // 处理连接结束事件
-  const onConnectEnd: OnConnectEnd = useCallback(
-    (event, connectionState) => {
-      if (connectionState.isValid) return;
+    const type = event.dataTransfer.getData('application/reactflow');
+    if (!type) return;
 
-      const sourceNodeId = connectionState.fromNode?.id;
-      if (!sourceNodeId) return;
+    addNode({
+      id: `scene-${Date.now()}`,
+      type: 'sceneNode',
+      position: { x: event.clientX - 200, y: event.clientY - 100 },
+      data: {
+        label: `新场景 ${project.nodes.length + 1}`,
+        type: type as any,
+        content: '',
+        duration: 5,
+        prompt: '',
+        settings: { style: project.settings.defaultStyle, mood: '', camera: '', lighting: '' },
+        status: 'idle',
+        progress: 0,
+      },
+    });
+  };
 
-      const clientX = 'clientX' in event ? event.clientX : (event as TouchEvent).touches?.[0]?.clientX;
-      const clientY = 'clientY' in event ? event.clientY : (event as TouchEvent).touches?.[0]?.clientY;
+  // 连接结束处理
+  const onConnectEnd: OnConnectEnd = (event, connectionState) => {
+    if (connectionState.isValid) return;
+    const sourceNodeId = connectionState.fromNode?.id;
+    if (!sourceNodeId) return;
 
-      if (clientX === undefined || clientY === undefined) return;
+    const clientX = 'clientX' in event ? event.clientX : (event as TouchEvent).touches?.[0]?.clientX;
+    const clientY = 'clientY' in event ? event.clientY : (event as TouchEvent).touches?.[0]?.clientY;
+    if (clientX === undefined || clientY === undefined) return;
 
-      const wrapper = reactFlowWrapper.current;
-      if (!wrapper) return;
+    const wrapper = reactFlowWrapper.current;
+    if (!wrapper) return;
 
-      const rect = wrapper.getBoundingClientRect();
-      const x = clientX - rect.left;
-      const y = clientY - rect.top;
+    const rect = wrapper.getBoundingClientRect();
+    generationSourceNodeRef.current = sourceNodeId;
+    generationPositionRef.current = { x: clientX - rect.left, y: clientY - rect.top };
+    setShowGenerationModal(true);
+  };
 
-      // 使用 ref 存储值
-      generationSourceNodeRef.current = sourceNodeId;
-      generationPositionRef.current = { x, y };
-      setShowGenerationModal(true);
-    },
-    []
-  );
+  const handleConnect = (connection: Connection) => onConnect(connection);
 
-  // 处理普通连接
-  const handleConnect = useCallback(
-    (connection: Connection) => {
-      onConnect(connection);
-    },
-    [onConnect]
-  );
+  const handleGenerationSelect = (type: 'video' | 'image' | 'img2img', settings: GenerationSettings) => {
+    const sourceNode = generationSourceNodeRef.current;
+    if (!sourceNode || !project) return;
+    startGenerationWithType(sourceNode, type, settings, generationPositionRef.current);
+    setShowGenerationModal(false);
+    generationSourceNodeRef.current = null;
+  };
 
-  // 处理生成类型选择
-  const handleGenerationSelect = useCallback(
-    (type: 'video' | 'image' | 'img2img', settings: GenerationSettings) => {
-      const sourceNode = generationSourceNodeRef.current;
-      if (!sourceNode || !project) return;
-
-      startGenerationWithType(sourceNode, type, settings, generationPositionRef.current);
-
-      setShowGenerationModal(false);
-      generationSourceNodeRef.current = null;
-    },
-    [project, startGenerationWithType]
-  );
-
-  // 打开去水印弹窗
-  const handleOpenWatermarkModal = useCallback((sourceUrl?: string, sourceType?: 'image' | 'video') => {
-    setWatermarkSourceUrl(sourceUrl || '');
-    setWatermarkSourceType(sourceType || 'image');
-    setShowWatermarkModal(true);
-  }, []);
-
-  // 处理画布点击
-  const onPaneClick = useCallback(() => {
-    setSelectedNode(null);
-  }, [setSelectedNode]);
-
-  // 切换框选模式
-  const toggleSelectionMode = useCallback(() => {
-    setIsSelectionMode((prev) => !prev);
-  }, []);
+  const onPaneClick = () => setSelectedNode(null);
 
   if (!project) return null;
 
-  // 获取源节点信息
   const sourceNode = project.nodes.find(n => n.id === generationSourceNodeRef.current);
 
   return (
@@ -291,18 +196,15 @@ export default function Canvas() {
       onDragEnter={onDragEnter}
       onDragLeave={onDragLeave}
     >
-      {/* 工具按钮区域 */}
+      {/* 工具按钮 */}
       <div className="absolute top-20 right-4 z-50 flex flex-col gap-2">
         <button
-          onClick={toggleSelectionMode}
-          className={`
-            flex items-center gap-2 px-3 py-2 rounded-lg
-            text-xs font-medium transition-all
-            ${isSelectionMode
+          onClick={() => setIsSelectionMode(prev => !prev)}
+          className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-all ${
+            isSelectionMode
               ? 'bg-primary-600 text-white shadow-lg shadow-primary-500/30'
               : 'bg-dark-800/90 text-dark-300 hover:text-white border border-dark-600/50'
-            }
-          `}
+          }`}
           title={isSelectionMode ? '点击切换为拖拽模式' : '点击切换为框选模式'}
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeDasharray="3 2">
@@ -312,7 +214,11 @@ export default function Canvas() {
         </button>
 
         <button
-          onClick={() => handleOpenWatermarkModal()}
+          onClick={() => {
+            setWatermarkSourceUrl('');
+            setWatermarkSourceType('image');
+            setShowWatermarkModal(true);
+          }}
           className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-all
             bg-dark-800/90 text-dark-300 hover:text-white border border-dark-600/50 hover:border-cyan-500/50 hover:bg-cyan-500/10"
           title="去除水印"
@@ -323,11 +229,7 @@ export default function Canvas() {
       </div>
 
       {/* 提示信息 */}
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        className="absolute bottom-16 left-1/2 -translate-x-1/2 z-40"
-      >
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="absolute bottom-16 left-1/2 -translate-x-1/2 z-40">
         <div className="bg-dark-800/90 backdrop-blur-xl rounded-full px-4 py-2 border border-dark-600/50 shadow-xl">
           <div className="flex items-center gap-2 text-xs text-dark-400">
             <Wand2 className="w-3 h-3 text-primary-400" />
@@ -336,15 +238,10 @@ export default function Canvas() {
         </div>
       </motion.div>
 
-      {/* 文件拖放提示层 */}
+      {/* 文件拖放提示 */}
       <AnimatePresence>
         {isDraggingFile && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="absolute inset-0 z-[100] pointer-events-none"
-          >
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 z-[100] pointer-events-none">
             <div className="absolute inset-4 border-2 border-dashed border-primary-500 rounded-2xl bg-primary-500/10 backdrop-blur-sm flex items-center justify-center">
               <div className="text-center">
                 <div className="flex justify-center gap-6 mb-4">
@@ -391,11 +288,7 @@ export default function Canvas() {
         selectionMode={SelectionMode.Partial}
         multiSelectionKeyCode="Shift"
         selectionKeyCode={null}
-        defaultEdgeOptions={{
-          type: 'smoothstep',
-          animated: true,
-          style: { stroke: '#8b5cf6', strokeWidth: 2 },
-        }}
+        defaultEdgeOptions={{ type: 'smoothstep', animated: true, style: { stroke: '#8b5cf6', strokeWidth: 2 } }}
         className="bg-dark-950"
       >
         <Background variant={BackgroundVariant.Dots} gap={24} size={1.5} color="#334155" />
@@ -403,13 +296,7 @@ export default function Canvas() {
         <MiniMap
           style={minimapStyle}
           nodeColor={(node) => {
-            const colors: Record<string, string> = {
-              text: '#3b82f6',
-              image: '#a855f7',
-              video: '#f97316',
-              audio: '#22c55e',
-              transition: '#eab308',
-            };
+            const colors: Record<string, string> = { text: '#3b82f6', image: '#a855f7', video: '#f97316', audio: '#22c55e', transition: '#eab308' };
             return colors[node.data?.type as string] || '#64748b';
           }}
           maskColor="rgba(0, 0, 0, 0.7)"
@@ -418,7 +305,7 @@ export default function Canvas() {
         />
       </ReactFlow>
 
-      {/* 生成类型选择弹窗 */}
+      {/* 生成弹窗 */}
       <GenerationModal
         isOpen={showGenerationModal}
         onClose={() => {
