@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Type, Image, Video, Music, Wand2, Clock, Sparkles, AtSign } from 'lucide-react';
 import useProjectStore from '@/store/useProjectStore';
@@ -37,7 +37,7 @@ export default function NodePropertiesPanel() {
 
   const data = node.data as any;
 
-  // 获取可引用的节点列表（带简短名称）
+  // 获取可引用的节点列表
   const getMentionableNodes = () => {
     if (!project) return [];
 
@@ -62,8 +62,8 @@ export default function NodePropertiesPanel() {
       .sort((a, b) => (a.isConnected ? 0 : 1) - (b.isConnected ? 0 : 1));
   };
 
-  // 处理文本变化，检测@输入
-  const handleTextChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+  // 处理文本变化
+  const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value;
     const cursorPos = e.target.selectionStart || 0;
 
@@ -79,9 +79,7 @@ export default function NodePropertiesPanel() {
     const lastAtIndex = textBeforeCursor.lastIndexOf('@');
 
     if (lastAtIndex !== -1) {
-      // 检查@后面是否已经有内容（可能是已插入的引用）
       const textAfterAt = textBeforeCursor.substring(lastAtIndex + 1);
-      // 如果@后面没有空格或换行，说明正在输入
       if (!textAfterAt.includes(' ') && !textAfterAt.includes('\n')) {
         setShowMentionMenu(true);
         setMentionFilter(textAfterAt);
@@ -91,16 +89,15 @@ export default function NodePropertiesPanel() {
     } else {
       setShowMentionMenu(false);
     }
-  }, [selectedNode, updateNodeData]);
+  };
 
   // 插入引用
-  const handleMention = useCallback((nodeId: string, shortName: string) => {
+  const handleMention = (nodeId: string, shortName: string) => {
     const currentValue = data.prompt || data.content || '';
     const textBeforeCursor = currentValue.substring(0, cursorPosition);
     const lastAtIndex = textBeforeCursor.lastIndexOf('@');
 
     if (lastAtIndex !== -1) {
-      // 替换@及其后面的内容为引用
       const before = currentValue.substring(0, lastAtIndex);
       const after = currentValue.substring(cursorPosition);
       const mention = `@[${shortName}](${nodeId})`;
@@ -115,20 +112,19 @@ export default function NodePropertiesPanel() {
     setShowMentionMenu(false);
     setMentionFilter('');
 
-    // 重新聚焦到文本框
     setTimeout(() => {
       if (textareaRef.current) {
         textareaRef.current.focus();
       }
     }, 100);
-  }, [data.prompt, data.content, cursorPosition, selectedNode, updateNodeData]);
+  };
 
   // 处理键盘事件
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Escape') {
       setShowMentionMenu(false);
     }
-  }, []);
+  };
 
   return (
     <AnimatePresence>
