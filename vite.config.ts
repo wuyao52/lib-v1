@@ -24,7 +24,7 @@ export default defineConfig({
       '/api/toapis': {
         target: 'https://toapis.com',
         changeOrigin: true,
-        rewrite: (p) => p.replace(/^\/api\/toapis/, '/v1'),
+        rewrite: (p) => p.replace(/^\/api\/toapis\/v1/, '/v1').replace(/^\/api\/toapis/, '/v1'),
         secure: false,
         timeout: 30000,
       },

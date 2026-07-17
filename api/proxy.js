@@ -23,7 +23,8 @@ export default async function handler(req, res) {
     targetUrl = `https://open.hongniaoai.com/api/${targetPath}`;
   } else if (targetPath.startsWith('toapis/')) {
     // ToAPIs - OpenAI 兼容
-    targetPath = targetPath.replace(/^toapis\//, '');
+    // 移除 toapis/ 前缀和可能的重复 v1
+    targetPath = targetPath.replace(/^toapis\//, '').replace(/^v1\//, '');
     targetUrl = `https://toapis.com/v1/${targetPath}`;
   } else if (targetPath.startsWith('wuhenai/')) {
     // 无痕AI
