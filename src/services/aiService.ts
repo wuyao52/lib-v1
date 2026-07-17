@@ -230,16 +230,28 @@ export class SeedanceService extends AIService {
         throw new Error('请先配置 API Key');
       }
 
-      // 获取可用的视频模型
-      const videoModels = await this.getAvailableModels('video_generation');
+      // 获取所有可用模型
+      const allModels = await this.getAvailableModels();
+      const videoModels = allModels.filter((m: any) =>
+        m.type === 'video_generation' || m.type === 'video'
+      );
+
       let modelId = this.config.modelId;
 
       if (videoModels.length > 0) {
-        // 使用第一个可用的视频模型
         modelId = videoModels[0].id;
         console.log('使用视频模型:', modelId, videoModels[0].name);
+      } else if (allModels.length > 0) {
+        // 没有分类的视频模型，列出所有模型供选择
+        console.log('所有可用模型:', allModels.map(m => m.id));
+        // 如果配置的模型 ID 不在列表中，使用第一个
+        const found = allModels.find(m => m.id === modelId);
+        if (!found) {
+          modelId = allModels[0].id;
+          console.log('配置的模型不可用，使用第一个:', modelId);
+        }
       } else {
-        console.log('未找到视频模型，使用配置的模型:', modelId);
+        console.log('获取模型列表失败，使用配置的模型:', modelId);
       }
 
       // 确保 baseUrl 不以 /v1 结尾
@@ -404,13 +416,24 @@ export class SeedanceService extends AIService {
         throw new Error('请先配置 API Key');
       }
 
-      // 获取可用的图片模型
-      const imageModels = await this.getAvailableModels('image_generation');
+      // 获取所有可用模型
+      const allModels = await this.getAvailableModels();
+      const imageModels = allModels.filter((m: any) =>
+        m.type === 'image_generation' || m.type === 'image'
+      );
+
       let modelId = this.config.modelId;
 
       if (imageModels.length > 0) {
         modelId = imageModels[0].id;
         console.log('使用图片模型:', modelId, imageModels[0].name);
+      } else if (allModels.length > 0) {
+        console.log('所有可用模型:', allModels.map(m => m.id));
+        const found = allModels.find(m => m.id === modelId);
+        if (!found) {
+          modelId = allModels[0].id;
+          console.log('配置的模型不可用，使用第一个:', modelId);
+        }
       } else {
         console.log('未找到图片模型，使用配置的模型:', modelId);
       }
