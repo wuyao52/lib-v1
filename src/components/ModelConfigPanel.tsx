@@ -23,6 +23,8 @@ import type { AIModelConfig } from '@/types';
 // 预设模型
 const presetModels = {
   video: [
+    { id: 'toapis-sora2', name: 'Sora2 (ToAPIs)', provider: 'ToAPIs', baseUrl: '/api/toapis', description: 'OpenAI 兼容' },
+    { id: 'toapis-veo3', name: 'VEO3 (ToAPIs)', provider: 'ToAPIs', baseUrl: '/api/toapis', description: 'Google 视频' },
     { id: 'hongniao-seedance', name: '红鸟AI Seedance', provider: '红鸟AI', baseUrl: '/api/hongniaoai', description: '🔥 推荐' },
     { id: 'wuhen-ai', name: '无痕AI', provider: '无痕AI', baseUrl: '/api/wuhenai', description: '去水印/消除' },
     { id: 'seedance-2.0', name: 'Seedance 2.0', provider: 'Seedance', baseUrl: '/api/seedance', description: 'Seedance 官方' },
@@ -31,17 +33,17 @@ const presetModels = {
     { id: 'runway-gen-3', name: 'Runway Gen-3', provider: 'Runway', baseUrl: 'https://api.runway.com', description: '专业级' },
     { id: 'kling', name: 'Kling', provider: 'Kuaishou', baseUrl: 'https://api.kling.com', description: '快手' },
     { id: 'pika-labs', name: 'Pika Labs', provider: 'Pika', baseUrl: 'https://api.pika.art', description: '快速生成' },
-    { id: 'sora', name: 'Sora', provider: 'OpenAI', baseUrl: 'https://api.openai.com', description: 'OpenAI' },
     { id: 'custom', name: '自定义模型', provider: 'Custom', baseUrl: '', description: '自定义' },
   ],
   image: [
+    { id: 'toapis-gpt4o', name: 'GPT-4o Image (ToAPIs)', provider: 'ToAPIs', baseUrl: '/api/toapis', description: 'OpenAI 兼容' },
+    { id: 'toapis-gemini', name: 'Gemini Image (ToAPIs)', provider: 'ToAPIs', baseUrl: '/api/toapis', description: 'Google 图片' },
     { id: 'hongniao-seedance', name: '红鸟AI Seedance', provider: '红鸟AI', baseUrl: '/api/hongniaoai', description: '🔥 推荐' },
     { id: 'wuhen-ai', name: '无痕AI', provider: '无痕AI', baseUrl: '/api/wuhenai', description: '去水印/消除' },
     { id: 'seedance-2.0', name: 'Seedance 2.0', provider: 'Seedance', baseUrl: '/api/seedance', description: 'Seedance 官方' },
     { id: 'seedream', name: 'Seedream', provider: 'Seedream', baseUrl: 'https://api.seedream.com', description: '创意图片' },
     { id: 'gemini-image', name: 'Gemini Image', provider: 'Google', baseUrl: 'https://generativelanguage.googleapis.com', description: 'Google 图片' },
     { id: 'imagen-3', name: 'Imagen 3', provider: 'Google', baseUrl: 'https://generativelanguage.googleapis.com', description: 'Google 最新' },
-    { id: 'dall-e-3', name: 'DALL-E 3', provider: 'OpenAI', baseUrl: 'https://api.openai.com', description: 'OpenAI' },
     { id: 'midjourney', name: 'Midjourney', provider: 'Midjourney', baseUrl: 'https://api.midjourney.com', description: '艺术风格' },
     { id: 'stable-diffusion', name: 'Stable Diffusion', provider: 'Stability', baseUrl: 'https://api.stability.ai', description: '开源' },
     { id: 'custom', name: '自定义模型', provider: 'Custom', baseUrl: '', description: '自定义' },

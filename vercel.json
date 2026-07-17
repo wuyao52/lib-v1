@@ -3,6 +3,14 @@
     {
       "source": "/api/hongniaoai/:path*",
       "destination": "/api/proxy?path=hongniaoai/:path*"
+    },
+    {
+      "source": "/api/toapis/:path*",
+      "destination": "/api/proxy?path=toapis/:path*"
+    },
+    {
+      "source": "/api/wuhenai/:path*",
+      "destination": "/api/proxy?path=wuhenai/:path*"
     }
   ]
 }
