@@ -7,13 +7,15 @@ import {
   ExternalLink,
   Clock,
   Layers,
-  Sparkles,
   FolderOpen,
+  LogOut,
 } from 'lucide-react';
 import useProjectStore from '@/store/useProjectStore';
+import { useAuth } from '@/auth/AuthContext';
 
 export default function ProjectSelector() {
   const { projects, createProject, openProject, deleteProject, refreshProjects } = useProjectStore();
+  const { user, logout } = useAuth();
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newDescription, setNewDescription] = useState('');
@@ -75,9 +77,9 @@ export default function ProjectSelector() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <Sparkles className="w-4 h-4 text-primary-400" />
-          <span className="text-sm text-dark-300">无限画布 · AI 驱动 · 创意无限</span>
+        <div className="flex items-center gap-3">
+          <div className="text-right hidden sm:block"><p className="text-sm text-dark-200">{user?.name}</p><p className="text-[10px] text-dark-500">{user?.email}</p></div>
+          <button onClick={() => logout()} className="p-2 rounded-lg text-dark-400 hover:text-white hover:bg-dark-700" title="退出登录"><LogOut className="w-4 h-4" /></button>
         </div>
       </motion.header>
 
