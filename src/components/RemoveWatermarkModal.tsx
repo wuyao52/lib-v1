@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   X,
@@ -36,6 +36,17 @@ export default function RemoveWatermarkModal({
   const [processType, setProcessType] = useState<'watermark' | 'subtitle'>('watermark');
   const [statusMessage, setStatusMessage] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const objectUrlRef = useRef<string | null>(null);
+
+  useEffect(() => () => {
+    if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+  }, []);
+
+  const setFilePreview = (selectedFile: File) => {
+    if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+    objectUrlRef.current = URL.createObjectURL(selectedFile);
+    setPreviewUrl(objectUrlRef.current);
+  };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
@@ -45,8 +56,7 @@ export default function RemoveWatermarkModal({
       setStatus('idle');
       setProgress(0);
       setStatusMessage('');
-      const url = URL.createObjectURL(selectedFile);
-      setPreviewUrl(url);
+      setFilePreview(selectedFile);
     }
   };
 
@@ -60,8 +70,7 @@ export default function RemoveWatermarkModal({
       setStatus('idle');
       setProgress(0);
       setStatusMessage('');
-      const url = URL.createObjectURL(droppedFile);
-      setPreviewUrl(url);
+      setFilePreview(droppedFile);
     }
   };
 
@@ -74,110 +83,21 @@ export default function RemoveWatermarkModal({
     setStatusMessage('正在初始化...');
 
     try {
-      // 获取无痕AI配置
       const wuhenModel = project?.settings.multiModel?.imageModel;
       const isWuhenAI = wuhenModel?.provider === '无痕AI' || wuhenModel?.baseUrl?.includes('wuhenai');
 
       if (isWuhenAI && wuhenModel?.apiKey) {
-        // 使用无痕AI API
-        await processWithWuhenAI(wuhenModel);
+        throw new Error('无痕AI真实任务协议尚未完成验证，已阻止提交以避免消耗额度或返回伪结果');
       } else {
-        // 使用演示模式
         await simulateProcessing();
       }
     } catch (error: any) {
       console.error('处理失败:', error);
       setStatus('error');
       setStatusMessage(error.message || '处理失败');
-      // 回退到演示模式
-      await simulateProcessing();
     } finally {
       setIsProcessing(false);
     }
-  };
-
-  // 使用无痕AI处理
-  const processWithWuhenAI = async (model: any) => {
-    setStatusMessage('正在获取访问令牌...');
-
-    // 1. 获取 access_token
-    const tokenResponse = await fetch(`/api/wuhenai/v2/user/access_token?api_key=${model.apiKey}`, {
-      method: 'GET',
-      headers: { 'Content-Type': 'application/json' },
-    });
-
-    const tokenData = await tokenResponse.json();
-    if (tokenData.code !== 0) {
-      throw new Error(tokenData.message || '获取令牌失败');
-    }
-
-    const accessToken = tokenData.data.access_token;
-    setProgress(20);
-    setStatusMessage('正在上传文件...');
-
-    // 2. 将文件转换为可访问的 URL（这里使用 base64 或预签名 URL）
-    let fileUrl = previewUrl;
-    if (file) {
-      fileUrl = await readFileAsDataURL(file);
-    }
-
-    setProgress(40);
-    setStatusMessage('正在创建处理任务...');
-
-    // 3. 创建去水印/去字幕任务
-    const taskEndpoint = processType === 'watermark' ? '/v2/video_removal' : '/v2/video_removal';
-
-    const taskResponse = await fetch(`/api/wuhenai${taskEndpoint}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${accessToken}`,
-      },
-      body: JSON.stringify({
-        video_url: fileUrl,
-        model: 'video_removal_std',
-        method: 'all_area',
-        upload_url: '', // 需要用户提供上传地址
-      }),
-    });
-
-    const taskData = await taskResponse.json();
-    if (taskData.code !== 0) {
-      throw new Error(taskData.message || '创建任务失败');
-    }
-
-    const taskId = taskData.data.task_id;
-    setProgress(60);
-    setStatusMessage('任务已创建，等待处理...');
-
-    // 4. 轮询任务状态
-    let attempts = 0;
-    const maxAttempts = 60;
-
-    while (attempts < maxAttempts) {
-      await new Promise(resolve => setTimeout(resolve, 3000));
-
-      const statusResponse = await fetch(`/api/wuhenai/v2/user/me`, {
-        headers: { 'Authorization': `Bearer ${accessToken}` },
-      });
-
-      // 更新进度
-      const currentProgress = 60 + Math.min(35, attempts * 2);
-      setProgress(currentProgress);
-      setStatusMessage(`处理中... ${currentProgress}%`);
-
-      attempts++;
-
-      // 模拟完成（实际应该查询任务状态）
-      if (attempts >= 10) {
-        break;
-      }
-    }
-
-    setProgress(100);
-    setStatusMessage('处理完成！');
-    setResultUrl(previewUrl); // 实际应该返回处理后的 URL
-    setStatus('completed');
   };
 
   // 模拟处理（演示模式）
@@ -203,15 +123,6 @@ export default function RemoveWatermarkModal({
 
     setResultUrl(previewUrl);
     setStatus('completed');
-  };
-
-  const readFileAsDataURL = (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
   };
 
   const handleDownload = () => {
@@ -270,7 +181,7 @@ export default function RemoveWatermarkModal({
                     {processType === 'watermark' ? '去除水印' : '去除字幕'}
                   </h2>
                   <p className="text-xs text-dark-400">
-                    {isWuhenConfigured ? '使用无痕AI处理' : '演示模式'}
+                    {isWuhenConfigured ? '接口待验证' : '演示模式'}
                   </p>
                 </div>
               </div>
@@ -317,12 +228,12 @@ export default function RemoveWatermarkModal({
                   </div>
                 </div>
               ) : (
-                <div className="p-3 rounded-lg bg-green-500/10 border border-green-500/30">
+                <div className="p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/30">
                   <div className="flex items-start gap-2">
-                    <CheckCircle2 className="w-4 h-4 text-green-400 mt-0.5 flex-shrink-0" />
-                    <div className="text-xs text-green-300">
-                      <p className="font-medium">已配置无痕AI</p>
-                      <p className="text-green-400/70">将使用无痕AI专业接口处理</p>
+                    <Info className="w-4 h-4 text-yellow-400 mt-0.5 flex-shrink-0" />
+                    <div className="text-xs text-yellow-300">
+                      <p className="font-medium">已检测到无痕AI配置</p>
+                      <p className="text-yellow-400/70">真实任务协议尚未验证，当前会阻止提交以保护额度</p>
                     </div>
                   </div>
                 </div>
