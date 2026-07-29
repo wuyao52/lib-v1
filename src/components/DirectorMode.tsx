@@ -4,9 +4,12 @@ import { apiRequest } from '@/services/apiClient';
 import { generateAIStoryboard, getStoryboardSourceBatches, mergeRegeneratedStoryboardShots, parseDirectorScript, type DirectorDurationMode } from '@/services/directorAIService';
 import { generateDirectorVideos, resolveDirectorVideoModel, type DirectorClipGeneration } from '@/services/directorVideoService';
 import { copyDirectorText, formatStoryboardForClipboard, readDirectorScriptFile } from '@/services/directorDocumentService';
+import { createInitialDirectorAssets } from '@/services/directorAssetService';
 import useProjectStore from '@/store/useProjectStore';
 import type { StoryboardPlan } from '@/types/director';
+import type { DirectorAsset } from '@/types/directorAsset';
 import type { UserSkill } from '@/types/skill';
+import DirectorAssetPreparation from '@/components/DirectorAssetPreparation';
 
 interface DirectorModeProps {
   isOpen: boolean;
@@ -45,6 +48,8 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
   const [clipGenerations, setClipGenerations] = useState<Record<string, DirectorClipGeneration>>({});
   const [isGeneratingDrama, setIsGeneratingDrama] = useState(false);
   const [previewClipId, setPreviewClipId] = useState<string | null>(null);
+  const [showAssetPreparation, setShowAssetPreparation] = useState(false);
+  const [directorAssets, setDirectorAssets] = useState<DirectorAsset[]>([]);
   const storyboardController = useRef<AbortController | null>(null);
   const videoController = useRef<AbortController | null>(null);
   const scriptFileInput = useRef<HTMLInputElement | null>(null);
@@ -81,6 +86,8 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
     setClipGenerations({});
     setPreviewClipId(null);
     setSelectedShotIds([]);
+    setShowAssetPreparation(false);
+    setDirectorAssets([]);
     setIsGenerating(true);
     setGenerationProgress(1);
     setGenerationStage('正在将完整剧本发送给文本模型读取…');
@@ -114,6 +121,7 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
       }
       setGenerationStage('');
       setGenerationProgress(100);
+      setDirectorAssets(createInitialDirectorAssets(completePlan));
       setNotice(`AI 分镜完成：${completePlan.shots.length} 个镜头，共 ${planDuration(completePlan)} 秒`);
     } catch (generationError) {
       if (generationError instanceof Error && generationError.name === 'AbortError') {
@@ -294,13 +302,18 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
     }
   };
 
+  const openAssetPreparation = () => {
+    if (!plan || isGeneratingDrama) return;
+    setError('');
+    if (!directorAssets.length) setDirectorAssets(createInitialDirectorAssets(plan));
+    setShowAssetPreparation(true);
+  };
+
   const generateShortDrama = async () => {
     if (!plan || isGeneratingDrama) return;
-    if (!resolveDirectorVideoModel(project)) {
-      setError('请先在模型设置中配置可用的视频模型、API 地址、模型 ID 和 API Key');
-      return;
-    }
+    if (!resolveDirectorVideoModel(project)) return;
     setError('');
+    setShowAssetPreparation(false);
     setPreviewClipId(null);
     setClipGenerations(Object.fromEntries(plan.shots.map((shot) => [shot.clipId, { clipId: shot.clipId, status: 'queued' }])));
     addShotsToCanvas(true);
@@ -308,9 +321,14 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
     videoController.current = controller;
     setIsGeneratingDrama(true);
     try {
-      await generateDirectorVideos({ plan, project, signal: controller.signal, onUpdate: updateClipGeneration });
+      await generateDirectorVideos({ plan, project, assets: directorAssets, signal: controller.signal, onUpdate: updateClipGeneration });
+      if (controller.signal.aborted) setNotice('短剧生成已停止');
     } catch (generationError) {
-      setError(generationError instanceof Error ? generationError.message : '短剧生成失败');
+      if (controller.signal.aborted || (generationError instanceof Error && generationError.name === 'AbortError')) {
+        setNotice('短剧生成已停止');
+      } else {
+        setError(generationError instanceof Error ? generationError.message : '短剧生成失败');
+      }
     } finally {
       videoController.current = null;
       setIsGeneratingDrama(false);
@@ -392,8 +410,9 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
             </div>}
           </section>
         </div>
-        {plan && !isGenerating && <footer className="min-h-16 px-5 py-3 border-t border-dark-700 flex flex-wrap items-center justify-between gap-3"><p className="text-xs text-dark-400">{plan.shots.length} 段 · 共 {totalDurationSec} 秒 · 已完成 {completedClips.length}/{plan.shots.length}</p><div className="flex items-center gap-2">{isGeneratingDrama ? <button onClick={stopVideoGeneration} className="h-10 px-4 rounded-md border border-red-500/40 text-red-300 hover:bg-red-500/10 flex items-center gap-2"><Square className="w-4 h-4" />停止生成</button> : <button onClick={() => void generateShortDrama()} className="h-10 px-4 rounded-md bg-green-600 hover:bg-green-500 flex items-center gap-2"><Clapperboard className="w-4 h-4" />一键生成短剧</button>}<button onClick={() => { addShotsToCanvas(false); onClose(); }} disabled={isGeneratingDrama} className="h-10 px-4 rounded-md bg-primary-600 hover:bg-primary-500 disabled:opacity-50 flex items-center gap-2"><Plus className="w-4 h-4" />仅加入分镜</button></div></footer>}
+        {plan && !isGenerating && <footer className="min-h-16 px-5 py-3 border-t border-dark-700 flex flex-wrap items-center justify-between gap-3"><p className="text-xs text-dark-400">{plan.shots.length} 段 · 共 {totalDurationSec} 秒 · 已完成 {completedClips.length}/{plan.shots.length}</p><div className="flex items-center gap-2">{isGeneratingDrama ? <button onClick={stopVideoGeneration} className="h-10 px-4 rounded-md border border-red-500/40 text-red-300 hover:bg-red-500/10 flex items-center gap-2"><Square className="w-4 h-4" />停止生成</button> : <button onClick={openAssetPreparation} className="h-10 px-4 rounded-md bg-green-600 hover:bg-green-500 flex items-center gap-2"><Clapperboard className="w-4 h-4" />一键生成短剧</button>}<button onClick={() => { addShotsToCanvas(false); onClose(); }} disabled={isGeneratingDrama} className="h-10 px-4 rounded-md bg-primary-600 hover:bg-primary-500 disabled:opacity-50 flex items-center gap-2"><Plus className="w-4 h-4" />仅加入分镜</button></div></footer>}
       </div>
+      {showAssetPreparation && plan && <DirectorAssetPreparation project={project} assets={directorAssets} videoModelAvailable={Boolean(resolveDirectorVideoModel(project))} onChange={setDirectorAssets} onClose={() => setShowAssetPreparation(false)} onConfirm={() => void generateShortDrama()} />}
     </div>
   );
 }
