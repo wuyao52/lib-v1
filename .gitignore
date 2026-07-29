@@ -29,3 +29,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Server runtime data
+server/data/
