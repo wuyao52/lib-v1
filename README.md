@@ -2,6 +2,57 @@
 
 一个基于无限画布的 AI 短剧生成工作台，支持使用文字、图片和视频生成 AI 短剧。
 
+## 当前架构
+
+- React + Vite 画布前端
+- Node.js + Express 服务端
+- `scrypt` 密码哈希与 HttpOnly Cookie 会话
+- 按账户隔离的 Skill 数据与本地项目命名空间
+- 基于 Seedance 2.0 sequence workflow 的导演模式
+
+## 本地运行
+
+```bash
+npm install
+npm run dev
+```
+
+前端默认运行在 `http://localhost:3000`，服务端默认运行在 `http://127.0.0.1:8787`。
+
+生产运行：
+
+```bash
+npm run build
+npm start
+```
+
+生产服务会同时提供 `/api/*` 与 `dist/` 前端资源。服务端运行数据位于 `server/data/`，部署时应挂载持久卷并限制文件访问权限。
+
+## 认证、导演模式与 Skill
+
+- 注册、登录、退出和会话恢复均由服务端验证，密码只保存为带随机盐的 `scrypt` 哈希。
+- 会话令牌通过 HttpOnly、SameSite Cookie 传递，数据库只保存令牌摘要。
+- 注册要求发送到注册邮箱的 6 位邮箱验证码；验证码有效期 10 分钟、60 秒内不可重复发送，并限制失败尝试次数。登录使用服务端生成的 5 位数字图片验证码，不发送登录邮件，图片验证码 5 分钟有效且只能使用一次。
+- Skill 支持在线创建、编辑以及导入带 frontmatter 的 `SKILL.md`；导入内容只作为创作指令，不执行代码。
+- 导演模式采用“全局规划、局部编译”，生成故事终点、场景、连续性锁、镜头合同和 Seedance 自然语言提示词。
+- 导演方案支持按镜头顺序一键批量生成视频，每段强制限制为 5-15 秒；生成状态和结果会同步写入画布，并可按分镜顺序连续预览。
+- 导演模式可通过选择或拖拽导入 TXT、Markdown、Fountain、JSON、DOC 和 DOCX 剧本文件，单文件上限 10 MB，并支持复制完整导演方案或单个镜头提示词。
+
+### SMTP 配置
+
+邮箱验证码不会在未配置邮件服务时降级为控制台输出。将 `.env.example` 复制为 `.env`，并配置：
+
+```env
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=your_smtp_username
+SMTP_PASS=your_smtp_app_password
+SMTP_FROM="AI Drama Studio <no-reply@example.com>"
+```
+
+使用 QQ 邮箱、163 邮箱等服务时，`SMTP_PASS` 通常应填写邮箱服务商生成的授权码，而不是邮箱登录密码。生产环境必须使用 HTTPS，否则启用 Secure Cookie 后浏览器不会保存会话。
+
 ## ✨ 功能特点
 
 ### 🎬 项目管理系统
