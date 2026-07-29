@@ -70,11 +70,11 @@ export class AIService {
     this.config = config;
   }
 
-  async generateVideo(prompt: string, settings: Record<string, any>): Promise<GenerationResponse> {
+  async generateVideo(prompt: string, settings: Record<string, any>, signal?: AbortSignal): Promise<GenerationResponse> {
     throw new Error('请使用具体的模型服务类');
   }
 
-  async generateImage(prompt: string, settings: Record<string, any>): Promise<GenerationResponse> {
+  async generateImage(prompt: string, settings: Record<string, any>, signal?: AbortSignal): Promise<GenerationResponse> {
     throw new Error('请使用具体的模型服务类');
   }
 
@@ -202,7 +202,7 @@ export class SeedanceService extends AIService {
       if (response.ok) {
         const data = await safeJsonParse(response);
         console.log('模型列表响应:', data);
-        const models = data.data?.models || [];
+        const models = data.data?.models || data.models || (Array.isArray(data.data) ? data.data : []);
         console.log('可用模型:', models.map((m: any) => ({ id: m.id, name: m.name, type: m.type })));
 
         if (type) {
@@ -220,7 +220,7 @@ export class SeedanceService extends AIService {
   }
 
   // 创建视频任务
-  async generateVideo(prompt: string, settings: Record<string, any> = {}): Promise<GenerationResponse> {
+  async generateVideo(prompt: string, settings: Record<string, any> = {}, signal?: AbortSignal): Promise<GenerationResponse> {
     try {
       if (!this.config.baseUrl || !isValidUrl(this.config.baseUrl)) {
         throw new Error(`无效的 API 地址: "${this.config.baseUrl}"`);
@@ -230,29 +230,8 @@ export class SeedanceService extends AIService {
         throw new Error('请先配置 API Key');
       }
 
-      // 获取所有可用模型
-      const allModels = await this.getAvailableModels();
-      const videoModels = allModels.filter((m: any) =>
-        m.type === 'video_generation' || m.type === 'video'
-      );
-
       let modelId = this.config.modelId;
-
-      if (videoModels.length > 0) {
-        modelId = videoModels[0].id;
-        console.log('使用视频模型:', modelId, videoModels[0].name);
-      } else if (allModels.length > 0) {
-        // 没有分类的视频模型，列出所有模型供选择
-        console.log('所有可用模型:', allModels.map(m => m.id));
-        // 如果配置的模型 ID 不在列表中，使用第一个
-        const found = allModels.find(m => m.id === modelId);
-        if (!found) {
-          modelId = allModels[0].id;
-          console.log('配置的模型不可用，使用第一个:', modelId);
-        }
-      } else {
-        console.log('获取模型列表失败，使用配置的模型:', modelId);
-      }
+      if (!modelId) throw new Error('请先选择视频模型');
 
       // 确保 baseUrl 不以 /v1 结尾
       const baseUrl = this.config.baseUrl.replace(/\/v1\/?$/, '');
@@ -279,6 +258,8 @@ export class SeedanceService extends AIService {
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 60000);
+      const abortFromCaller = () => controller.abort();
+      signal?.addEventListener('abort', abortFromCaller, { once: true });
 
       try {
         const response = await fetch(url, {
@@ -303,7 +284,7 @@ export class SeedanceService extends AIService {
         // 异步任务 - 轮询结果
         if (data.id && (data.status === 'queued' || data.status === 'processing')) {
           console.log('任务已创建，taskId:', data.id);
-          return await this.pollVideoResult(data.id);
+          return await this.pollVideoResult(data.id, signal);
         }
 
         // 同步返回
@@ -315,9 +296,12 @@ export class SeedanceService extends AIService {
       } catch (fetchError: any) {
         clearTimeout(timeoutId);
         if (fetchError.name === 'AbortError') {
+          if (signal?.aborted) throw new Error('用户取消生成');
           throw new Error('请求超时（60秒）');
         }
         throw new Error(analyzeFetchError(fetchError, url));
+      } finally {
+        signal?.removeEventListener('abort', abortFromCaller);
       }
     } catch (error: any) {
       console.error('视频生成失败:', error);
@@ -326,7 +310,7 @@ export class SeedanceService extends AIService {
   }
 
   // 轮询视频任务
-  private async pollVideoResult(taskId: string): Promise<GenerationResponse> {
+  private async pollVideoResult(taskId: string, signal?: AbortSignal): Promise<GenerationResponse> {
     const maxAttempts = 90; // 增加到 90 次（约 4.5 分钟）
     const pollInterval = 3000;
     const baseUrl = this.config.baseUrl.replace(/\/v1\/?$/, '');
@@ -334,6 +318,7 @@ export class SeedanceService extends AIService {
     console.log('开始轮询视频任务:', taskId);
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (signal?.aborted) throw new DOMException('用户取消生成', 'AbortError');
       await new Promise(resolve => setTimeout(resolve, pollInterval));
 
       const url = `${baseUrl}/v1/videos/${taskId}`;
@@ -346,6 +331,7 @@ export class SeedanceService extends AIService {
             'Authorization': `Bearer ${this.config.apiKey}`,
             'X-API-Key': this.config.apiKey,
           },
+          signal,
         });
 
         const data = await safeJsonParse(response);
@@ -406,7 +392,7 @@ export class SeedanceService extends AIService {
   }
 
   // 创建图片任务
-  async generateImage(prompt: string, settings: Record<string, any> = {}): Promise<GenerationResponse> {
+  async generateImage(prompt: string, settings: Record<string, any> = {}, signal?: AbortSignal): Promise<GenerationResponse> {
     try {
       if (!this.config.baseUrl || !isValidUrl(this.config.baseUrl)) {
         throw new Error(`无效的 API 地址: "${this.config.baseUrl}"`);
@@ -416,27 +402,8 @@ export class SeedanceService extends AIService {
         throw new Error('请先配置 API Key');
       }
 
-      // 获取所有可用模型
-      const allModels = await this.getAvailableModels();
-      const imageModels = allModels.filter((m: any) =>
-        m.type === 'image_generation' || m.type === 'image'
-      );
-
       let modelId = this.config.modelId;
-
-      if (imageModels.length > 0) {
-        modelId = imageModels[0].id;
-        console.log('使用图片模型:', modelId, imageModels[0].name);
-      } else if (allModels.length > 0) {
-        console.log('所有可用模型:', allModels.map(m => m.id));
-        const found = allModels.find(m => m.id === modelId);
-        if (!found) {
-          modelId = allModels[0].id;
-          console.log('配置的模型不可用，使用第一个:', modelId);
-        }
-      } else {
-        console.log('未找到图片模型，使用配置的模型:', modelId);
-      }
+      if (!modelId) throw new Error('请先选择图片模型');
 
       // 确保 baseUrl 不以 /v1 结尾
       const baseUrl = this.config.baseUrl.replace(/\/v1\/?$/, '');
@@ -450,13 +417,19 @@ export class SeedanceService extends AIService {
 
       if (settings.images && settings.images.length > 0) {
         requestBody.images = settings.images;
+      } else if (settings.init_image) {
+        requestBody.images = [settings.init_image];
       }
+      if (settings.strength !== undefined) requestBody.strength = settings.strength;
+      if (settings.negative_prompt) requestBody.negative_prompt = settings.negative_prompt;
 
       console.log('调用图片生成 API:', url);
       console.log('请求参数:', requestBody);
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 60000);
+      const abortFromCaller = () => controller.abort();
+      signal?.addEventListener('abort', abortFromCaller, { once: true });
 
       try {
         const response = await fetch(url, {
@@ -481,7 +454,7 @@ export class SeedanceService extends AIService {
         // 异步任务 - 轮询结果
         if (data.id && (data.status === 'queued' || data.status === 'processing')) {
           console.log('任务已创建，taskId:', data.id);
-          return await this.pollImageResult(data.id);
+          return await this.pollImageResult(data.id, signal);
         }
 
         // 同步返回
@@ -493,9 +466,12 @@ export class SeedanceService extends AIService {
       } catch (fetchError: any) {
         clearTimeout(timeoutId);
         if (fetchError.name === 'AbortError') {
+          if (signal?.aborted) throw new Error('用户取消生成');
           throw new Error('请求超时（60秒）');
         }
         throw new Error(analyzeFetchError(fetchError, url));
+      } finally {
+        signal?.removeEventListener('abort', abortFromCaller);
       }
     } catch (error: any) {
       console.error('图片生成失败:', error);
@@ -504,12 +480,13 @@ export class SeedanceService extends AIService {
   }
 
   // 轮询图片任务
-  private async pollImageResult(taskId: string): Promise<GenerationResponse> {
+  private async pollImageResult(taskId: string, signal?: AbortSignal): Promise<GenerationResponse> {
     const maxAttempts = 30;
     const pollInterval = 3000;
     const baseUrl = this.config.baseUrl.replace(/\/v1\/?$/, '');
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (signal?.aborted) throw new DOMException('用户取消生成', 'AbortError');
       await new Promise(resolve => setTimeout(resolve, pollInterval));
 
       const url = `${baseUrl}/v1/images/${taskId}`;
@@ -522,6 +499,7 @@ export class SeedanceService extends AIService {
             'Authorization': `Bearer ${this.config.apiKey}`,
             'X-API-Key': this.config.apiKey,
           },
+          signal,
         });
 
         const data = await safeJsonParse(response);
@@ -556,7 +534,7 @@ export class SeedanceService extends AIService {
 
 // Google Gemini API 服务
 export class GeminiService extends AIService {
-  async generateVideo(prompt: string, settings: Record<string, any> = {}): Promise<GenerationResponse> {
+  async generateVideo(prompt: string, settings: Record<string, any> = {}, signal?: AbortSignal): Promise<GenerationResponse> {
     try {
       if (!this.config.baseUrl || !isValidUrl(this.config.baseUrl)) {
         throw new Error(`无效的 API 地址: "${this.config.baseUrl}"`);
@@ -575,6 +553,7 @@ export class GeminiService extends AIService {
           contents: [{ parts: [{ text: `Generate a video: ${prompt}` }] }],
           generationConfig: settings,
         }),
+        signal,
       });
 
       const data = await safeJsonParse(response);
@@ -597,7 +576,7 @@ export class GeminiService extends AIService {
     }
   }
 
-  async generateImage(prompt: string, settings: Record<string, any> = {}): Promise<GenerationResponse> {
+  async generateImage(prompt: string, settings: Record<string, any> = {}, signal?: AbortSignal): Promise<GenerationResponse> {
     try {
       if (!this.config.baseUrl || !isValidUrl(this.config.baseUrl)) {
         throw new Error(`无效的 API 地址: "${this.config.baseUrl}"`);
@@ -616,6 +595,7 @@ export class GeminiService extends AIService {
           contents: [{ parts: [{ text: `Generate an image: ${prompt}` }] }],
           generationConfig: settings,
         }),
+        signal,
       });
 
       const data = await safeJsonParse(response);
