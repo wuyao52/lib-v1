@@ -34,44 +34,6 @@ const defaultModel: AIModelConfig = {
   },
 };
 
-// 多模型配置（可分别配置不同用途的模型）
-interface MultiModelConfig {
-  textModel: AIModelConfig;   // 文本生成（如 DeepSeek）
-  videoModel: AIModelConfig;  // 视频生成（如 Seedance）
-  imageModel: AIModelConfig;  // 图片生成（如 Seedance）
-}
-
-// 默认多模型配置
-const defaultMultiModel: MultiModelConfig = {
-  textModel: {
-    id: 'deepseek-v4-pro',
-    name: 'DeepSeek V4 Pro',
-    provider: 'DeepSeek',
-    apiKey: '',
-    baseUrl: 'https://api.deepseek.com/v1',
-    modelId: 'deepseek-v4-pro',
-    parameters: {},
-  },
-  videoModel: {
-    id: 'seedance-2.0',
-    name: 'Seedance 2.0',
-    provider: 'Seedance',
-    apiKey: '',
-    baseUrl: 'https://api.seedance.com/v1',
-    modelId: 'seedance-2.0',
-    parameters: { quality: 'high', style: 'cinematic' },
-  },
-  imageModel: {
-    id: 'seedance-2.0',
-    name: 'Seedance 2.0',
-    provider: 'Seedance',
-    apiKey: '',
-    baseUrl: 'https://api.seedance.com/v1',
-    modelId: 'seedance-2.0',
-    parameters: { quality: 'high', style: 'cinematic' },
-  },
-};
-
 // 默认项目设置
 const defaultSettings: ProjectSettings = {
   resolution: { width: 1920, height: 1080 },
@@ -84,10 +46,32 @@ const defaultSettings: ProjectSettings = {
 // 生成唯一ID
 const generateId = () => `id-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
+let storageScope = 'unscoped';
+const getProjectListKey = () => `ai-drama-projects:${storageScope}`;
+const getProjectDataKey = (projectId: string) => `ai-drama-project:${storageScope}:${projectId}`;
+
+const migrateLegacyProjects = (targetScope: string) => {
+  const migrationOwnerKey = 'ai-drama-projects:migration-owner';
+  if (localStorage.getItem(migrationOwnerKey)) return;
+  const legacyProjects = localStorage.getItem('ai-drama-projects');
+  if (!legacyProjects) return;
+  try {
+    const projects: ProjectInfo[] = JSON.parse(legacyProjects);
+    localStorage.setItem(`ai-drama-projects:${targetScope}`, legacyProjects);
+    projects.forEach((project) => {
+      const legacyData = localStorage.getItem(`ai-drama-project-${project.id}`);
+      if (legacyData) localStorage.setItem(`ai-drama-project:${targetScope}:${project.id}`, legacyData);
+    });
+    localStorage.setItem(migrationOwnerKey, targetScope);
+  } catch (error) {
+    console.warn('旧项目迁移失败，原数据保持不变', error);
+  }
+};
+
 // 获取存储的项目列表
 const getStoredProjects = (): ProjectInfo[] => {
   try {
-    const stored = localStorage.getItem('ai-drama-projects');
+    const stored = localStorage.getItem(getProjectListKey());
     return stored ? JSON.parse(stored) : [];
   } catch {
     return [];
@@ -96,70 +80,85 @@ const getStoredProjects = (): ProjectInfo[] => {
 
 // 保存项目列表到本地存储
 const saveProjectsToStorage = (projects: ProjectInfo[]) => {
-  localStorage.setItem('ai-drama-projects', JSON.stringify(projects));
+  localStorage.setItem(getProjectListKey(), JSON.stringify(projects));
 };
 
-// 保存项目数据到本地存储
-const saveProjectDataToStorage = (project: DramaProject) => {
+const getSecretStorageKey = (projectId: string) => `ai-drama-project-secrets:${storageScope}:${projectId}`;
+
+const storeProjectSecrets = (project: DramaProject) => {
+  const { aiModel, multiModel } = project.settings;
+  sessionStorage.setItem(getSecretStorageKey(project.id), JSON.stringify({
+    aiModel: aiModel.apiKey,
+    textModel: multiModel?.textModel.apiKey || '',
+    videoModel: multiModel?.videoModel.apiKey || '',
+    imageModel: multiModel?.imageModel.apiKey || '',
+  }));
+};
+
+const createPersistableProject = (project: DramaProject): DramaProject => ({
+  ...project,
+  settings: {
+    ...project.settings,
+    aiModel: { ...project.settings.aiModel, apiKey: '' },
+    multiModel: project.settings.multiModel ? {
+      textModel: { ...project.settings.multiModel.textModel, apiKey: '' },
+      videoModel: { ...project.settings.multiModel.videoModel, apiKey: '' },
+      imageModel: { ...project.settings.multiModel.imageModel, apiKey: '' },
+    } : undefined,
+  },
+  nodes: project.nodes.map(node => ({
+    ...node,
+    data: {
+      ...node.data,
+      generatedContent: node.data.generatedContent?.startsWith('data:') ? '' : node.data.generatedContent,
+      thumbnail: node.data.thumbnail?.startsWith('data:') ? '' : node.data.thumbnail,
+    },
+  })),
+});
+
+const restoreProjectSecrets = (project: DramaProject): DramaProject => {
   try {
-    // 清理大数据（base64 图片/视频），只保留 URL
-    const cleanProject = {
+    const secrets = JSON.parse(sessionStorage.getItem(getSecretStorageKey(project.id)) || '{}');
+    return {
       ...project,
-      nodes: project.nodes.map(node => ({
-        ...node,
-        data: {
-          ...node.data,
-          // 如果是 base64 数据，替换为空（只保留 http/https URL）
-          generatedContent: node.data.generatedContent?.startsWith('data:')
-            ? '' // 清理 base64 数据
-            : node.data.generatedContent,
-          thumbnail: node.data.thumbnail?.startsWith('data:')
-            ? ''
-            : node.data.thumbnail,
-        },
-      })),
+      settings: {
+        ...project.settings,
+        aiModel: { ...project.settings.aiModel, apiKey: secrets.aiModel || '' },
+        multiModel: project.settings.multiModel ? {
+          textModel: { ...project.settings.multiModel.textModel, apiKey: secrets.textModel || '' },
+          videoModel: { ...project.settings.multiModel.videoModel, apiKey: secrets.videoModel || '' },
+          imageModel: { ...project.settings.multiModel.imageModel, apiKey: secrets.imageModel || '' },
+        } : undefined,
+      },
     };
+  } catch {
+    return project;
+  }
+};
 
-    const dataStr = JSON.stringify(cleanProject);
-    const sizeInMB = new Blob([dataStr]).size / (1024 * 1024);
-
-    // 如果数据超过 5MB，警告用户
-    if (sizeInMB > 5) {
-      console.warn(`项目数据较大 (${sizeInMB.toFixed(2)} MB)，可能会超出 localStorage 限制`);
-    }
-
-    localStorage.setItem(`ai-drama-project-${project.id}`, dataStr);
+// 保存项目数据到本地存储。失败时绝不删除其他项目。
+const saveProjectDataToStorage = (project: DramaProject): boolean => {
+  try {
+    storeProjectSecrets(project);
+    const dataStr = JSON.stringify(createPersistableProject(project));
+    localStorage.setItem(getProjectDataKey(project.id), dataStr);
+    return true;
   } catch (error: any) {
     if (error.name === 'QuotaExceededError') {
-      console.error('localStorage 空间不足，尝试清理旧数据...');
-      // 尝试清理其他项目的缓存
-      try {
-        const keys = Object.keys(localStorage).filter(k => k.startsWith('ai-drama-project-'));
-        if (keys.length > 1) {
-          // 删除其他项目的数据腾出空间
-          keys.forEach(key => {
-            if (key !== `ai-drama-project-${project.id}`) {
-              localStorage.removeItem(key);
-            }
-          });
-          // 重试保存
-          localStorage.setItem(`ai-drama-project-${project.id}`, JSON.stringify(project));
-        }
-      } catch {
-        console.error('无法保存项目数据，localStorage 空间不足');
-        alert('保存失败：浏览器存储空间不足。请清理一些项目或刷新页面。');
-      }
+      console.error('localStorage 空间不足，项目未保存；未删除任何其他项目');
+      alert('保存失败：浏览器存储空间不足。请先导出项目或主动删除不需要的项目。');
     } else {
       console.error('保存项目数据失败:', error);
     }
+    return false;
   }
 };
 
 // 从本地存储加载项目数据
 const loadProjectDataFromStorage = (projectId: string): DramaProject | null => {
   try {
-    const stored = localStorage.getItem(`ai-drama-project-${projectId}`);
-    return stored ? JSON.parse(stored) : null;
+    const stored = localStorage.getItem(getProjectDataKey(projectId));
+    return stored ? restoreProjectSecrets(JSON.parse(stored)) : null;
   } catch {
     return null;
   }
@@ -214,6 +213,7 @@ interface ProjectStore {
   closeProject: () => void;
   deleteProject: (projectId: string) => void;
   refreshProjects: () => void;
+  setUserScope: (userId: string) => void;
 
   // 画布操作
   onNodesChange: OnNodesChange;
@@ -351,7 +351,8 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
   },
 
   deleteProject: (projectId) => {
-    localStorage.removeItem(`ai-drama-project-${projectId}`);
+    localStorage.removeItem(getProjectDataKey(projectId));
+    sessionStorage.removeItem(getSecretStorageKey(projectId));
     const updatedProjects = get().projects.filter((p) => p.id !== projectId);
     saveProjectsToStorage(updatedProjects);
     set({ projects: updatedProjects });
@@ -359,6 +360,21 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
 
   refreshProjects: () => {
     set({ projects: getStoredProjects() });
+  },
+
+  setUserScope: (userId) => {
+    const nextScope = userId.replace(/[^a-zA-Z0-9-]/g, '');
+    if (!nextScope || nextScope === storageScope) return;
+    migrateLegacyProjects(nextScope);
+    storageScope = nextScope;
+    set({
+      projects: getStoredProjects(),
+      project: null,
+      currentView: 'home',
+      selectedNode: null,
+      history: [],
+      historyIndex: -1,
+    });
   },
 
   // 画布操作
@@ -625,21 +641,21 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
       provider: aiModel.provider,
       hasApiKey: !!aiModel.apiKey,
       apiKeyLength: aiModel.apiKey?.length || 0,
-      apiKeyPreview: aiModel.apiKey ? aiModel.apiKey.substring(0, 15) + '...' : '空',
       baseUrl: aiModel.baseUrl,
     });
 
     // 检查是否有 API Key
     if (!aiModel.apiKey) {
-      // 没有 API Key，使用模拟生成
-      console.warn('未配置 API Key，使用模拟生成模式');
-      console.warn('当前模型配置:', aiModel);
-      simulateGeneration(nodeId, newNodeId, get, set);
+      markGenerationFailed(nodeId, newNodeId, '请先配置 API Key', get, set);
       return;
     }
 
     // 使用工厂函数创建 AI 服务实例（根据模型自动选择）
     const aiService = createAIService(aiModel);
+    const controller = new AbortController();
+    const activeGenerations = new Map(get().activeGenerations);
+    activeGenerations.set(newNodeId, controller);
+    set({ activeGenerations });
 
     // 异步执行生成
     (async () => {
@@ -677,12 +693,12 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
 
         // 根据类型调用不同的生成方法
         if (node.data.type === 'video') {
-          result = await aiService.generateVideo(prompt, settings);
+          result = await aiService.generateVideo(prompt, settings, controller.signal);
         } else if (node.data.type === 'image') {
-          result = await aiService.generateImage(prompt, settings);
+          result = await aiService.generateImage(prompt, settings, controller.signal);
         } else {
           // 文本类型默认生成视频
-          result = await aiService.generateVideo(prompt, settings);
+          result = await aiService.generateVideo(prompt, settings, controller.signal);
         }
 
         // 更新进度：处理结果
@@ -706,23 +722,13 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
             content: 'AI 生成完成 - 点击预览',
           });
         } else {
-          // API 生成失败，回退到演示模式
-          console.warn('API 生成失败，使用演示模式:', result.error);
-          simulateGeneration(nodeId, newNodeId, get, set);
+          markGenerationFailed(nodeId, newNodeId, result.error || 'AI 生成失败', get, set);
         }
       } catch (error: any) {
-        console.error('AI 生成失败，回退到演示模式:', error);
-
-        // 更新提示信息
-        get().updateNodeData(newNodeId, {
-          progress: 50,
-          content: 'API 调用失败，切换到演示模式...',
-        });
-
-        // 回退到演示模式
-        setTimeout(() => {
-          simulateGeneration(nodeId, newNodeId, get, set);
-        }, 1000);
+        const message = controller.signal.aborted ? '用户取消生成' : error.message || 'AI 生成失败';
+        markGenerationFailed(nodeId, newNodeId, message, get, set);
+      } finally {
+        finishGenerationTask(newNodeId, get, set);
       }
     })();
   },
@@ -876,20 +882,21 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
       provider: aiModel.provider,
       hasApiKey: !!aiModel.apiKey,
       apiKeyLength: aiModel.apiKey?.length || 0,
-      apiKeyPreview: aiModel.apiKey ? aiModel.apiKey.substring(0, 15) + '...' : '空',
       baseUrl: aiModel.baseUrl,
     });
 
     // 检查是否有 API Key
     if (!aiModel.apiKey) {
-      // 没有 API Key，使用模拟生成
-      console.warn('未配置 API Key，使用模拟生成模式');
-      simulateGeneration(nodeId, newNodeId, get, set, type);
+      markGenerationFailed(nodeId, newNodeId, '请先配置 API Key', get, set);
       return;
     }
 
     // 使用工厂函数创建 AI 服务实例（根据模型自动选择）
     const aiService = createAIService(aiModel);
+    const controller = new AbortController();
+    const activeGenerations = new Map(get().activeGenerations);
+    activeGenerations.set(newNodeId, controller);
+    set({ activeGenerations });
 
     // 异步执行生成
     (async () => {
@@ -908,6 +915,8 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
           style: settings.style,
           resolution: isImage ? undefined : '1080p',
           aspect_ratio: isImage ? '1:1' : '16:9',
+          duration: settings.duration,
+          seconds: settings.duration,
         };
 
         console.log('生成设置 (startGenerationWithType):', { type, genSettings });
@@ -922,7 +931,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
 
         // 根据类型调用不同的生成方法
         if (type === 'video') {
-          result = await aiService.generateVideo(settings.prompt, genSettings);
+          result = await aiService.generateVideo(settings.prompt, genSettings, controller.signal);
         } else if (type === 'img2img') {
           // 图生图：获取源图片 URL
           const sourceImageUrl = node.data.generatedContent;
@@ -931,9 +940,9 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
             init_image: sourceImageUrl,
             strength: settings.strength || 0.7,
             negative_prompt: settings.negativePrompt,
-          });
+          }, controller.signal);
         } else {
-          result = await aiService.generateImage(settings.prompt, genSettings);
+          result = await aiService.generateImage(settings.prompt, genSettings, controller.signal);
         }
 
         // 更新进度：处理结果
@@ -957,23 +966,13 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
             content: 'AI 生成完成 - 点击预览',
           });
         } else {
-          // API 生成失败，回退到演示模式
-          console.warn('API 生成失败，使用演示模式:', result.error);
-          simulateGeneration(nodeId, newNodeId, get, set, type);
+          markGenerationFailed(nodeId, newNodeId, result.error || 'AI 生成失败', get, set);
         }
       } catch (error: any) {
-        console.error('AI 生成失败，回退到演示模式:', error);
-
-        // 更新提示信息
-        get().updateNodeData(newNodeId, {
-          progress: 50,
-          content: 'API 调用失败，切换到演示模式...',
-        });
-
-        // 回退到演示模式
-        setTimeout(() => {
-          simulateGeneration(nodeId, newNodeId, get, set, type);
-        }, 1000);
+        const message = controller.signal.aborted ? '用户取消生成' : error.message || 'AI 生成失败';
+        markGenerationFailed(nodeId, newNodeId, message, get, set);
+      } finally {
+        finishGenerationTask(newNodeId, get, set);
       }
     })();
   },
@@ -1030,7 +1029,11 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
 
     set({ isSaving: true });
 
-    saveProjectDataToStorage(project);
+    const saved = saveProjectDataToStorage(project);
+    if (!saved) {
+      set({ isSaving: false });
+      return;
+    }
 
     // 更新项目列表中的信息
     const updatedProjects = get().projects.map((p) =>
@@ -1057,7 +1060,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     const { project } = get();
     if (!project) return;
 
-    const dataStr = JSON.stringify(project, null, 2);
+    const dataStr = JSON.stringify(createPersistableProject(project), null, 2);
     const dataUri = 'data:application/json;charset=utf-8,' + encodeURIComponent(dataStr);
     const exportFileDefaultName = `${project.title}.json`;
 
@@ -1174,92 +1177,26 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
   },
 }));
 
-// 模拟生成函数（用于没有 API Key 时的演示模式）
-function simulateGeneration(
+function markGenerationFailed(
   sourceNodeId: string,
   newNodeId: string,
+  message: string,
   get: () => ProjectStore,
-  set: (partial: Partial<ProjectStore>) => void,
-  type?: string
+  set: (partial: Partial<ProjectStore>) => void
 ) {
-  // 使用可靠的公共视频源
-  const demoVideos = [
-    'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
-    'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
-    'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
-    'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4',
-  ];
+  get().updateNodeData(sourceNodeId, { status: 'error', error: message, progress: 0 });
+  get().updateNodeData(newNodeId, { status: 'error', error: message, progress: 0, content: message });
+  set({ isGenerating: false });
+}
 
-  const demoImages = [
-    'https://picsum.photos/seed/demo1/1920/1080',
-    'https://picsum.photos/seed/demo2/1920/1080',
-    'https://picsum.photos/seed/demo3/1920/1080',
-  ];
-
-  const demoImg2Img = [
-    'https://picsum.photos/seed/img2img1/1920/1080',
-    'https://picsum.photos/seed/img2img2/1920/1080',
-    'https://picsum.photos/seed/img2img3/1920/1080',
-  ];
-
-  const steps = [
-    { progress: 15, message: '正在分析提示词...' },
-    { progress: 30, message: '正在生成创意...' },
-    { progress: 50, message: '正在渲染画面...' },
-    { progress: 70, message: '正在优化细节...' },
-    { progress: 85, message: '正在添加特效...' },
-    { progress: 95, message: '正在完成处理...' },
-    { progress: 100, message: '生成完成！' },
-  ];
-
-  let stepIndex = 0;
-
-  const interval = setInterval(() => {
-    if (stepIndex >= steps.length) {
-      clearInterval(interval);
-
-      // 根据类型选择演示资源
-      const node = get().project?.nodes.find(n => n.id === newNodeId);
-      let demoUrls;
-
-      if (type === 'video') {
-        demoUrls = demoVideos;
-      } else if (type === 'img2img') {
-        demoUrls = demoImg2Img;
-      } else {
-        demoUrls = demoImages;
-      }
-
-      const randomUrl = demoUrls[Math.floor(Math.random() * demoUrls.length)];
-
-      // 更新源节点状态
-      get().updateNodeData(sourceNodeId, {
-        status: 'completed',
-        progress: 100,
-      });
-
-      // 更新新节点状态
-      get().updateNodeData(newNodeId, {
-        status: 'completed',
-        progress: 100,
-        generatedContent: randomUrl,
-        content: type === 'img2img'
-          ? '图生图演示完成（未配置 API Key）'
-          : '演示模式生成完成（未配置 API Key）',
-      });
-
-      set({ isGenerating: false });
-      return;
-    }
-
-    const step = steps[stepIndex];
-    get().updateNodeData(newNodeId, {
-      progress: step.progress,
-      content: step.message,
-    });
-
-    stepIndex++;
-  }, 600);
+function finishGenerationTask(
+  nodeId: string,
+  get: () => ProjectStore,
+  set: (partial: Partial<ProjectStore>) => void
+) {
+  const activeGenerations = new Map(get().activeGenerations);
+  activeGenerations.delete(nodeId);
+  set({ activeGenerations, isGenerating: activeGenerations.size > 0 });
 }
 
 export default useProjectStore;
