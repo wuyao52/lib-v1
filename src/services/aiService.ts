@@ -51,6 +51,14 @@ function analyzeFetchError(error: any, url: string): string {
   return `连接失败: ${message}`;
 }
 
+function isUserCancellation(error: any, signal?: AbortSignal): boolean {
+  return Boolean(signal?.aborted || error?.name === 'AbortError');
+}
+
+function userCancellationError(): DOMException {
+  return new DOMException('用户取消生成', 'AbortError');
+}
+
 // AI 服务基类
 export class AIService {
   protected config: AIModelConfig;
@@ -296,7 +304,7 @@ export class SeedanceService extends AIService {
       } catch (fetchError: any) {
         clearTimeout(timeoutId);
         if (fetchError.name === 'AbortError') {
-          if (signal?.aborted) throw new Error('用户取消生成');
+          if (signal?.aborted) throw userCancellationError();
           throw new Error('请求超时（60秒）');
         }
         throw new Error(analyzeFetchError(fetchError, url));
@@ -304,6 +312,9 @@ export class SeedanceService extends AIService {
         signal?.removeEventListener('abort', abortFromCaller);
       }
     } catch (error: any) {
+      if (isUserCancellation(error, signal)) {
+        return { success: false, error: '用户取消生成' };
+      }
       console.error('视频生成失败:', error);
       return { success: false, error: error.message || '视频生成失败' };
     }
@@ -381,6 +392,7 @@ export class SeedanceService extends AIService {
           console.log(`生成进度: ${progress}%`);
         }
       } catch (error: any) {
+        if (isUserCancellation(error, signal)) throw userCancellationError();
         if (error.message.includes('视频生成失败') || error.message.includes('未返回视频 URL')) {
           throw error;
         }
@@ -466,7 +478,7 @@ export class SeedanceService extends AIService {
       } catch (fetchError: any) {
         clearTimeout(timeoutId);
         if (fetchError.name === 'AbortError') {
-          if (signal?.aborted) throw new Error('用户取消生成');
+          if (signal?.aborted) throw userCancellationError();
           throw new Error('请求超时（60秒）');
         }
         throw new Error(analyzeFetchError(fetchError, url));
@@ -474,6 +486,9 @@ export class SeedanceService extends AIService {
         signal?.removeEventListener('abort', abortFromCaller);
       }
     } catch (error: any) {
+      if (isUserCancellation(error, signal)) {
+        return { success: false, error: '用户取消生成' };
+      }
       console.error('图片生成失败:', error);
       return { success: false, error: error.message || '图片生成失败' };
     }
@@ -521,6 +536,7 @@ export class SeedanceService extends AIService {
           console.log(`生成进度: ${data.progress}%`);
         }
       } catch (error: any) {
+        if (isUserCancellation(error, signal)) throw userCancellationError();
         if (error.message.includes('图片生成失败')) {
           throw error;
         }
