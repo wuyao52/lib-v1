@@ -15,6 +15,7 @@ import {
   Copy,
   Check,
   RefreshCw,
+  MessageSquareText,
 } from 'lucide-react';
 import useProjectStore from '@/store/useProjectStore';
 import { createAIService, SeedanceService } from '@/services/aiService';
@@ -22,6 +23,11 @@ import type { AIModelConfig } from '@/types';
 
 // 预设模型
 const presetModels = {
+  text: [
+    { id: 'gpt-4o-mini', name: 'OpenAI GPT-4o mini', provider: 'OpenAI', baseUrl: 'https://api.openai.com/v1', description: '结构化文本分析' },
+    { id: 'deepseek-chat', name: 'DeepSeek Chat', provider: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', description: '长文本与中文剧本' },
+    { id: 'custom-text', name: '自定义文本模型', provider: 'Custom', baseUrl: '', description: 'OpenAI-compatible' },
+  ],
   video: [
     { id: 'sora-2', name: 'Sora2 (ToAPIs)', provider: 'ToAPIs', baseUrl: '/api/toapis', description: 'OpenAI 视频' },
     { id: 'veo-3', name: 'VEO3 (ToAPIs)', provider: 'ToAPIs', baseUrl: '/api/toapis', description: 'Google 视频' },
@@ -50,11 +56,11 @@ const presetModels = {
   ],
 };
 
-type ModelCategory = 'video' | 'image';
+type ModelCategory = 'text' | 'video' | 'image';
 
 export default function ModelConfigPanel() {
   const { showModelConfig, toggleModelConfig, project, updateProjectSettings } = useProjectStore();
-  const [activeTab, setActiveTab] = useState<ModelCategory>('video');
+  const [activeTab, setActiveTab] = useState<ModelCategory>('text');
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [testMessage, setTestMessage] = useState('');
   const [showApiKey, setShowApiKey] = useState(false);
@@ -69,20 +75,23 @@ export default function ModelConfigPanel() {
 
   // 获取当前多模型配置
   const multiModel = project.settings.multiModel || {
-    textModel: { id: 'hongniao-seedance', name: '红鸟AI Seedance', provider: '红鸟AI', apiKey: '', baseUrl: '/api/hongniaoai', modelId: 'hongniao-seedance', parameters: {} },
+    textModel: { id: 'custom-text', name: '自定义文本模型', provider: 'Custom', apiKey: '', baseUrl: '', modelId: '', parameters: {} },
     videoModel: { id: 'hongniao-seedance', name: '红鸟AI Seedance', provider: '红鸟AI', apiKey: '', baseUrl: '/api/hongniaoai', modelId: 'hongniao-seedance', parameters: {} },
     imageModel: { id: 'hongniao-seedance', name: '红鸟AI Seedance', provider: '红鸟AI', apiKey: '', baseUrl: '/api/hongniaoai', modelId: 'hongniao-seedance', parameters: {} },
   };
 
-  const activeModel = activeTab === 'video' ? multiModel.videoModel : multiModel.imageModel;
+  const activeModel = activeTab === 'text'
+    ? multiModel.textModel
+    : activeTab === 'video' ? multiModel.videoModel : multiModel.imageModel;
 
   // 更新配置（独立更新当前标签对应的模型）
   const updateActiveModel = (updates: Partial<AIModelConfig>) => {
     const newMultiModel = { ...multiModel };
     // 只更新当前标签对应的模型，不互相影响
-    if (activeTab === 'video') {
-      newMultiModel.videoModel = { ...newMultiModel.videoModel, ...updates };
+    if (activeTab === 'text') {
       newMultiModel.textModel = { ...newMultiModel.textModel, ...updates };
+    } else if (activeTab === 'video') {
+      newMultiModel.videoModel = { ...newMultiModel.videoModel, ...updates };
     } else {
       newMultiModel.imageModel = { ...newMultiModel.imageModel, ...updates };
     }
@@ -113,7 +122,7 @@ export default function ModelConfigPanel() {
     setIsLoadingModels(true);
     try {
       const aiService = new SeedanceService(activeModel);
-      const models = await aiService.getAvailableModels(activeTab === 'video' ? 'video_generation' : 'image_generation');
+      const models = await aiService.getAvailableModels(activeTab === 'text' ? undefined : activeTab === 'image' ? 'image_generation' : 'video_generation');
       setAvailableModels(models);
       if (models.length > 0) {
         setSelectedModelId(models[0].id);
@@ -173,6 +182,7 @@ export default function ModelConfigPanel() {
   };
 
   const tabs = [
+    { id: 'text' as ModelCategory, label: '文本分析', icon: <MessageSquareText className="w-4 h-4" /> },
     { id: 'video' as ModelCategory, label: '视频生成', icon: <Video className="w-4 h-4" /> },
     { id: 'image' as ModelCategory, label: '图片生成', icon: <Image className="w-4 h-4" /> },
   ];
