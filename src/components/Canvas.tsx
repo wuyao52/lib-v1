@@ -6,6 +6,7 @@ import {
   MiniMap,
   BackgroundVariant,
   SelectionMode,
+  useReactFlow,
 } from '@xyflow/react';
 import type { NodeTypes, OnConnectEnd, Connection } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -31,6 +32,7 @@ const minimapStyle = {
 };
 
 export default function Canvas() {
+  const { screenToFlowPosition } = useReactFlow();
   const {
     project,
     onNodesChange,
@@ -39,6 +41,7 @@ export default function Canvas() {
     setSelectedNode,
     addNode,
     startGenerationWithType,
+    pushToHistory,
   } = useProjectStore();
 
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
@@ -99,6 +102,7 @@ export default function Canvas() {
   const handleFileDrop = async (event: React.DragEvent) => {
     if (!project || hasModalOpen) return; // 弹窗打开时忽略
     const files = Array.from(event.dataTransfer.files);
+    const dropPosition = screenToFlowPosition({ x: event.clientX, y: event.clientY });
 
     for (const file of files) {
       const fileType = getFileType(file);
@@ -111,7 +115,7 @@ export default function Canvas() {
         addNode({
           id: `scene-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
           type: 'sceneNode',
-          position: { x: event.clientX - 200, y: event.clientY - 100 },
+          position: { x: dropPosition.x - 100, y: dropPosition.y - 60 },
           data: {
             label: fileName || `${fileType === 'image' ? '图片' : '视频'}场景`,
             type: fileType,
@@ -145,7 +149,7 @@ export default function Canvas() {
     addNode({
       id: `scene-${Date.now()}`,
       type: 'sceneNode',
-      position: { x: event.clientX - 200, y: event.clientY - 100 },
+      position: screenToFlowPosition({ x: event.clientX, y: event.clientY }),
       data: {
         label: `新场景 ${project.nodes.length + 1}`,
         type: type as any,
@@ -172,9 +176,8 @@ export default function Canvas() {
     const wrapper = reactFlowWrapper.current;
     if (!wrapper) return;
 
-    const rect = wrapper.getBoundingClientRect();
     generationSourceNodeRef.current = sourceNodeId;
-    generationPositionRef.current = { x: clientX - rect.left, y: clientY - rect.top };
+    generationPositionRef.current = screenToFlowPosition({ x: clientX, y: clientY });
     setShowGenerationModal(true);
   };
 
@@ -278,6 +281,7 @@ export default function Canvas() {
         nodes={project.nodes}
         edges={project.edges}
         onNodesChange={onNodesChange}
+        onNodeDragStop={pushToHistory}
         onEdgesChange={onEdgesChange}
         onConnect={handleConnect}
         onConnectEnd={onConnectEnd}
