@@ -4,6 +4,17 @@ import { resolve } from 'path';
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'react-vendor': ['react', 'react-dom', 'zustand'],
+          'flow-vendor': ['@xyflow/react'],
+          'motion-vendor': ['framer-motion'],
+        },
+      },
+    },
+  },
   root: '.',
   resolve: {
     alias: {
@@ -14,6 +25,18 @@ export default defineConfig({
     port: 3000,
     open: true,
     proxy: {
+      '/api/auth': {
+        target: 'http://127.0.0.1:8787',
+        changeOrigin: true,
+      },
+      '/api/skills': {
+        target: 'http://127.0.0.1:8787',
+        changeOrigin: true,
+      },
+      '/api/director': {
+        target: 'http://127.0.0.1:8787',
+        changeOrigin: true,
+      },
       '/api/hongniaoai': {
         target: 'https://open.hongniaoai.com',
         changeOrigin: true,
