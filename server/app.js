@@ -95,6 +95,15 @@ export async function createApp(options = {}) {
 
   app.use((error, _req, res, _next) => {
     console.error(error);
+    if (error?.code === 'EMAIL_NOT_CONFIGURED') {
+      return res.status(503).json({ error: error.code, message: error.message });
+    }
+    if (error?.code === 'EMAIL_TIMEOUT') {
+      return res.status(504).json({ error: error.code, message: '邮件服务请求超时，请稍后重试' });
+    }
+    if (error?.code === 'EMAIL_DELIVERY_FAILED') {
+      return res.status(502).json({ error: error.code, message: '邮件发送失败，请检查发件服务配置后重试' });
+    }
     res.status(500).json({ error: 'INTERNAL_ERROR', message: '服务器内部错误' });
   });
 
