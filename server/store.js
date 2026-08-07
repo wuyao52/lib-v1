@@ -8,6 +8,10 @@ const EMPTY_DATABASE = {
   imageCaptchas: [],
   skills: [],
   projects: [],
+  systemApis: [],
+  modelPricing: [],
+  balanceTransactions: [],
+  rechargeRequests: [],
 };
 
 export class JsonDatabase {
