@@ -9,6 +9,7 @@ import { registerDirectorRoutes } from './director.js';
 import { registerSkillRoutes } from './skills.js';
 import { createEmailSenderFromEnv } from './email.js';
 import { registerProjectRoutes } from './projects.js';
+import { registerGenerationHistoryRoutes } from './generation-history.js';
 import { createSecretVault } from './secrets.js';
 import { registerAdminRoutes, registerBillingRoutes, registerCatalogRoutes } from './billing.js';
 import { registerSystemAiRoutes } from './system-ai.js';
@@ -93,7 +94,7 @@ export async function createApp(options = {}) {
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
   app.use(securityHeaders);
-  app.use(express.json({ limit: '3mb' }));
+  app.use(express.json({ limit: '25mb' }));
   app.use(cookieParser());
   app.use(createOriginGuard(allowedOrigins));
   app.use(auth.authenticate);
@@ -124,6 +125,9 @@ export async function createApp(options = {}) {
   const projectRouter = express.Router();
   registerProjectRoutes(projectRouter, { db, requireAuth: auth.requireAuth });
   app.use('/api/projects', projectRouter);
+  const generationHistoryRouter = express.Router();
+  registerGenerationHistoryRoutes(generationHistoryRouter, { db, requireAuth: auth.requireAuth });
+  app.use('/api/generation-history', generationHistoryRouter);
   const billingRouter = express.Router();
   registerBillingRoutes(billingRouter, { db, requireAuth: auth.requireAuth });
   app.use('/api/billing', billingRouter);
