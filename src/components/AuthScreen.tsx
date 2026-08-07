@@ -35,6 +35,9 @@ export default function AuthScreen() {
     setCaptchaCode('');
     try {
       const result = await apiRequest<{ captchaId: string; image: string }>('/api/auth/captcha');
+      if (!result.captchaId || !result.image?.startsWith('data:image/svg+xml;base64,')) {
+        throw new Error('图片验证码服务返回异常，请检查后端部署或 Netlify API 代理配置');
+      }
       setCaptchaId(result.captchaId);
       setCaptchaImage(result.image);
     } catch (captchaError) {
