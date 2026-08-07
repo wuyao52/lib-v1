@@ -12,6 +12,7 @@ const EMPTY_DATABASE = {
   modelPricing: [],
   balanceTransactions: [],
   rechargeRequests: [],
+  generationHistory: [],
 };
 
 export class JsonDatabase {
