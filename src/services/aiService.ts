@@ -104,7 +104,7 @@ export class AIService {
         return { success: false, message: `无效的 API 地址: "${this.config.baseUrl}"` };
       }
 
-      if (!this.config.apiKey) {
+      if (!this.config.apiKey && !this.config.managed) {
         return { success: false, message: '请先输入 API Key' };
       }
 
@@ -234,7 +234,7 @@ export class SeedanceService extends AIService {
         throw new Error(`无效的 API 地址: "${this.config.baseUrl}"`);
       }
 
-      if (!this.config.apiKey) {
+      if (!this.config.apiKey && !this.config.managed) {
         throw new Error('请先配置 API Key');
       }
 
@@ -410,7 +410,7 @@ export class SeedanceService extends AIService {
         throw new Error(`无效的 API 地址: "${this.config.baseUrl}"`);
       }
 
-      if (!this.config.apiKey) {
+      if (!this.config.apiKey && !this.config.managed) {
         throw new Error('请先配置 API Key');
       }
 
@@ -637,6 +637,7 @@ export class GeminiService extends AIService {
 
 // 创建服务实例的工厂函数
 export function createAIService(config: AIModelConfig): AIService {
+  if (config.managed) return new SeedanceService(config);
   if (config.id.includes('gemini') || config.provider === 'Google') {
     return new GeminiService(config);
   }

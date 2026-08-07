@@ -12,6 +12,9 @@ export interface AIModelConfig {
   baseUrl: string;
   modelId: string;
   parameters: Record<string, any>;
+  managed?: boolean;
+  unitPriceCents?: number;
+  billingUnit?: 'request' | 'image' | 'second';
 }
 
 // 生成进度

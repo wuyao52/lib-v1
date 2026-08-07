@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   X,
@@ -20,6 +20,7 @@ import {
 import useProjectStore from '@/store/useProjectStore';
 import { createAIService, SeedanceService } from '@/services/aiService';
 import type { AIModelConfig } from '@/types';
+import { apiRequest } from '@/services/apiClient';
 
 // 预设模型
 const presetModels = {
@@ -70,6 +71,14 @@ export default function ModelConfigPanel() {
   const [availableModels, setAvailableModels] = useState<any[]>([]);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [selectedModelId, setSelectedModelId] = useState<string>('');
+  const [managedModels, setManagedModels] = useState<Array<AIModelConfig & { category: ModelCategory }>>([]);
+
+  useEffect(() => {
+    if (!showModelConfig) return;
+    apiRequest<{ models: Array<AIModelConfig & { category: ModelCategory }> }>('/api/catalog/models')
+      .then(({ models }) => setManagedModels(models.map((model) => ({ ...model, apiKey: '', parameters: {} }))))
+      .catch(() => setManagedModels([]));
+  }, [showModelConfig]);
 
   if (!project) return null;
 
@@ -106,6 +115,7 @@ export default function ModelConfigPanel() {
       provider: preset.provider,
       baseUrl: preset.baseUrl,
       modelId: preset.id,
+      managed: false,
     });
     setSelectedModelId('');
     setTestStatus('idle');
@@ -114,7 +124,7 @@ export default function ModelConfigPanel() {
 
   // 获取可用模型列表
   const fetchAvailableModels = async () => {
-    if (!activeModel.apiKey) {
+    if (!activeModel.apiKey && !activeModel.managed) {
       setTestMessage('请先输入 API Key');
       return;
     }
@@ -234,8 +244,21 @@ export default function ModelConfigPanel() {
 
             {/* Content */}
             <div className="flex-1 p-4 space-y-4 overflow-y-auto">
+              {managedModels.some((model) => model.category === activeTab) && (
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-dark-300">系统模型</label>
+                  <div className="space-y-2">
+                    {managedModels.filter((model) => model.category === activeTab).map((model) => (
+                      <button key={model.id} onClick={() => updateActiveModel(model)} className={`w-full p-3 rounded-lg border text-left ${activeModel.managed && activeModel.id === model.id ? 'border-green-500 bg-green-500/10' : 'border-dark-600 bg-dark-700 hover:border-dark-400'}`}>
+                        <div className="flex items-center justify-between gap-3"><span className="text-sm text-white">{model.name}</span><span className="text-xs text-green-400">¥{((model.unitPriceCents || 0) / 100).toFixed(2)} / {model.billingUnit === 'second' ? '秒' : model.billingUnit === 'image' ? '张' : '次'}</span></div>
+                        <div className="text-[10px] text-dark-400 mt-1">{model.provider} · 密钥由系统安全托管</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
               {/* 预设模型 */}
-              <div className="space-y-2">
+              {!activeModel.managed && <div className="space-y-2">
                 <label className="text-xs font-medium text-dark-300">预设模型</label>
                 <div className="grid grid-cols-2 gap-2">
                   {presetModels[activeTab].map((preset) => (
@@ -253,10 +276,10 @@ export default function ModelConfigPanel() {
                     </button>
                   ))}
                 </div>
-              </div>
+              </div>}
 
               {/* API Key */}
-              <div className="space-y-2">
+              {!activeModel.managed && <div className="space-y-2">
                 <label className="text-xs font-medium text-dark-300 flex items-center gap-2">
                   <Key className="w-3 h-3 text-primary-400" />
                   API Key
@@ -278,7 +301,7 @@ export default function ModelConfigPanel() {
                     </button>
                   </div>
                 </div>
-              </div>
+              </div>}
 
               {/* API 地址 */}
               <div className="space-y-2">
@@ -298,9 +321,9 @@ export default function ModelConfigPanel() {
               {/* 测试连接 */}
               <button
                 onClick={handleTestConnection}
-                disabled={testStatus === 'testing' || !activeModel.apiKey}
+                disabled={testStatus === 'testing' || (!activeModel.apiKey && !activeModel.managed)}
                 className={`w-full py-2.5 rounded-lg font-medium transition-all flex items-center justify-center gap-2 ${
-                  !activeModel.apiKey
+                  (!activeModel.apiKey && !activeModel.managed)
                     ? 'bg-dark-700 text-dark-500 cursor-not-allowed'
                     : testStatus === 'success'
                     ? 'bg-green-600 text-white'

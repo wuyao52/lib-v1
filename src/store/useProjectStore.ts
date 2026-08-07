@@ -671,7 +671,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     }
 
     // 如果选中的模型 API Key 为空，尝试从其他模型同步
-    if (!aiModel.apiKey) {
+    if (!aiModel.apiKey && !aiModel.managed) {
       console.log('当前模型 API Key 为空，尝试同步...');
       if (multiModel.videoModel.apiKey) {
         aiModel = multiModel.videoModel;
@@ -699,7 +699,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     });
 
     // 检查是否有 API Key
-    if (!aiModel.apiKey) {
+    if (!aiModel.apiKey && !aiModel.managed) {
       markGenerationFailed(nodeId, newNodeId, '请先配置 API Key', get, set);
       return;
     }
@@ -914,7 +914,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     }
 
     // 如果选中的模型 API Key 为空，尝试从其他模型同步
-    if (!aiModel.apiKey) {
+    if (!aiModel.apiKey && !aiModel.managed) {
       console.log('当前模型 API Key 为空，尝试同步...');
       if (multiModel.videoModel.apiKey) {
         aiModel = multiModel.videoModel;
@@ -940,7 +940,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     });
 
     // 检查是否有 API Key
-    if (!aiModel.apiKey) {
+    if (!aiModel.apiKey && !aiModel.managed) {
       markGenerationFailed(nodeId, newNodeId, '请先配置 API Key', get, set);
       return;
     }

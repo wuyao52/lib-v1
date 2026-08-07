@@ -26,7 +26,7 @@ export const clampDirectorClipDuration = (duration: number) => Math.min(15, Math
 
 export function resolveDirectorVideoModel(project: DramaProject): AIModelConfig | null {
   const candidates = [project.settings.multiModel?.videoModel, project.settings.aiModel];
-  return candidates.find((model): model is AIModelConfig => Boolean(model?.apiKey && model.baseUrl && model.modelId)) || null;
+  return candidates.find((model): model is AIModelConfig => Boolean((model?.managed || model?.apiKey) && model.baseUrl && model.modelId)) || null;
 }
 
 function generationSettings(project: DramaProject, model: AIModelConfig, shot: DirectorShot, assets: DirectorAsset[]) {
