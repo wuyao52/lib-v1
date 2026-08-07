@@ -11,6 +11,7 @@ const EMPTY_DATABASE = {
   modelPricing: [],
   balanceTransactions: [],
   rechargeRequests: [],
+  generationHistory: [],
 };
 
 const TABLES = {
@@ -186,6 +187,18 @@ const TABLES = {
     select: 'SELECT id, user_id AS userId, amount_cents AS amountCents, status, note, reviewed_by AS reviewedBy, created_at AS createdAt, reviewed_at AS reviewedAt FROM recharge_requests',
     insert: 'INSERT INTO recharge_requests (id, user_id, amount_cents, status, note, reviewed_by, created_at, reviewed_at) VALUES ?',
     values: (row) => [row.id, row.userId, row.amountCents, row.status, row.note, row.reviewedBy || null, row.createdAt, row.reviewedAt || null],
+  },
+  generationHistory: {
+    table: 'generation_history',
+    create: `CREATE TABLE IF NOT EXISTS generation_history (
+      id CHAR(36) PRIMARY KEY, user_id CHAR(36) NOT NULL, project_id VARCHAR(100) NOT NULL, node_id VARCHAR(100) NULL,
+      type VARCHAR(20) NOT NULL, prompt TEXT NOT NULL, url TEXT NOT NULL, thumbnail TEXT NULL,
+      created_at VARCHAR(35) NOT NULL, expires_at VARCHAR(35) NOT NULL,
+      INDEX generation_history_user_expiry_idx (user_id, expires_at)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+    select: 'SELECT id, user_id AS userId, project_id AS projectId, node_id AS nodeId, type, prompt, url, thumbnail, created_at AS createdAt, expires_at AS expiresAt FROM generation_history',
+    insert: 'INSERT INTO generation_history (id, user_id, project_id, node_id, type, prompt, url, thumbnail, created_at, expires_at) VALUES ?',
+    values: (row) => [row.id, row.userId, row.projectId, row.nodeId || null, row.type, row.prompt, row.url, row.thumbnail || null, row.createdAt, row.expiresAt],
   },
 };
 
