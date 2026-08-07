@@ -238,12 +238,15 @@ export function createAuthService(db, { secureCookies = false, sendEmailCode, ge
       try {
         const email = normalizeEmail(req.body.email);
         const purpose = req.body.purpose;
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || purpose !== 'register') {
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !['register', 'reset_password'].includes(purpose)) {
           return res.status(400).json({ error: 'VALIDATION_ERROR', message: '邮箱或验证码用途无效' });
         }
         const userExists = db.read('users').some((user) => user.email === email);
         if (purpose === 'register' && userExists) {
           return res.status(409).json({ error: 'EMAIL_EXISTS', message: '该邮箱已注册' });
+        }
+        if (purpose === 'reset_password' && !userExists) {
+          return res.status(202).json({ message: '如果该邮箱已注册，验证码将发送到邮箱', expiresIn: 600 });
         }
         await issueEmailCode(email, purpose);
         return res.status(202).json({ message: '验证码已发送，请检查邮箱', expiresIn: 600 });
@@ -310,6 +313,41 @@ export function createAuthService(db, { secureCookies = false, sendEmailCode, ge
       } catch (routeError) {
         return next(routeError);
       }
+    });
+
+    router.post('/change-password', requireAuth, async (req, res, next) => {
+      try {
+        const newPasswordError = validateCredentials({ password: req.body.newPassword }, false);
+        if (newPasswordError) return res.status(400).json({ error: 'VALIDATION_ERROR', message: newPasswordError });
+        if (req.body.newPassword !== req.body.confirmPassword) return res.status(400).json({ error: 'PASSWORD_MISMATCH', message: '两次输入的新密码不一致' });
+        const user = db.read('users').find((item) => item.id === req.user.id);
+        if (!user || !(await verifyPassword(String(req.body.currentPassword || ''), user.passwordHash))) {
+          return res.status(401).json({ error: 'CURRENT_PASSWORD_INVALID', message: '当前密码错误' });
+        }
+        const currentTokenHash = req.cookies?.[SESSION_COOKIE] ? hashToken(req.cookies[SESSION_COOKIE]) : '';
+        await db.mutate(async (data) => {
+          const currentUser = data.users.find((item) => item.id === req.user.id);
+          if (currentUser) currentUser.passwordHash = await hashPassword(req.body.newPassword);
+          data.sessions = data.sessions.filter((session) => session.userId !== req.user.id || session.tokenHash === currentTokenHash);
+        });
+        return res.json({ message: '密码已修改，其他设备的登录会话已失效' });
+      } catch (routeError) { return next(routeError); }
+    });
+
+    router.post('/reset-password', async (req, res, next) => {
+      try {
+        const email = normalizeEmail(req.body.email);
+        const newPasswordError = validateCredentials({ password: req.body.newPassword }, false);
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || newPasswordError) return res.status(400).json({ error: 'VALIDATION_ERROR', message: newPasswordError || '请输入有效邮箱' });
+        const user = db.read('users').find((item) => item.email === email);
+        if (!user || !(await consumeEmailCode(email, 'reset_password', req.body.verificationCode))) return res.status(400).json({ error: 'INVALID_RESET_CODE', message: '邮箱验证码错误、已过期或尝试次数过多' });
+        await db.mutate(async (data) => {
+          const currentUser = data.users.find((item) => item.id === user.id);
+          if (currentUser) currentUser.passwordHash = await hashPassword(req.body.newPassword);
+          data.sessions = data.sessions.filter((session) => session.userId !== user.id);
+        });
+        return res.json({ message: '密码已重置，请使用新密码登录' });
+      } catch (routeError) { return next(routeError); }
     });
 
     router.post('/logout', requireAuth, async (req, res) => {
