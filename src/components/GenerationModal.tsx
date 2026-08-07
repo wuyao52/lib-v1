@@ -17,6 +17,7 @@ interface GenerationModalProps {
   onSelect: (type: 'video' | 'image' | 'img2img', settings: GenerationSettings) => void;
   sourceImageUrl?: string;
   sourceNodeType?: string;
+  mentionableNodes?: Array<{ id: string; label: string; type: string }>;
 }
 
 export interface GenerationSettings {
@@ -45,6 +46,7 @@ export default function GenerationModal({
   onSelect,
   sourceImageUrl,
   sourceNodeType,
+  mentionableNodes = [],
 }: GenerationModalProps) {
   const [selectedType, setSelectedType] = useState<'video' | 'image' | 'img2img'>('video');
   const [prompt, setPrompt] = useState('');
@@ -52,6 +54,7 @@ export default function GenerationModal({
   const [duration, setDuration] = useState(5);
   const [strength, setStrength] = useState(0.7);
   const [negativePrompt, setNegativePrompt] = useState('');
+  const [showMentions, setShowMentions] = useState(false);
 
   const handleGenerate = () => {
     if (!prompt.trim()) return;
@@ -208,7 +211,7 @@ export default function GenerationModal({
                 </label>
                 <textarea
                   value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
+                  onChange={(e) => { setPrompt(e.target.value); setShowMentions(e.target.value.slice(-1) === '@'); }}
                   placeholder={
                     selectedType === 'video'
                       ? '描述你想要生成的视频内容...'
@@ -221,6 +224,17 @@ export default function GenerationModal({
                     text-white placeholder:text-dark-500 resize-none
                     focus:outline-none focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
                 />
+                {showMentions && mentionableNodes.length > 0 && (
+                  <div className="mt-1 max-h-36 overflow-y-auto rounded-lg border border-dark-600 bg-dark-900 p-1">
+                    {mentionableNodes.map((node) => (
+                      <button key={node.id} type="button" className="block w-full rounded px-2 py-1.5 text-left text-xs text-dark-200 hover:bg-primary-600/20 hover:text-white" onClick={() => {
+                        setPrompt((value) => `${value.slice(0, -1)}@[${node.label}](${node.id}) `);
+                        setShowMentions(false);
+                      }}>@{node.label}</button>
+                    ))}
+                  </div>
+                )}
+                {mentionableNodes.length > 0 && <div className="mt-1 text-[10px] text-dark-500">输入 @ 可引用画布目标</div>}
               </div>
 
               {/* 反向提示词 */}
