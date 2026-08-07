@@ -54,10 +54,21 @@ function normalizePricingInput(input, existing) {
   const category = String(input.category ?? existing?.category ?? '');
   const billingUnit = String(input.billingUnit ?? existing?.billingUnit ?? '');
   const unitPriceCents = integer(input.unitPriceCents ?? existing?.unitPriceCents);
+  const parseDuration = (value) => {
+    if (value === undefined || value === null || value === '') return null;
+    const parsed = integer(value);
+    return Number.isInteger(parsed) && parsed > 0 && parsed <= 3600 ? parsed : NaN;
+  };
+  const minDurationSec = parseDuration(input.minDurationSec ?? existing?.minDurationSec);
+  const maxDurationSec = parseDuration(input.maxDurationSec ?? existing?.maxDurationSec);
+  const rawAllowed = input.allowedDurationsSec ?? existing?.allowedDurationsSec ?? [];
+  const allowedDurationsSec = Array.isArray(rawAllowed) ? [...new Set(rawAllowed.map((v) => parseDuration(v)))].sort((a, b) => a - b) : String(rawAllowed).split(',').map((v) => v.trim()).filter(Boolean).map(parseDuration).sort((a, b) => a - b);
   if (!apiId || !modelId || !displayName) throw new Error('API、模型 ID 和显示名称不能为空');
   if (!CATEGORIES.has(category) || !BILLING_UNITS.has(billingUnit)) throw new Error('模型类别或计费单位无效');
   if (!Number.isInteger(unitPriceCents) || unitPriceCents < 0 || unitPriceCents > 10_000_000) throw new Error('模型价格必须是有效的分值');
-  return { apiId, modelId, displayName, category, billingUnit, unitPriceCents, enabled: input.enabled === undefined ? (existing?.enabled ?? true) : Boolean(input.enabled) };
+  if ([minDurationSec, maxDurationSec, ...allowedDurationsSec].some((v) => Number.isNaN(v))) throw new Error('视频时长规则无效');
+  if (minDurationSec && maxDurationSec && maxDurationSec < minDurationSec) throw new Error('最长时长不能小于最短时长');
+  return { apiId, modelId, displayName, category, billingUnit, unitPriceCents, minDurationSec, maxDurationSec, allowedDurationsSec, enabled: input.enabled === undefined ? (existing?.enabled ?? true) : Boolean(input.enabled) };
 }
 
 export function registerCatalogRoutes(router, { db, requireAuth }) {
@@ -70,6 +81,7 @@ export function registerCatalogRoutes(router, { db, requireAuth }) {
         id: price.id, apiId: api.id, modelId: price.modelId, name: price.displayName,
         provider: api.provider, category: price.category, billingUnit: price.billingUnit,
         unitPriceCents: price.unitPriceCents, baseUrl: `/api/system-ai/${api.id}`, managed: true,
+        minDurationSec: price.minDurationSec, maxDurationSec: price.maxDurationSec, allowedDurationsSec: price.allowedDurationsSec,
       };
     });
     return res.json({ models, balanceCents: Number(req.user.balanceCents || 0), role: req.user.role });
