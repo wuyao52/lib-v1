@@ -1,0 +1,73 @@
+const FORWARDED_HEADERS = ['accept', 'authorization', 'content-type', 'cookie', 'origin', 'user-agent', 'x-api-key'];
+const PROTECTED_API_PATH = /^\/api\/(?:auth|director|skills)(?:\/|$)/;
+
+function getHeader(headers, name) {
+  const matchingKey = Object.keys(headers || {}).find((key) => key.toLowerCase() === name);
+  return matchingKey ? headers[matchingKey] : undefined;
+}
+
+function getSetCookies(headers) {
+  if (typeof headers.getSetCookie === 'function') return headers.getSetCookie();
+  const value = headers.get('set-cookie');
+  return value ? [value] : [];
+}
+
+export async function handler(event) {
+  const apiOrigin = String(process.env.API_ORIGIN || '').trim().replace(/\/+$/, '');
+  const path = String(event.queryStringParameters?.path || '');
+
+  if (!PROTECTED_API_PATH.test(path)) {
+    return {
+      statusCode: 400,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ error: 'INVALID_API_PATH', message: '不允许代理该 API 路径' }),
+    };
+  }
+  if (!apiOrigin) {
+    return {
+      statusCode: 503,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ error: 'BACKEND_NOT_CONFIGURED', message: '服务端 API 尚未配置' }),
+    };
+  }
+
+  try {
+    const target = new URL(path, `${apiOrigin}/`);
+    for (const [key, value] of Object.entries(event.queryStringParameters || {})) {
+      if (key !== 'path' && value != null) target.searchParams.set(key, value);
+    }
+    const headers = new Headers();
+    for (const name of FORWARDED_HEADERS) {
+      const value = getHeader(event.headers, name);
+      if (value) headers.set(name, value);
+    }
+    const method = event.httpMethod || 'GET';
+    const hasBody = event.body && !['GET', 'HEAD'].includes(method);
+    const response = await fetch(target, {
+      method,
+      headers,
+      body: hasBody ? (event.isBase64Encoded ? Buffer.from(event.body, 'base64') : event.body) : undefined,
+      redirect: 'manual',
+    });
+    const responseHeaders = {};
+    for (const name of ['cache-control', 'content-type', 'location']) {
+      const value = response.headers.get(name);
+      if (value) responseHeaders[name] = value;
+    }
+    const setCookies = getSetCookies(response.headers);
+
+    return {
+      statusCode: response.status,
+      headers: responseHeaders,
+      ...(setCookies.length ? { multiValueHeaders: { 'set-cookie': setCookies } } : {}),
+      body: await response.text(),
+    };
+  } catch (error) {
+    console.error('Backend proxy failed:', error);
+    return {
+      statusCode: 502,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ error: 'BACKEND_UNAVAILABLE', message: '服务端 API 暂时不可用' }),
+    };
+  }
+}
