@@ -140,15 +140,18 @@ const TABLES = {
       category VARCHAR(20) NOT NULL,
       billing_unit VARCHAR(20) NOT NULL,
       unit_price_cents INT NOT NULL,
+      min_duration_sec INT NULL,
+      max_duration_sec INT NULL,
+      allowed_durations_sec JSON NULL,
       enabled TINYINT(1) NOT NULL DEFAULT 1,
       created_at VARCHAR(35) NOT NULL,
       updated_at VARCHAR(35) NOT NULL,
       UNIQUE KEY model_pricing_api_model_unique (api_id, model_id)
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
-    select: 'SELECT id, api_id AS apiId, model_id AS modelId, display_name AS displayName, category, billing_unit AS billingUnit, unit_price_cents AS unitPriceCents, enabled, created_at AS createdAt, updated_at AS updatedAt FROM model_pricing',
-    insert: 'INSERT INTO model_pricing (id, api_id, model_id, display_name, category, billing_unit, unit_price_cents, enabled, created_at, updated_at) VALUES ?',
-    values: (row) => [row.id, row.apiId, row.modelId, row.displayName, row.category, row.billingUnit, row.unitPriceCents, row.enabled ? 1 : 0, row.createdAt, row.updatedAt],
-    parse: (row) => ({ ...row, enabled: Boolean(row.enabled) }),
+    select: 'SELECT id, api_id AS apiId, model_id AS modelId, display_name AS displayName, category, billing_unit AS billingUnit, unit_price_cents AS unitPriceCents, min_duration_sec AS minDurationSec, max_duration_sec AS maxDurationSec, allowed_durations_sec AS allowedDurationsSec, enabled, created_at AS createdAt, updated_at AS updatedAt FROM model_pricing',
+    insert: 'INSERT INTO model_pricing (id, api_id, model_id, display_name, category, billing_unit, unit_price_cents, min_duration_sec, max_duration_sec, allowed_durations_sec, enabled, created_at, updated_at) VALUES ?',
+    values: (row) => [row.id, row.apiId, row.modelId, row.displayName, row.category, row.billingUnit, row.unitPriceCents, row.minDurationSec || null, row.maxDurationSec || null, JSON.stringify(row.allowedDurationsSec || []), row.enabled ? 1 : 0, row.createdAt, row.updatedAt],
+    parse: (row) => ({ ...row, enabled: Boolean(row.enabled), allowedDurationsSec: typeof row.allowedDurationsSec === 'string' ? JSON.parse(row.allowedDurationsSec || '[]') : (row.allowedDurationsSec || []) }),
   },
   balanceTransactions: {
     table: 'balance_transactions',
@@ -204,6 +207,9 @@ export class MySqlDatabase {
     for (const spec of Object.values(TABLES)) await this.pool.query(spec.create);
     await this.ensureColumn('users', 'role', "VARCHAR(16) NOT NULL DEFAULT 'user'");
     await this.ensureColumn('users', 'balance_cents', 'BIGINT NOT NULL DEFAULT 0');
+    await this.ensureColumn('model_pricing', 'min_duration_sec', 'INT NULL');
+    await this.ensureColumn('model_pricing', 'max_duration_sec', 'INT NULL');
+    await this.ensureColumn('model_pricing', 'allowed_durations_sec', 'JSON NULL');
     for (const [collection, spec] of Object.entries(TABLES)) {
       const [rows] = await this.pool.query(spec.select);
       this.data[collection] = spec.parse ? rows.map(spec.parse) : rows;
