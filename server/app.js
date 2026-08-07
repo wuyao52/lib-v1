@@ -60,12 +60,24 @@ export async function createApp(options = {}) {
       ? new MySqlDatabase(databaseUrl).init()
       : new JsonDatabase(databasePath).init()
   );
+  const systemUserEmails = new Set(String(process.env.SYSTEM_USER_EMAILS || '')
+    .split(',').map((value) => value.trim().toLowerCase()).filter(Boolean));
+  if (systemUserEmails.size) {
+    await db.mutate((data) => {
+      data.users.forEach((user) => {
+        if (systemUserEmails.has(user.email)) user.role = 'system';
+        if (!user.role) user.role = 'user';
+        if (!Number.isFinite(Number(user.balanceCents))) user.balanceCents = 0;
+      });
+    });
+  }
   const app = express();
   const allowedOrigins = new Set(options.allowedOrigins || ['http://localhost:3000', 'http://127.0.0.1:3000']);
   const auth = createAuthService(db, {
     secureCookies: options.secureCookies ?? process.env.NODE_ENV === 'production',
     sendEmailCode: options.sendEmailCode || createEmailSenderFromEnv(),
     generateImageCaptcha: options.generateImageCaptcha,
+    systemUserEmails,
   });
 
   app.disable('x-powered-by');
