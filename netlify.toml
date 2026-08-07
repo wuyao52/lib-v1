@@ -9,19 +9,19 @@
 # calls to the separately deployed Node service configured with API_ORIGIN.
 [[redirects]]
   from = "/api/auth/*"
-  to = "/.netlify/functions/backend?scope=auth&path=:splat"
+  to = "/.netlify/functions/backend/auth/:splat"
   status = 200
   force = true
 
 [[redirects]]
   from = "/api/director/*"
-  to = "/.netlify/functions/backend?scope=director&path=:splat"
+  to = "/.netlify/functions/backend/director/:splat"
   status = 200
   force = true
 
 [[redirects]]
   from = "/api/skills/*"
-  to = "/.netlify/functions/backend?scope=skills&path=:splat"
+  to = "/.netlify/functions/backend/skills/:splat"
   status = 200
   force = true
 
