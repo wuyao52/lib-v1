@@ -5,11 +5,12 @@ import { apiRequest } from '@/services/apiClient';
 
 export default function AuthScreen() {
   const { login, register } = useAuth();
-  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [mode, setMode] = useState<'login' | 'register' | 'forgot'>('login');
   const [name, setName] = useState('');
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [verificationCode, setVerificationCode] = useState('');
   const [captchaId, setCaptchaId] = useState('');
@@ -51,7 +52,7 @@ export default function AuthScreen() {
     }
   }
 
-  const switchMode = (nextMode: 'login' | 'register') => {
+  const switchMode = (nextMode: 'login' | 'register' | 'forgot') => {
     setMode(nextMode);
     setVerificationCode('');
     setCaptchaCode('');
@@ -73,7 +74,7 @@ export default function AuthScreen() {
     try {
       const result = await apiRequest<{ message: string }>('/api/auth/email-code', {
         method: 'POST',
-        body: JSON.stringify({ email, purpose: 'register' }),
+        body: JSON.stringify({ email, purpose: mode === 'forgot' ? 'reset_password' : 'register' }),
       });
       setNotice(result.message);
       setResendSeconds(60);
@@ -90,7 +91,11 @@ export default function AuthScreen() {
     setIsSubmitting(true);
     try {
       if (mode === 'register') await register({ name, username, email, password, verificationCode });
-      else await login({ identifier: username, password, captchaId, captchaCode });
+      else if (mode === 'forgot') {
+        await apiRequest('/api/auth/reset-password', { method: 'POST', body: JSON.stringify({ email, newPassword: password, confirmPassword, verificationCode }) });
+        setNotice('密码已重置，请返回登录');
+        switchMode('login');
+      } else await login({ identifier: username, password, captchaId, captchaCode });
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : '认证失败');
       if (mode === 'login') void loadCaptcha();
@@ -98,6 +103,21 @@ export default function AuthScreen() {
       setIsSubmitting(false);
     }
   };
+
+  if (mode === 'forgot') return (
+    <main className="min-h-screen bg-dark-950 text-white flex items-center justify-center p-6">
+      <form onSubmit={handleSubmit} className="w-full max-w-md space-y-4 bg-dark-900 border border-dark-700 rounded-xl p-6">
+        <h1 className="text-2xl font-semibold">忘记密码</h1><p className="text-sm text-dark-400">使用注册邮箱接收验证码并设置新密码。</p>
+        <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required className="w-full h-11 px-3 rounded-lg bg-dark-800 border border-dark-700" placeholder="注册邮箱" />
+        <div className="grid grid-cols-[1fr_auto] gap-2"><input value={verificationCode} onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, '').slice(0, 6))} required maxLength={6} inputMode="numeric" className="w-full h-11 px-3 rounded-lg bg-dark-800 border border-dark-700" placeholder="6 位邮箱验证码" /><button type="button" onClick={handleSendCode} disabled={isSendingCode || resendSeconds > 0} className="h-11 px-3 rounded-lg border border-dark-600 text-sm">{resendSeconds > 0 ? `${resendSeconds}s` : '发送验证码'}</button></div>
+        <input type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} required minLength={8} maxLength={128} className="w-full h-11 px-3 rounded-lg bg-dark-800 border border-dark-700" placeholder="新密码" />
+        <input type={showPassword ? 'text' : 'password'} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} required minLength={8} maxLength={128} className="w-full h-11 px-3 rounded-lg bg-dark-800 border border-dark-700" placeholder="确认新密码" />
+        {notice && <div role="status" className="text-sm text-green-300">{notice}</div>}{error && <div role="alert" className="text-sm text-red-300">{error}</div>}
+        <button type="submit" disabled={isSubmitting || verificationCode.length !== 6} className="w-full h-11 rounded-lg bg-primary-600 disabled:opacity-60">重置密码</button>
+        <button type="button" onClick={() => switchMode('login')} className="w-full text-sm text-dark-400 hover:text-white">返回登录</button>
+      </form>
+    </main>
+  );
 
   return (
     <main className="min-h-screen bg-dark-950 text-white grid lg:grid-cols-[minmax(320px,0.9fr)_minmax(420px,1.1fr)]">
@@ -127,6 +147,7 @@ export default function AuthScreen() {
               </button>
             ))}
           </div>
+          {mode === 'login' && <button type="button" onClick={() => switchMode('forgot')} className="mb-4 text-sm text-primary-400 hover:text-primary-300">忘记密码？使用邮箱验证码重置</button>}
 
           <form onSubmit={handleSubmit} className="space-y-4">
             {mode === 'register' && <label className="block"><span className="text-sm text-dark-300">昵称</span><input value={name} onChange={(e) => setName(e.target.value)} minLength={2} maxLength={40} required autoComplete="name" className="mt-2 w-full h-11 px-3 rounded-lg bg-dark-900 border border-dark-700 focus:border-primary-500 outline-none" /></label>}

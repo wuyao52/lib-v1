@@ -59,6 +59,9 @@ test('system APIs, pricing, balances and managed gateway enforce roles and billi
   const createdApi = (await createdApiResponse.json()).api;
   assert.equal(createdApi.apiKey, 'secret-system-key');
   assert.equal('encryptedApiKey' in createdApi, false);
+  const storedApi = context.db.read('systemApis')[0];
+  assert.notEqual(storedApi.baseUrl, 'https://upstream.example');
+  assert.equal(storedApi.encryptedApiKey.includes('secret-system-key'), false);
   const savedApiModelsResponse = await context.request('/api/admin/system-apis/discover', admin.cookie, { method: 'POST', body: JSON.stringify({ apiId: createdApi.id }) });
   assert.equal(savedApiModelsResponse.status, 200);
   assert.equal((await savedApiModelsResponse.json()).models[0].id, 'video-model');

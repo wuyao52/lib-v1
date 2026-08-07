@@ -115,6 +115,7 @@ export default function ModelConfigPanel() {
       provider: preset.provider,
       baseUrl: preset.baseUrl,
       modelId: preset.id,
+      apiKey: activeModel.managed ? '' : activeModel.apiKey,
       managed: false,
     });
     setSelectedModelId('');
@@ -249,7 +250,7 @@ export default function ModelConfigPanel() {
                   <label className="text-xs font-medium text-dark-300">系统模型</label>
                   <div className="space-y-2">
                     {managedModels.filter((model) => model.category === activeTab).map((model) => (
-                      <button key={model.id} onClick={() => updateActiveModel(model)} className={`w-full p-3 rounded-lg border text-left ${activeModel.managed && activeModel.id === model.id ? 'border-green-500 bg-green-500/10' : 'border-dark-600 bg-dark-700 hover:border-dark-400'}`}>
+                      <button key={model.id} onClick={() => updateActiveModel({ ...model, apiKey: '', managed: true })} className={`w-full p-3 rounded-lg border text-left ${activeModel.managed && activeModel.id === model.id ? 'border-green-500 bg-green-500/10' : 'border-dark-600 bg-dark-700 hover:border-dark-400'}`}>
                         <div className="flex items-center justify-between gap-3"><span className="text-sm text-white">{model.name}</span><span className="text-xs text-green-400">¥{((model.unitPriceCents || 0) / 100).toFixed(2)} / {model.billingUnit === 'second' ? '秒' : model.billingUnit === 'image' ? '张' : '次'}</span></div>
                         <div className="text-[10px] text-dark-400 mt-1">{model.provider} · 密钥由系统安全托管</div>
                       </button>
@@ -258,7 +259,7 @@ export default function ModelConfigPanel() {
                 </div>
               )}
               {/* 预设模型 */}
-              {!activeModel.managed && <div className="space-y-2">
+              <div className="space-y-2">
                 <label className="text-xs font-medium text-dark-300">预设模型</label>
                 <div className="grid grid-cols-2 gap-2">
                   {presetModels[activeTab].map((preset) => (
@@ -276,7 +277,7 @@ export default function ModelConfigPanel() {
                     </button>
                   ))}
                 </div>
-              </div>}
+              </div>
 
               {/* API Key */}
               {!activeModel.managed && <div className="space-y-2">
@@ -304,7 +305,9 @@ export default function ModelConfigPanel() {
               </div>}
 
               {/* API 地址 */}
-              <div className="space-y-2">
+              {activeModel.managed ? (
+                <div className="p-3 rounded-lg border border-green-500/30 bg-green-500/5 text-sm text-green-300">系统模型已启用。API 地址和 API Key 由服务端安全托管，当前用户不可查看、复制或修改。</div>
+              ) : <div className="space-y-2">
                 <label className="text-xs font-medium text-dark-300 flex items-center gap-2">
                   <Globe className="w-3 h-3 text-primary-400" />
                   API 地址
@@ -316,7 +319,7 @@ export default function ModelConfigPanel() {
                   placeholder="https://api.example.com"
                   className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-white text-sm focus:outline-none focus:border-primary-500"
                 />
-              </div>
+              </div>}
 
               {/* 测试连接 */}
               <button

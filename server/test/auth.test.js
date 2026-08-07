@@ -128,3 +128,29 @@ test('registration uses email codes and login uses one-time image captchas', asy
   assert.ok(database.imageCaptchas.every((record) => !('code' in record)));
   assert.equal(database.sessions.length, 0);
 });
+
+test('users can change passwords and reset them by email, invalidating old sessions', async (t) => {
+  const context = await startServer();
+  t.after(() => context.server.close());
+  const email = 'password@example.com';
+  const code = await requestCode(context, email, 'register');
+  const registration = await fetch(`${context.baseUrl}/api/auth/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Password User', username: 'password-user', email, password: 'old-password', verificationCode: code }) });
+  assert.equal(registration.status, 201);
+  const cookie = registration.headers.get('set-cookie').split(';')[0];
+
+  const changed = await fetch(`${context.baseUrl}/api/auth/change-password`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ currentPassword: 'old-password', newPassword: 'changed-password', confirmPassword: 'changed-password' }) });
+  assert.equal(changed.status, 200);
+  const wrongCurrent = await fetch(`${context.baseUrl}/api/auth/change-password`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ currentPassword: 'old-password', newPassword: 'another-password', confirmPassword: 'another-password' }) });
+  assert.equal(wrongCurrent.status, 401);
+
+  const resetCode = await requestCode(context, email, 'reset_password');
+  const reset = await fetch(`${context.baseUrl}/api/auth/reset-password`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, verificationCode: resetCode, newPassword: 'reset-password', confirmPassword: 'reset-password' }) });
+  assert.equal(reset.status, 200);
+  const oldSession = await fetch(`${context.baseUrl}/api/auth/me`, { headers: { cookie } });
+  assert.equal((await oldSession.json()).user, null);
+
+  const captchaResponse = await fetch(`${context.baseUrl}/api/auth/captcha`);
+  const captcha = await captchaResponse.json();
+  const login = await fetch(`${context.baseUrl}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ identifier: email, password: 'reset-password', captchaId: captcha.captchaId, captchaCode: '24682' }) });
+  assert.equal(login.status, 200);
+});
