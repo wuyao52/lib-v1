@@ -1,5 +1,6 @@
 const FORWARDED_HEADERS = ['accept', 'authorization', 'content-type', 'cookie', 'origin', 'user-agent', 'x-api-key'];
 const PROTECTED_API_PATH = /^\/api\/(?:auth|director|skills)(?:\/|$)/;
+const PROTECTED_API_SCOPES = new Set(['auth', 'director', 'skills']);
 
 function getHeader(headers, name) {
   const matchingKey = Object.keys(headers || {}).find((key) => key.toLowerCase() === name);
@@ -12,9 +13,19 @@ function getSetCookies(headers) {
   return value ? [value] : [];
 }
 
+function resolveApiPath(query = {}) {
+  const rawPath = String(query.path || '').trim();
+  const normalizedPath = rawPath ? `/${rawPath.replace(/^\/+/, '')}` : '';
+  if (normalizedPath.startsWith('/api/')) return normalizedPath;
+
+  const scope = String(query.scope || '').trim();
+  if (!PROTECTED_API_SCOPES.has(scope)) return normalizedPath;
+  return `/api/${scope}${normalizedPath || ''}`;
+}
+
 export async function handler(event) {
   const apiOrigin = String(process.env.API_ORIGIN || '').trim().replace(/\/+$/, '');
-  const path = String(event.queryStringParameters?.path || '');
+  const path = resolveApiPath(event.queryStringParameters);
 
   if (!PROTECTED_API_PATH.test(path)) {
     return {
@@ -34,7 +45,7 @@ export async function handler(event) {
   try {
     const target = new URL(path, `${apiOrigin}/`);
     for (const [key, value] of Object.entries(event.queryStringParameters || {})) {
-      if (key !== 'path' && value != null) target.searchParams.set(key, value);
+      if (!['path', 'scope'].includes(key) && value != null) target.searchParams.set(key, value);
     }
     const headers = new Headers();
     for (const name of FORWARDED_HEADERS) {
