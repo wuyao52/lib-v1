@@ -1,6 +1,31 @@
-# Netlify 配置
+# Netlify configuration
 
-# 无痕AI API 代理
+[build]
+  command = "npm run build"
+  publish = "dist"
+  functions = "netlify/functions"
+
+# The browser stays on the Netlify origin. This function forwards protected API
+# calls to the separately deployed Node service configured with API_ORIGIN.
+[[redirects]]
+  from = "/api/auth/*"
+  to = "/.netlify/functions/backend?path=/api/auth/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/director/*"
+  to = "/.netlify/functions/backend?path=/api/director/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/skills/*"
+  to = "/.netlify/functions/backend?path=/api/skills/:splat"
+  status = 200
+  force = true
+
+# WuhenAI API proxy
 [[redirects]]
   from = "/api/wuhenai/*"
   to = "/.netlify/functions/proxy?service=wuhenai&path=:splat"
