@@ -35,7 +35,6 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
   const [isDiscovering, setIsDiscovering] = useState(false);
 
   const load = useCallback(async () => {
-    setMessage('');
     if (mode === 'billing') {
       const data = await apiRequest<{ balanceCents: number; transactions: Transaction[]; recharges: Recharge[] }>('/api/billing/me');
       setBalance(data.balanceCents); setTransactions(data.transactions); setRecharges(data.recharges);
@@ -53,7 +52,7 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
   useEffect(() => { load().catch((error) => setMessage(error.message)); }, [load]);
 
   const act = async (job: () => Promise<unknown>, success: string) => {
-    try { await job(); setMessage(success); await load(); await refresh(); } catch (error: any) { setMessage(error.message); }
+    try { await job(); await load(); await refresh(); setMessage(success); } catch (error: any) { setMessage(error.message); }
   };
 
   const discoverApi = async () => {
@@ -75,14 +74,45 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
       });
       setPriceForm((current) => ({ ...current, apiId: result.api.id }));
       setApiForm(emptyApi); setEditingApiId(null);
-      setMessage('系统 API 已保存。可在下方选择识别到的模型并设置价格。');
       await load();
+      setMessage('系统 API 已保存。可在下方选择该 API 并读取模型进行定价。');
     } catch (error: any) { setMessage(error.message); }
   };
 
   const selectDiscoveredModel = (modelId: string) => {
     const model = discoveredModels.find((item) => item.id === modelId);
     setPriceForm((current) => ({ ...current, modelId, displayName: model?.name || current.displayName }));
+  };
+
+  const loadModelsForPricing = async (apiId: string, resetSelection = true) => {
+    if (resetSelection) setPriceForm((current) => ({ ...current, apiId, modelId: '', displayName: '' }));
+    if (!apiId) { setDiscoveredModels([]); return; }
+    setIsDiscovering(true); setMessage('正在读取所选系统 API 的模型目录...');
+    try {
+      const result = await apiRequest<{ provider: string; models: DiscoveredModel[] }>('/api/admin/system-apis/discover', { method: 'POST', body: JSON.stringify({ apiId }) });
+      setDiscoveredModels(result.models);
+      setMessage(`已从 ${result.provider} 读取 ${result.models.length} 个模型，请选择一个模型定价。`);
+    } catch (error: any) { setDiscoveredModels([]); setMessage(error.message); } finally { setIsDiscovering(false); }
+  };
+
+  const submitPricing = async () => {
+    const unitPriceCents = Math.round(Number(priceForm.priceYuan) * 100);
+    if (!priceForm.apiId) return setMessage('请先选择一个已保存的系统 API');
+    if (!priceForm.modelId || !priceForm.displayName) return setMessage('请选择模型并填写显示名称');
+    if (!Number.isFinite(unitPriceCents) || unitPriceCents < 0) return setMessage('请输入有效的模型单价');
+    try {
+      await apiRequest(editingPriceId ? `/api/admin/pricing/${editingPriceId}` : '/api/admin/pricing', {
+        method: editingPriceId ? 'PUT' : 'POST',
+        body: JSON.stringify({ ...priceForm, unitPriceCents }),
+      });
+      const selectedApiId = priceForm.apiId;
+      const wasEditing = Boolean(editingPriceId);
+      setEditingPriceId(null);
+      setPriceForm((current) => ({ ...emptyPrice, apiId: current.apiId }));
+      await load();
+      await loadModelsForPricing(selectedApiId, false);
+      setMessage(wasEditing ? '模型定价已更新，并已同步到普通用户的系统模型列表。' : '模型定价已确认，并已加入普通用户的系统模型列表。');
+    } catch (error: any) { setMessage(error.message); }
   };
 
   return <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
@@ -122,16 +152,15 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
           </section>
 
           <section>
-            <h3 className="text-sm font-medium text-white mb-3">模型定价</h3>
-            <div className="grid md:grid-cols-6 gap-2">
-              <select className={field} value={priceForm.apiId} onChange={(e) => setPriceForm({ ...priceForm, apiId: e.target.value })}><option value="">选择 API</option>{apis.map((api) => <option key={api.id} value={api.id}>{api.name}</option>)}</select>
-              <div><input list="discovered-models" className={field} value={priceForm.modelId} onChange={(e) => selectDiscoveredModel(e.target.value)} placeholder="模型 ID" /><datalist id="discovered-models">{discoveredModels.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</datalist></div>
-              <input className={field} value={priceForm.displayName} onChange={(e) => setPriceForm({ ...priceForm, displayName: e.target.value })} placeholder="显示名称" />
-              <select className={field} value={priceForm.category} onChange={(e) => setPriceForm({ ...priceForm, category: e.target.value })}><option value="text">文本</option><option value="image">图片</option><option value="video">视频</option></select>
-              <select className={field} value={priceForm.billingUnit} onChange={(e) => setPriceForm({ ...priceForm, billingUnit: e.target.value })}><option value="request">按次</option><option value="image">按张</option><option value="second">按秒</option></select>
-              <div className="flex gap-2"><input className={field} type="number" min="0" step="0.01" value={priceForm.priceYuan} onChange={(e) => setPriceForm({ ...priceForm, priceYuan: e.target.value })} placeholder="单价（元）" /><button title={editingPriceId ? '保存定价' : '添加定价'} className="px-3 bg-primary-600 rounded text-white" onClick={() => act(async () => { await apiRequest(editingPriceId ? `/api/admin/pricing/${editingPriceId}` : '/api/admin/pricing', { method: editingPriceId ? 'PUT' : 'POST', body: JSON.stringify({ ...priceForm, unitPriceCents: Math.round(Number(priceForm.priceYuan) * 100) }) }); setEditingPriceId(null); }, editingPriceId ? '模型定价已更新' : '模型定价已添加')}>{editingPriceId ? <Check className="w-4 h-4" /> : <Plus className="w-4 h-4" />}</button></div>
+            <div className="flex items-center justify-between mb-3"><div><h3 className="text-sm font-medium text-white">系统模型定价</h3><p className="text-xs text-dark-400 mt-1">先选择系统用户保存的 API，再读取并选择该 API 提供的模型。</p></div>{priceForm.apiId && <button onClick={() => loadModelsForPricing(priceForm.apiId, false)} disabled={isDiscovering} className="px-3 py-1.5 rounded bg-dark-700 text-xs text-primary-300 flex items-center gap-2"><RefreshCw className={`w-3.5 h-3.5 ${isDiscovering ? 'animate-spin' : ''}`} />重新读取模型</button>}</div>
+            <div className="grid lg:grid-cols-[240px_1fr] gap-4 border border-dark-600 rounded p-4 bg-dark-900/30">
+              <div><div className="text-xs text-dark-400 mb-2">1. 选择系统 API</div><div className="space-y-2 max-h-64 overflow-y-auto">{apis.length ? apis.map((api) => <button key={api.id} onClick={() => loadModelsForPricing(api.id)} className={`w-full px-3 py-2 rounded border text-left ${priceForm.apiId === api.id ? 'border-primary-500 bg-primary-500/10' : 'border-dark-600 bg-dark-800 hover:border-dark-400'}`}><span className="block text-sm text-white truncate">{api.name}</span><span className="block text-[10px] text-dark-400 truncate">{api.provider} · {api.baseUrl}</span></button>) : <p className="text-xs text-dark-500">请先在上方保存系统 API</p>}</div></div>
+              <div className="space-y-4"><div><div className="text-xs text-dark-400 mb-2">2. 选择从 API 获取的模型</div>{isDiscovering ? <div className="h-10 flex items-center text-sm text-dark-400"><RefreshCw className="w-4 h-4 mr-2 animate-spin" />正在读取模型...</div> : <select className={field} value={priceForm.modelId} disabled={!priceForm.apiId || !discoveredModels.length} onChange={(e) => selectDiscoveredModel(e.target.value)}><option value="">{priceForm.apiId ? (discoveredModels.length ? '请选择模型' : '该 API 未返回模型') : '请先选择左侧 API'}</option>{discoveredModels.map((model) => { const priced = pricing.some((item) => item.apiId === priceForm.apiId && item.modelId === model.id); return <option key={model.id} value={model.id}>{model.name} ({model.id}){priced ? ' · 已定价' : ''}</option>; })}</select>}</div>
+                <div><div className="text-xs text-dark-400 mb-2">3. 设置模型类型和价格</div><div className="grid md:grid-cols-4 gap-2"><input className={field} value={priceForm.displayName} onChange={(e) => setPriceForm({ ...priceForm, displayName: e.target.value })} placeholder="用户看到的模型名称" /><select className={field} value={priceForm.category} onChange={(e) => setPriceForm({ ...priceForm, category: e.target.value })}><option value="text">文本模型</option><option value="image">图片模型</option><option value="video">视频模型</option></select><select className={field} value={priceForm.billingUnit} onChange={(e) => setPriceForm({ ...priceForm, billingUnit: e.target.value })}><option value="request">按次计费</option><option value="image">按张计费</option><option value="second">按秒计费</option></select><input className={field} type="number" min="0" step="0.01" value={priceForm.priceYuan} onChange={(e) => setPriceForm({ ...priceForm, priceYuan: e.target.value })} placeholder="单价（元）" /></div></div>
+                <button onClick={submitPricing} disabled={!priceForm.apiId || !priceForm.modelId || !priceForm.displayName || priceForm.priceYuan === ''} className="w-full py-2.5 rounded bg-primary-600 hover:bg-primary-500 disabled:bg-dark-700 disabled:text-dark-500 text-white text-sm font-medium flex items-center justify-center gap-2"><Check className="w-4 h-4" />{editingPriceId ? '确认修改定价' : '确认定价并发布模型'}</button>
+              </div>
             </div>
-            <div className="mt-3 divide-y divide-dark-700">{pricing.map((item) => <div key={item.id} className="py-2 flex justify-between text-sm"><span className="text-dark-200">{item.displayName} <small className="text-dark-500">{item.modelId} · {item.category}</small></span><span className="flex items-center gap-3 text-green-400">{yuan(item.unitPriceCents)} / {item.billingUnit === 'second' ? '秒' : item.billingUnit === 'image' ? '张' : '次'}<button title="编辑" className="text-primary-400" onClick={() => { setEditingPriceId(item.id); setPriceForm({ apiId: item.apiId, modelId: item.modelId, displayName: item.displayName, category: item.category, billingUnit: item.billingUnit, priceYuan: String(item.unitPriceCents / 100) }); }}><Pencil className="w-4 h-4" /></button><button title="删除" className="text-red-400" onClick={() => act(() => apiRequest(`/api/admin/pricing/${item.id}`, { method: 'DELETE' }), '定价已删除')}><Trash2 className="w-4 h-4" /></button></span></div>)}</div>
+            <div className="mt-3 divide-y divide-dark-700">{pricing.map((item) => <div key={item.id} className="py-2 flex justify-between text-sm"><span className="text-dark-200">{item.displayName} <small className="text-dark-500">{item.modelId} · {item.category}</small></span><span className="flex items-center gap-3 text-green-400">{yuan(item.unitPriceCents)} / {item.billingUnit === 'second' ? '秒' : item.billingUnit === 'image' ? '张' : '次'}<button title="编辑" className="text-primary-400" onClick={() => { setEditingPriceId(item.id); setPriceForm({ apiId: item.apiId, modelId: item.modelId, displayName: item.displayName, category: item.category, billingUnit: item.billingUnit, priceYuan: String(item.unitPriceCents / 100) }); void loadModelsForPricing(item.apiId, false); }}><Pencil className="w-4 h-4" /></button><button title="删除" className="text-red-400" onClick={() => act(() => apiRequest(`/api/admin/pricing/${item.id}`, { method: 'DELETE' }), '定价已删除')}><Trash2 className="w-4 h-4" /></button></span></div>)}</div>
           </section>
 
           <AdminUsers users={users} currentUserId={user?.id} recharges={recharges} balanceAdjustments={balanceAdjustments} setBalanceAdjustments={setBalanceAdjustments} act={act} />
