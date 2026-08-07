@@ -15,7 +15,7 @@ import SceneNodeComponent from './SceneNode';
 import GenerationModal, { GenerationSettings } from './GenerationModal';
 import RemoveWatermarkModal from './RemoveWatermarkModal';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Upload, Image, Video, Droplets, Wand2 } from 'lucide-react';
+import { Upload, Image, Video, Droplets, Wand2, Plus } from 'lucide-react';
 
 // 自定义节点类型
 const nodeTypes: NodeTypes = {
@@ -196,6 +196,20 @@ export default function Canvas() {
   if (!project) return null;
 
   const sourceNode = project.nodes.find(n => n.id === generationSourceNodeRef.current);
+  const selectedNodes = project.nodes.filter((node) => node.selected);
+  const createBatchNode = () => {
+    if (selectedNodes.length < 2) return;
+    const right = Math.max(...selectedNodes.map((node) => node.position.x + 240));
+    const top = selectedNodes.reduce((sum, node) => sum + node.position.y, 0) / selectedNodes.length;
+    const id = `scene-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    addNode({ id, type: 'sceneNode', position: { x: right + 120, y: top }, data: {
+      label: `批量组件 ${project.nodes.length + 1}`, type: 'transition', content: '', duration: 5,
+      prompt: selectedNodes.map((node) => `@[${node.data.label}](${node.id})`).join(' '),
+      settings: { style: project.settings.defaultStyle, mood: '', camera: '', lighting: '' }, status: 'idle', progress: 0,
+    } });
+    selectedNodes.forEach((node) => onConnect({ source: node.id, target: id, sourceHandle: null, targetHandle: null }));
+    setSelectedNode(id);
+  };
 
   return (
     <div
@@ -314,6 +328,15 @@ export default function Canvas() {
         />
       </ReactFlow>
 
+      {selectedNodes.length > 1 && (
+        <div className="absolute left-1/2 top-20 -translate-x-1/2 z-50 flex items-center gap-3 rounded-xl border border-primary-500/50 bg-dark-800/95 px-3 py-2 shadow-xl backdrop-blur">
+          <span className="text-xs text-dark-200">已选 {selectedNodes.length} 个目标</span>
+          <button onClick={createBatchNode} title="将选中目标连接到新组件" className="flex items-center gap-1 rounded-lg bg-primary-600 px-3 py-1.5 text-xs text-white hover:bg-primary-500">
+            <Plus className="h-4 w-4" /> 新建连接组件
+          </button>
+        </div>
+      )}
+
       {/* 生成弹窗 */}
       <GenerationModal
         isOpen={showGenerationModal}
@@ -324,6 +347,7 @@ export default function Canvas() {
         onSelect={handleGenerationSelect}
         sourceImageUrl={sourceNode?.data?.generatedContent}
         sourceNodeType={sourceNode?.data?.type}
+        mentionableNodes={project.nodes.filter((node) => node.id !== generationSourceNodeRef.current).map((node) => ({ id: node.id, label: node.data.label, type: node.data.type }))}
       />
 
       {/* 去水印弹窗 */}
