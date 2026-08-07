@@ -42,12 +42,8 @@ Node 后端环境变量应至少包含：
 NODE_ENV=production
 APP_ORIGINS=https://lib-v1-1.netlify.app
 DATA_DIR=/var/data
-SMTP_HOST=smtp.example.com
-SMTP_PORT=465
-SMTP_SECURE=true
-SMTP_USER=your_mailbox@example.com
-SMTP_PASS=your_smtp_app_password
-SMTP_FROM="AI Drama Studio <your_mailbox@example.com>"
+RESEND_API_KEY=re_your_api_key
+EMAIL_FROM="AI Drama Studio <register@your-verified-domain.example>"
 ```
 
 Netlify 会将 `/api/auth/*`、`/api/director/*` 与 `/api/skills/*` 转发到该后端，因此验证码和 HttpOnly 会话 Cookie 仍使用 Netlify 的同源地址。后端部署命令为 `npm ci && npm run build`，启动命令为 `npm start`。不要只部署 `dist/`，也不要把密钥写入 `.env.example` 或 `VITE_*` 浏览器变量。
@@ -62,9 +58,18 @@ Netlify 会将 `/api/auth/*`、`/api/director/*` 与 `/api/skills/*` 转发到�
 - 导演方案支持按镜头顺序一键批量生成视频，每段强制限制为 5-15 秒；生成状态和结果会同步写入画布，并可按分镜顺序连续预览。
 - 导演模式可通过选择或拖拽导入 TXT、Markdown、Fountain、JSON、DOC 和 DOCX 剧本文件，单文件上限 10 MB，并支持复制完整导演方案或单个镜头提示词。
 
-### SMTP 配置
+### 邮件服务配置
 
-邮箱验证码不会在未配置邮件服务时降级为控制台输出。将 `.env.example` 复制为 `.env`，并配置：
+Railway Trial/Hobby 不开放 SMTP 出站连接，应使用 Resend 的 HTTPS API。邮箱验证码不会在未配置邮件服务时降级为控制台输出。在 Resend 验证发件域名、创建 API Key 后，在 Railway Variables 中配置：
+
+```env
+RESEND_API_KEY=re_your_api_key
+EMAIL_FROM="AI Drama Studio <register@your-verified-domain.example>"
+```
+
+`EMAIL_FROM` 必须属于 Resend 中已验证的发件域名。API Key 只填写在 Railway，不能放入 Git、聊天内容或任何 `VITE_*` 变量。修改变量后应重新部署服务。
+
+若部署平台允许 SMTP，也可不设置 `RESEND_API_KEY`，改用以下回退配置：
 
 ```env
 SMTP_HOST=smtp.example.com
