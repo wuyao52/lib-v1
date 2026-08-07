@@ -28,6 +28,30 @@ npm start
 
 生产服务会同时提供 `/api/*` 与 `dist/` 前端资源。服务端运行数据位于 `server/data/`，部署时应挂载持久卷并限制文件访问权限。
 
+### Netlify 前端 + 独立 Node 后端
+
+Netlify 只负责静态前端和同源 API 代理，不能直接保存当前基于文件的用户、会话和验证码数据库。请将 Node/Express 服务部署到带持久化磁盘的主机，然后在 Netlify 项目环境变量中设置：
+
+```env
+API_ORIGIN=https://your-node-backend.example.com
+```
+
+Node 后端环境变量应至少包含：
+
+```env
+NODE_ENV=production
+APP_ORIGINS=https://lib-v1-1.netlify.app
+DATA_DIR=/var/data
+SMTP_HOST=smtp.example.com
+SMTP_PORT=465
+SMTP_SECURE=true
+SMTP_USER=your_mailbox@example.com
+SMTP_PASS=your_smtp_app_password
+SMTP_FROM="AI Drama Studio <your_mailbox@example.com>"
+```
+
+Netlify 会将 `/api/auth/*`、`/api/director/*` 与 `/api/skills/*` 转发到该后端，因此验证码和 HttpOnly 会话 Cookie 仍使用 Netlify 的同源地址。后端部署命令为 `npm ci && npm run build`，启动命令为 `npm start`。不要只部署 `dist/`，也不要把密钥写入 `.env.example` 或 `VITE_*` 浏览器变量。
+
 ## 认证、导演模式与 Skill
 
 - 注册、登录、退出和会话恢复均由服务端验证，密码只保存为带随机盐的 `scrypt` 哈希。
