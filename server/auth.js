@@ -18,12 +18,13 @@ const hashVerificationCode = (code, salt) => createHash('sha256').update(`${salt
 function createNumericCaptcha() {
   return svgCaptcha.create({
     size: 5,
-    noise: 3,
-    color: true,
-    background: '#111827',
+    noise: 2,
+    color: false,
+    inverse: true,
     charPreset: '23456789',
-    width: 150,
-    height: 44,
+    width: 160,
+    height: 48,
+    fontSize: 42,
   });
 }
 
