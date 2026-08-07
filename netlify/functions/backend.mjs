@@ -13,7 +13,28 @@ function getSetCookies(headers) {
   return value ? [value] : [];
 }
 
-function resolveApiPath(query = {}) {
+function normalizeApiPath(rawPath) {
+  const value = String(rawPath || '').trim();
+  if (!value) return '';
+  const normalizedPath = `/${value.replace(/^\/+/, '')}`;
+  if (normalizedPath.startsWith('/api/')) return normalizedPath;
+  const functionMatch = normalizedPath.match(/^\/\.netlify\/functions\/backend\/(auth|director|skills)(?:\/(.*))?$/);
+  if (functionMatch) return `/api/${functionMatch[1]}${functionMatch[2] ? `/${functionMatch[2]}` : ''}`;
+  return normalizedPath;
+}
+
+function resolveApiPath(event) {
+  const query = event.queryStringParameters || {};
+  const directCandidates = [
+    event.path,
+    event.rawUrl ? (() => { try { return new URL(event.rawUrl).pathname; } catch { return ''; } })() : '',
+    query.path,
+  ];
+  for (const candidate of directCandidates) {
+    const normalized = normalizeApiPath(candidate);
+    if (PROTECTED_API_PATH.test(normalized)) return normalized;
+  }
+
   const rawPath = String(query.path || '').trim();
   const normalizedPath = rawPath ? `/${rawPath.replace(/^\/+/, '')}` : '';
   if (normalizedPath.startsWith('/api/')) return normalizedPath;
@@ -25,7 +46,7 @@ function resolveApiPath(query = {}) {
 
 export async function handler(event) {
   const apiOrigin = String(process.env.API_ORIGIN || '').trim().replace(/\/+$/, '');
-  const path = resolveApiPath(event.queryStringParameters);
+  const path = resolveApiPath(event);
 
   if (!PROTECTED_API_PATH.test(path)) {
     return {
