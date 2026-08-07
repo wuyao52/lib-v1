@@ -55,14 +55,14 @@ test('registration uses email codes and login uses one-time image captchas', asy
   const wrongCode = await fetch(`${context.baseUrl}/api/auth/register`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ name: 'Director', email, password: 'correct-horse', verificationCode: '000000' }),
+    body: JSON.stringify({ name: 'Director', username: 'director', email, password: 'correct-horse', verificationCode: '000000' }),
   });
   assert.equal(wrongCode.status, 400);
 
   const registration = await fetch(`${context.baseUrl}/api/auth/register`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ name: 'Director', email, password: 'correct-horse', verificationCode: registrationCode }),
+    body: JSON.stringify({ name: 'Director', username: 'director', email, password: 'correct-horse', verificationCode: registrationCode }),
   });
   assert.equal(registration.status, 201);
   await requestCode(context, 'another-director@example.com', 'register');
@@ -82,7 +82,7 @@ test('registration uses email codes and login uses one-time image captchas', asy
   const expiredLogin = await fetch(`${context.baseUrl}/api/auth/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ email, password: 'correct-horse', captchaId: expiredCaptchaId, captchaCode: '24682' }),
+    body: JSON.stringify({ identifier: 'director', password: 'correct-horse', captchaId: expiredCaptchaId, captchaCode: '24682' }),
   });
   assert.equal(expiredLogin.status, 400);
 
@@ -90,7 +90,7 @@ test('registration uses email codes and login uses one-time image captchas', asy
   const wrongCaptcha = await fetch(`${context.baseUrl}/api/auth/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ email, password: 'correct-horse', captchaId: wrongCaptchaId, captchaCode: '22222' }),
+    body: JSON.stringify({ identifier: 'director', password: 'correct-horse', captchaId: wrongCaptchaId, captchaCode: '22222' }),
   });
   assert.equal(wrongCaptcha.status, 400);
 
@@ -98,7 +98,7 @@ test('registration uses email codes and login uses one-time image captchas', asy
   const invalidLogin = await fetch(`${context.baseUrl}/api/auth/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ email, password: 'wrong-pass', captchaId: invalidLoginCaptchaId, captchaCode: '24682' }),
+    body: JSON.stringify({ identifier: 'director', password: 'wrong-pass', captchaId: invalidLoginCaptchaId, captchaCode: '24682' }),
   });
   assert.equal(invalidLogin.status, 401);
 
@@ -106,7 +106,7 @@ test('registration uses email codes and login uses one-time image captchas', asy
   const validLogin = await fetch(`${context.baseUrl}/api/auth/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ email, password: 'correct-horse', captchaId: loginCaptchaId, captchaCode: '24682' }),
+    body: JSON.stringify({ identifier: 'director', password: 'correct-horse', captchaId: loginCaptchaId, captchaCode: '24682' }),
   });
   assert.equal(validLogin.status, 200);
   const loginCookie = validLogin.headers.get('set-cookie').split(';')[0];
@@ -115,13 +115,14 @@ test('registration uses email codes and login uses one-time image captchas', asy
   const reusedCode = await fetch(`${context.baseUrl}/api/auth/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ email, password: 'correct-horse', captchaId: loginCaptchaId, captchaCode: '24682' }),
+    body: JSON.stringify({ identifier: 'director', password: 'correct-horse', captchaId: loginCaptchaId, captchaCode: '24682' }),
   });
   assert.equal(reusedCode.status, 400);
   assert.equal(context.sentCodes.length, sentEmailCountAfterRegistration);
 
   const database = JSON.parse(await readFile(context.databasePath, 'utf8'));
   assert.ok(database.users[0].passwordHash.includes(':'));
+  assert.equal(database.users[0].username, 'director');
   assert.equal('password' in database.users[0], false);
   assert.ok(database.emailVerifications.every((record) => !('code' in record)));
   assert.ok(database.imageCaptchas.every((record) => !('code' in record)));

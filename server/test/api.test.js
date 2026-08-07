@@ -24,7 +24,7 @@ async function register(baseUrl, name, email, sentCodes) {
   const response = await fetch(`${baseUrl}/api/auth/register`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ name, email, password: 'strong-pass-123', verificationCode: sentCodes.at(-1).code }),
+    body: JSON.stringify({ name, username: email.split('@')[0], email, password: 'strong-pass-123', verificationCode: sentCodes.at(-1).code }),
   });
   return response.headers.get('set-cookie').split(';')[0];
 }
@@ -61,12 +61,27 @@ test('skill and director APIs require auth and isolate user data', async (t) => 
   const sameOrigin = await fetch(`${baseUrl}/api/auth/register`, {
     method: 'POST',
     headers: { origin: baseUrl, 'content-type': 'application/json' },
-    body: JSON.stringify({ name: 'Same Origin', email: 'same-origin@example.com', password: 'strong-pass-123', verificationCode: sentCodes.at(-1).code }),
+    body: JSON.stringify({ name: 'Same Origin', username: 'same-origin', email: 'same-origin@example.com', password: 'strong-pass-123', verificationCode: sentCodes.at(-1).code }),
   });
   assert.equal(sameOrigin.status, 201);
 
   const firstCookie = await register(baseUrl, 'First User', 'first@example.com', sentCodes);
   const secondCookie = await register(baseUrl, 'Second User', 'second@example.com', sentCodes);
+  const cloudProject = {
+    id: 'project-cloud-1', title: 'Cloud project', description: 'Stored in the database',
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), nodes: [], edges: [],
+    settings: { aiModel: { id: 'custom', apiKey: 'must-not-persist' } },
+  };
+  const saveProject = await fetch(`${baseUrl}/api/projects/${cloudProject.id}`, {
+    method: 'PUT', headers: { cookie: firstCookie, 'content-type': 'application/json' }, body: JSON.stringify({ project: cloudProject }),
+  });
+  assert.equal(saveProject.status, 201);
+  const firstProjects = await fetch(`${baseUrl}/api/projects`, { headers: { cookie: firstCookie } });
+  assert.equal((await firstProjects.json()).projects[0].title, 'Cloud project');
+  const loadedProject = await fetch(`${baseUrl}/api/projects/${cloudProject.id}`, { headers: { cookie: firstCookie } });
+  assert.equal((await loadedProject.json()).project.settings.aiModel.apiKey, '');
+  const isolatedProject = await fetch(`${baseUrl}/api/projects/${cloudProject.id}`, { headers: { cookie: secondCookie } });
+  assert.equal(isolatedProject.status, 404);
   const docxForm = new FormData();
   docxForm.append('file', new Blob([await createDocxBuffer('雨夜车站的广播突然响起。')]), 'script.docx');
   const docxImport = await fetch(`${baseUrl}/api/director/script-import`, { method: 'POST', headers: { cookie: firstCookie }, body: docxForm });

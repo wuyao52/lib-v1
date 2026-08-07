@@ -3,12 +3,14 @@ import { apiRequest } from '@/services/apiClient';
 
 export interface AuthUser {
   id: string;
+  username: string;
   email: string;
   name: string;
   createdAt: string;
 }
 
 interface RegisterCredentials {
+  username: string;
   email: string;
   password: string;
   verificationCode: string;
@@ -16,7 +18,7 @@ interface RegisterCredentials {
 }
 
 interface LoginCredentials {
-  email: string;
+  identifier: string;
   password: string;
   captchaId: string;
   captchaCode: string;

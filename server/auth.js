@@ -12,6 +12,7 @@ const IMAGE_CAPTCHA_TTL_MS = 5 * 60 * 1000;
 const IMAGE_CAPTCHA_MAX_ATTEMPTS = 5;
 
 const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
+const normalizeUsername = (value) => String(value || '').trim();
 const hashToken = (token) => createHash('sha256').update(token).digest('hex');
 const hashVerificationCode = (code, salt) => createHash('sha256').update(`${salt}:${code}`).digest('hex');
 
@@ -42,14 +43,16 @@ async function verifyPassword(password, storedHash) {
 }
 
 function publicUser(user) {
-  return { id: user.id, email: user.email, name: user.name, createdAt: user.createdAt };
+  return { id: user.id, username: user.username, email: user.email, name: user.name, createdAt: user.createdAt };
 }
 
-function validateCredentials({ email, password, name }, requireName = false) {
-  const normalizedEmail = normalizeEmail(email);
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) return '请输入有效邮箱';
+function validateCredentials({ email, password, name, username }, requireRegistrationFields = false) {
+  if (requireRegistrationFields && !/^[\p{L}\p{N}_-]{3,30}$/u.test(normalizeUsername(username))) {
+    return '用户名需为 3-30 位，只能包含文字、字母、数字、下划线或连字符';
+  }
+  if (requireRegistrationFields && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(email))) return '请输入有效邮箱';
   if (typeof password !== 'string' || password.length < 8 || password.length > 128) return '密码长度需为 8-128 位';
-  if (requireName && (typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 40)) return '昵称长度需为 2-40 位';
+  if (requireRegistrationFields && (typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 40)) return '昵称长度需为 2-40 位';
   return null;
 }
 
@@ -247,14 +250,19 @@ export function createAuthService(db, { secureCookies = false, sendEmailCode, ge
         const error = validateCredentials(req.body, true);
         if (error) return res.status(400).json({ error: 'VALIDATION_ERROR', message: error });
         const email = normalizeEmail(req.body.email);
+        const username = normalizeUsername(req.body.username);
         if (db.read('users').some((user) => user.email === email)) {
           return res.status(409).json({ error: 'EMAIL_EXISTS', message: '该邮箱已注册' });
+        }
+        if (db.read('users').some((user) => user.username.toLowerCase() === username.toLowerCase())) {
+          return res.status(409).json({ error: 'USERNAME_EXISTS', message: '该用户名已被使用' });
         }
         if (!(await consumeEmailCode(email, 'register', req.body.verificationCode))) {
           return res.status(400).json({ error: 'INVALID_EMAIL_CODE', message: '邮箱验证码错误、已过期或尝试次数过多' });
         }
         const user = {
           id: randomUUID(),
+          username,
           email,
           name: req.body.name.trim(),
           passwordHash: await hashPassword(req.body.password),
@@ -275,7 +283,9 @@ export function createAuthService(db, { secureCookies = false, sendEmailCode, ge
         if (!(await consumeImageCaptcha(req.body.captchaId, req.body.captchaCode))) {
           return res.status(400).json({ error: 'INVALID_CAPTCHA', message: '图片验证码错误、已过期或尝试次数过多' });
         }
-        const user = db.read('users').find((item) => item.email === normalizeEmail(req.body.email));
+        const identifier = String(req.body.identifier || req.body.email || '').trim().toLowerCase();
+        if (!identifier) return res.status(400).json({ error: 'VALIDATION_ERROR', message: '请输入用户名或邮箱' });
+        const user = db.read('users').find((item) => item.email === identifier || item.username.toLowerCase() === identifier);
         if (!user || !(await verifyPassword(req.body.password, user.passwordHash))) {
           return res.status(401).json({ error: 'INVALID_CREDENTIALS', message: '邮箱或密码错误' });
         }

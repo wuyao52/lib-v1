@@ -42,11 +42,14 @@ Node 后端环境变量应至少包含：
 NODE_ENV=production
 APP_ORIGINS=https://lib-v1-1.netlify.app
 DATA_DIR=/var/data
+DATABASE_URL=${{MySQL.MYSQL_URL}}
 RESEND_API_KEY=re_your_api_key
 EMAIL_FROM="AI Drama Studio <register@your-verified-domain.example>"
 ```
 
-Netlify 会将 `/api/auth/*`、`/api/director/*` 与 `/api/skills/*` 转发到该后端，因此验证码和 HttpOnly 会话 Cookie 仍使用 Netlify 的同源地址。后端部署命令为 `npm ci && npm run build`，启动命令为 `npm start`。不要只部署 `dist/`，也不要把密钥写入 `.env.example` 或 `VITE_*` 浏览器变量。
+Netlify 会将 `/api/auth/*`、`/api/director/*`、`/api/skills/*` 与 `/api/projects/*` 转发到该后端，因此验证码和 HttpOnly 会话 Cookie 仍使用 Netlify 的同源地址。后端部署命令为 `npm ci && npm run build`，启动命令为 `npm start`。不要只部署 `dist/`，也不要把密钥写入 `.env.example` 或 `VITE_*` 浏览器变量。
+
+生产环境配置 `DATABASE_URL` 后，服务端会自动创建 MySQL 表并将用户、会话、验证码、Skill 和项目写入云数据库。密码始终使用 `scrypt` 哈希保存；项目中的模型 API Key 会在写库前清空，只保留在当前浏览器会话中。未配置 `DATABASE_URL` 时仅使用本地 JSON 存储，供开发和自动测试使用。
 
 ## 认证、导演模式与 Skill
 

@@ -3,10 +3,12 @@ import cookieParser from 'cookie-parser';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { JsonDatabase } from './store.js';
+import { MySqlDatabase } from './mysql-store.js';
 import { createAuthService } from './auth.js';
 import { registerDirectorRoutes } from './director.js';
 import { registerSkillRoutes } from './skills.js';
 import { createEmailSenderFromEnv } from './email.js';
+import { registerProjectRoutes } from './projects.js';
 
 const currentDir = fileURLToPath(new URL('.', import.meta.url));
 
@@ -35,7 +37,8 @@ function createOriginGuard(allowedOrigins) {
 function createRateLimiter({ limit = 10, windowMs = 60_000 } = {}) {
   const buckets = new Map();
   return (req, res, next) => {
-    const key = `${req.ip}:${String(req.body?.email || '').toLowerCase()}`;
+    const identity = req.body?.email || req.body?.identifier || req.body?.username || '';
+    const key = `${req.ip}:${String(identity).toLowerCase()}`;
     const now = Date.now();
     const bucket = buckets.get(key);
     if (!bucket || bucket.resetAt <= now) {
@@ -51,7 +54,12 @@ function createRateLimiter({ limit = 10, windowMs = 60_000 } = {}) {
 export async function createApp(options = {}) {
   const dataDirectory = String(process.env.DATA_DIR || '').trim();
   const databasePath = options.databasePath || resolve(dataDirectory || resolve(currentDir, 'data'), 'database.json');
-  const db = await new JsonDatabase(databasePath).init();
+  const databaseUrl = String(options.databaseUrl ?? process.env.DATABASE_URL ?? '').trim();
+  const db = options.database || await (
+    databaseUrl && !options.databasePath
+      ? new MySqlDatabase(databaseUrl).init()
+      : new JsonDatabase(databasePath).init()
+  );
   const app = express();
   const allowedOrigins = new Set(options.allowedOrigins || ['http://localhost:3000', 'http://127.0.0.1:3000']);
   const auth = createAuthService(db, {
@@ -63,12 +71,19 @@ export async function createApp(options = {}) {
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
   app.use(securityHeaders);
-  app.use(express.json({ limit: '256kb' }));
+  app.use(express.json({ limit: '3mb' }));
   app.use(cookieParser());
   app.use(createOriginGuard(allowedOrigins));
   app.use(auth.authenticate);
 
-  app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'ai-drama-studio' }));
+  app.get('/api/health', async (_req, res, next) => {
+    try {
+      if (db.ping) await db.ping();
+      return res.json({ ok: true, service: 'ai-drama-studio', database: db.kind || 'json' });
+    } catch (error) {
+      return next(error);
+    }
+  });
   const authRouter = express.Router();
   const authRateLimiter = createRateLimiter({ limit: 12, windowMs: 60_000 });
   authRouter.use('/login', authRateLimiter);
@@ -83,6 +98,9 @@ export async function createApp(options = {}) {
   const skillRouter = express.Router();
   registerSkillRoutes(skillRouter, { db, requireAuth: auth.requireAuth });
   app.use('/api/skills', skillRouter);
+  const projectRouter = express.Router();
+  registerProjectRoutes(projectRouter, { db, requireAuth: auth.requireAuth });
+  app.use('/api/projects', projectRouter);
 
   if (options.serveFrontend) {
     const distPath = resolve(currentDir, '..', 'dist');
