@@ -43,7 +43,15 @@ async function verifyPassword(password, storedHash) {
 }
 
 function publicUser(user) {
-  return { id: user.id, username: user.username, email: user.email, name: user.name, createdAt: user.createdAt };
+  return {
+    id: user.id,
+    username: user.username,
+    email: user.email,
+    name: user.name,
+    role: user.role || 'user',
+    balanceCents: Number(user.balanceCents || 0),
+    createdAt: user.createdAt,
+  };
 }
 
 function validateCredentials({ email, password, name, username }, requireRegistrationFields = false) {
@@ -66,7 +74,7 @@ function setSessionCookie(res, token, secure) {
   });
 }
 
-export function createAuthService(db, { secureCookies = false, sendEmailCode, generateImageCaptcha = createNumericCaptcha } = {}) {
+export function createAuthService(db, { secureCookies = false, sendEmailCode, generateImageCaptcha = createNumericCaptcha, systemUserEmails = new Set() } = {}) {
   async function issueEmailCode(email, purpose) {
     const now = Date.now();
     const activeCode = db.read('emailVerifications')
@@ -209,6 +217,12 @@ export function createAuthService(db, { secureCookies = false, sendEmailCode, ge
     return next();
   }
 
+  function requireSystem(req, res, next) {
+    if (!req.user) return res.status(401).json({ error: 'AUTH_REQUIRED', message: '请先登录' });
+    if (req.user.role !== 'system') return res.status(403).json({ error: 'SYSTEM_ROLE_REQUIRED', message: '仅系统用户可以执行此操作' });
+    return next();
+  }
+
   function registerRoutes(router) {
     router.get('/me', (req, res) => res.json({ user: req.user || null }));
 
@@ -266,6 +280,8 @@ export function createAuthService(db, { secureCookies = false, sendEmailCode, ge
           email,
           name: req.body.name.trim(),
           passwordHash: await hashPassword(req.body.password),
+          role: systemUserEmails.has(email) ? 'system' : 'user',
+          balanceCents: 0,
           createdAt: new Date().toISOString(),
         };
         await db.mutate((data) => data.users.push(user));
@@ -309,5 +325,5 @@ export function createAuthService(db, { secureCookies = false, sendEmailCode, ge
     });
   }
 
-  return { authenticate, requireAuth, registerRoutes };
+  return { authenticate, requireAuth, requireSystem, registerRoutes };
 }
