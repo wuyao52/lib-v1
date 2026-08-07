@@ -3,14 +3,21 @@ import { randomUUID } from 'node:crypto';
 const nowIso = () => new Date().toISOString();
 
 function computeCharge(pricing, body) {
-  if (pricing.billingUnit !== 'second') return Number(pricing.unitPriceCents);
+  const requiresDuration = pricing.category === 'video' || pricing.billingUnit === 'second';
+  if (!requiresDuration) return Number(pricing.unitPriceCents);
   const seconds = Number(body?.duration ?? body?.seconds ?? body?.settings?.duration);
   if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 3600) {
     const error = new Error('按秒计费的模型请求必须提供 0-3600 范围内的 duration');
     error.code = 'INVALID_DURATION';
     throw error;
   }
-  return Math.ceil(seconds * Number(pricing.unitPriceCents));
+  const allowed = Array.isArray(pricing.allowedDurationsSec) ? pricing.allowedDurationsSec.map(Number).filter(Number.isFinite) : [];
+  if ((pricing.minDurationSec && seconds < Number(pricing.minDurationSec)) || (pricing.maxDurationSec && seconds > Number(pricing.maxDurationSec)) || (allowed.length > 0 && !allowed.includes(seconds))) {
+    const error = new Error(allowed.length ? `该模型仅支持 ${allowed.join('、')} 秒` : `该模型支持 ${pricing.minDurationSec || 1}-${pricing.maxDurationSec || 3600} 秒`);
+    error.code = 'INVALID_DURATION';
+    throw error;
+  }
+  return pricing.billingUnit === 'second' ? Math.ceil(seconds * Number(pricing.unitPriceCents)) : Number(pricing.unitPriceCents);
 }
 
 function buildTarget(api, requestUrl) {
