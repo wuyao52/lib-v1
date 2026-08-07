@@ -1,4 +1,4 @@
-const MAX_PROJECT_BYTES = 2 * 1024 * 1024;
+const MAX_PROJECT_BYTES = 20 * 1024 * 1024;
 
 function projectInfo(record) {
   const project = record.projectData;
