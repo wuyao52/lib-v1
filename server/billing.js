@@ -19,13 +19,17 @@ function safeUser(user) {
 }
 
 function exposedApi(api, vault) {
-  return { ...api, apiKey: vault.decrypt(api.encryptedApiKey), encryptedApiKey: undefined };
+  return { ...api, baseUrl: vault.decrypt(api.baseUrl), apiKey: vault.decrypt(api.encryptedApiKey), encryptedApiKey: undefined };
+}
+
+function decryptStoredUrl(value, vault) {
+  try { return vault.decrypt(value); } catch { return String(value || ''); }
 }
 
 function normalizeApiInput(input, existing, vault) {
   const name = String(input.name ?? existing?.name ?? '').trim().slice(0, 100);
   const provider = String(input.provider ?? existing?.provider ?? '').trim().slice(0, 80);
-  const rawBaseUrl = String(input.baseUrl ?? existing?.baseUrl ?? '').trim().replace(/\/+$/, '');
+  const rawBaseUrl = String(input.baseUrl ?? (existing ? decryptStoredUrl(existing.baseUrl, vault) : '')).trim().replace(/\/+$/, '');
   let baseUrl;
   try { baseUrl = new URL(rawBaseUrl); } catch { throw new Error('API 地址无效'); }
   if (baseUrl.protocol !== 'https:' || baseUrl.username || baseUrl.password) {
@@ -37,7 +41,7 @@ function normalizeApiInput(input, existing, vault) {
   return {
     name,
     provider,
-    baseUrl: baseUrl.toString().replace(/\/$/, ''),
+    baseUrl: vault.encrypt(baseUrl.toString().replace(/\/$/, '')),
     encryptedApiKey: apiKey ? vault.encrypt(apiKey) : existing.encryptedApiKey,
     enabled: input.enabled === undefined ? (existing?.enabled ?? true) : Boolean(input.enabled),
   };
@@ -143,7 +147,7 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
       const existing = req.body.apiId ? db.read('systemApis').find((api) => api.id === req.body.apiId) : null;
       if (req.body.apiId && !existing) return res.status(404).json({ error: 'API_NOT_FOUND', message: '系统 API 不存在' });
       const result = await discoverSystemApi({
-        baseUrl: req.body.baseUrl || existing?.baseUrl,
+        baseUrl: req.body.baseUrl || (existing ? decryptStoredUrl(existing.baseUrl, vault) : ''),
         apiKey: String(req.body.apiKey || '').trim() || (existing ? vault.decrypt(existing.encryptedApiKey) : ''),
         fetchImpl, resolveHost,
       });
