@@ -31,6 +31,30 @@
   status = 200
   force = true
 
+[[redirects]]
+  from = "/api/admin/*"
+  to = "/.netlify/functions/backend/admin/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/billing/*"
+  to = "/.netlify/functions/backend/billing/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/catalog/*"
+  to = "/.netlify/functions/backend/catalog/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/system-ai/*"
+  to = "/.netlify/functions/backend/system-ai/:splat"
+  status = 200
+  force = true
+
 # WuhenAI API proxy
 [[redirects]]
   from = "/api/wuhenai/*"
