@@ -7,10 +7,12 @@ const EMPTY_DATABASE = {
   emailVerifications: [],
   imageCaptchas: [],
   skills: [],
+  projects: [],
 };
 
 export class JsonDatabase {
   constructor(filePath) {
+    this.kind = 'json';
     this.filePath = filePath;
     this.data = structuredClone(EMPTY_DATABASE);
     this.writeQueue = Promise.resolve();

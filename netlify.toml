@@ -25,6 +25,12 @@
   status = 200
   force = true
 
+[[redirects]]
+  from = "/api/projects/*"
+  to = "/.netlify/functions/backend/projects/:splat"
+  status = 200
+  force = true
+
 # WuhenAI API proxy
 [[redirects]]
   from = "/api/wuhenai/*"

@@ -1,6 +1,6 @@
 const FORWARDED_HEADERS = ['accept', 'authorization', 'content-type', 'cookie', 'origin', 'user-agent', 'x-api-key'];
-const PROTECTED_API_PATH = /^\/api\/(?:auth|director|skills)(?:\/|$)/;
-const PROTECTED_API_SCOPES = new Set(['auth', 'director', 'skills']);
+const PROTECTED_API_PATH = /^\/api\/(?:auth|director|skills|projects)(?:\/|$)/;
+const PROTECTED_API_SCOPES = new Set(['auth', 'director', 'skills', 'projects']);
 
 function getHeader(headers, name) {
   const matchingKey = Object.keys(headers || {}).find((key) => key.toLowerCase() === name);
@@ -18,7 +18,7 @@ function normalizeApiPath(rawPath) {
   if (!value) return '';
   const normalizedPath = `/${value.replace(/^\/+/, '')}`;
   if (normalizedPath.startsWith('/api/')) return normalizedPath;
-  const functionMatch = normalizedPath.match(/^\/\.netlify\/functions\/backend\/(auth|director|skills)(?:\/(.*))?$/);
+  const functionMatch = normalizedPath.match(/^\/\.netlify\/functions\/backend\/(auth|director|skills|projects)(?:\/(.*))?$/);
   if (functionMatch) return `/api/${functionMatch[1]}${functionMatch[2] ? `/${functionMatch[2]}` : ''}`;
   return normalizedPath;
 }

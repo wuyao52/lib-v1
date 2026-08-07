@@ -19,6 +19,7 @@ import {
   GenerationProgress,
 } from '@/types';
 import { createAIService, SeedanceService } from '@/services/aiService';
+import { apiRequest } from '@/services/apiClient';
 
 // 默认AI模型配置
 const defaultModel: AIModelConfig = {
@@ -164,6 +165,24 @@ const loadProjectDataFromStorage = (projectId: string): DramaProject | null => {
   }
 };
 
+const saveProjectToCloud = async (project: DramaProject) => {
+  const persistable = createPersistableProject(project);
+  await apiRequest(`/api/projects/${encodeURIComponent(project.id)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ project: persistable }),
+  });
+};
+
+const loadProjectFromCloud = async (projectId: string): Promise<DramaProject> => {
+  const result = await apiRequest<{ project: DramaProject }>(`/api/projects/${encodeURIComponent(projectId)}`);
+  return restoreProjectSecrets(result.project);
+};
+
+const loadProjectListFromCloud = async (): Promise<ProjectInfo[]> => {
+  const result = await apiRequest<{ projects: ProjectInfo[] }>('/api/projects');
+  return result.projects;
+};
+
 // 创建新项目
 const createNewProject = (title: string, description: string): DramaProject => {
   const now = new Date().toISOString();
@@ -307,6 +326,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     saveProjectDataToStorage(newProject);
     const updatedProjects = [...get().projects, projectInfo];
     saveProjectsToStorage(updatedProjects);
+    void saveProjectToCloud(newProject).catch((error) => console.error('云端创建项目失败，本地副本已保留', error));
 
     set({
       projects: updatedProjects,
@@ -317,8 +337,15 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     });
   },
 
-  openProject: (projectId) => {
-    const projectData = loadProjectDataFromStorage(projectId);
+  openProject: async (projectId) => {
+    let projectData: DramaProject | null = null;
+    try {
+      projectData = await loadProjectFromCloud(projectId);
+      saveProjectDataToStorage(projectData);
+    } catch (error) {
+      console.warn('云端项目读取失败，使用本地缓存', error);
+      projectData = loadProjectDataFromStorage(projectId);
+    }
     if (projectData) {
       set({
         project: projectData,
@@ -334,6 +361,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     const { project } = get();
     if (project) {
       saveProjectDataToStorage(project);
+      void saveProjectToCloud(project).catch((error) => console.error('关闭项目时云端保存失败', error));
     }
 
     set({
@@ -356,13 +384,22 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     const updatedProjects = get().projects.filter((p) => p.id !== projectId);
     saveProjectsToStorage(updatedProjects);
     set({ projects: updatedProjects });
+    void apiRequest(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' })
+      .catch((error) => console.error('云端删除项目失败', error));
   },
 
-  refreshProjects: () => {
+  refreshProjects: async () => {
     set({ projects: getStoredProjects() });
+    try {
+      const projects = await loadProjectListFromCloud();
+      saveProjectsToStorage(projects);
+      set({ projects });
+    } catch (error) {
+      console.warn('云端项目列表读取失败，保留本地缓存', error);
+    }
   },
 
-  setUserScope: (userId) => {
+  setUserScope: async (userId) => {
     const nextScope = userId.replace(/[^a-zA-Z0-9-]/g, '');
     if (!nextScope || nextScope === storageScope) return;
     migrateLegacyProjects(nextScope);
@@ -375,6 +412,23 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
       history: [],
       historyIndex: -1,
     });
+    try {
+      const remoteProjects = await loadProjectListFromCloud();
+      const remoteById = new Map(remoteProjects.map((project) => [project.id, project]));
+      const localProjects = getStoredProjects();
+      for (const localInfo of localProjects) {
+        const remoteInfo = remoteById.get(localInfo.id);
+        if (!remoteInfo || localInfo.updatedAt > remoteInfo.updatedAt) {
+          const localProject = loadProjectDataFromStorage(localInfo.id);
+          if (localProject) await saveProjectToCloud(localProject);
+        }
+      }
+      const synchronizedProjects = await loadProjectListFromCloud();
+      saveProjectsToStorage(synchronizedProjects);
+      set({ projects: synchronizedProjects });
+    } catch (error) {
+      console.warn('项目云同步失败，当前继续使用本地缓存', error);
+    }
   },
 
   // 画布操作
@@ -1023,7 +1077,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
   toggleModelConfig: () => set({ showModelConfig: !get().showModelConfig }),
 
   // 保存当前项目
-  saveCurrentProject: () => {
+  saveCurrentProject: async () => {
     const { project } = get();
     if (!project) return;
 
@@ -1048,11 +1102,13 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
         : p
     );
     saveProjectsToStorage(updatedProjects);
-    set({
-      projects: updatedProjects,
-      lastSaveTime: new Date().toISOString(),
-      isSaving: false,
-    });
+    try {
+      await saveProjectToCloud(project);
+      set({ projects: updatedProjects, lastSaveTime: new Date().toISOString(), isSaving: false });
+    } catch (error) {
+      console.error('云端保存失败，本地副本已保留', error);
+      set({ projects: updatedProjects, isSaving: false });
+    }
   },
 
   // 导出项目

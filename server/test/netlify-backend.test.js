@@ -102,3 +102,27 @@ test('Netlify backend proxy reports a missing backend configuration explicitly',
   assert.equal(result.statusCode, 503);
   assert.match(result.body, /BACKEND_NOT_CONFIGURED/);
 });
+
+test('Netlify backend proxy forwards authenticated project storage routes', async (t) => {
+  const previousOrigin = process.env.API_ORIGIN;
+  const previousFetch = globalThis.fetch;
+  process.env.API_ORIGIN = 'https://api.example.com';
+  globalThis.fetch = async (url, options) => {
+    assert.equal(String(url), 'https://api.example.com/api/projects/project-1');
+    assert.equal(options.method, 'PUT');
+    return new Response('{"project":{"id":"project-1"}}', { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  t.after(() => {
+    if (previousOrigin === undefined) delete process.env.API_ORIGIN;
+    else process.env.API_ORIGIN = previousOrigin;
+    globalThis.fetch = previousFetch;
+  });
+
+  const result = await handler(createEvent('project-1', {
+    httpMethod: 'PUT',
+    path: '/.netlify/functions/backend/projects/project-1',
+    queryStringParameters: {},
+    body: '{"project":{"id":"project-1"}}',
+  }));
+  assert.equal(result.statusCode, 200);
+});
