@@ -107,6 +107,13 @@ export default function NodePropertiesPanel() {
         prompt: newValue,
         content: newValue,
       });
+      const nextCursor = before.length + mention.length + 1;
+      setTimeout(() => {
+        if (textareaRef.current) {
+          textareaRef.current.focus();
+          textareaRef.current.setSelectionRange(nextCursor, nextCursor);
+        }
+      }, 0);
     }
 
     setShowMentionMenu(false);
@@ -282,7 +289,7 @@ export default function NodePropertiesPanel() {
                             rounded-md text-[10px] cursor-pointer hover:bg-primary-500/30"
                           onClick={() => setSelectedNode(n.id)}
                         >
-                          <AtSign className="w-2.5 h-2.5" />
+                          {n.data.generatedContent && n.data.type === 'image' ? <img src={n.data.generatedContent} alt="" className="h-5 w-7 rounded object-cover" /> : <AtSign className="w-2.5 h-2.5" />}
                           {shortName}
                         </span>
                       );
