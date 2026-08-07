@@ -77,7 +77,7 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
     };
 
     try {
-      const target = buildTarget(api, relativeUrl);
+      const target = buildTarget({ ...api, baseUrl: vault.decrypt(api.baseUrl) }, relativeUrl);
       const headers = new Headers({ accept: req.headers.accept || 'application/json', authorization: `Bearer ${vault.decrypt(api.encryptedApiKey)}`, 'x-api-key': vault.decrypt(api.encryptedApiKey) });
       if (req.method !== 'GET' && req.method !== 'HEAD') headers.set('content-type', 'application/json');
       const upstream = await fetchImpl(target, { method: req.method, headers, body: ['GET', 'HEAD'].includes(req.method) ? undefined : JSON.stringify(requestBody), redirect: 'manual' });
