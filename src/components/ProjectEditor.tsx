@@ -14,6 +14,7 @@ import {
   Loader2,
   Clapperboard,
   Library,
+  History,
 } from 'lucide-react';
 import useProjectStore from '@/store/useProjectStore';
 import Canvas from './Canvas';
@@ -21,6 +22,7 @@ import Toolbar from './Toolbar';
 import SettingsPanel from './SettingsPanel';
 import ModelConfigPanel from './ModelConfigPanel';
 import NodePropertiesPanel from './NodePropertiesPanel';
+import GenerationHistoryPanel from './GenerationHistoryPanel';
 
 const DirectorMode = lazy(() => import('./DirectorMode'));
 const SkillManager = lazy(() => import('./SkillManager'));
@@ -28,6 +30,7 @@ const SkillManager = lazy(() => import('./SkillManager'));
 export default function ProjectEditor() {
   const [showDirectorMode, setShowDirectorMode] = useState(false);
   const [showSkillManager, setShowSkillManager] = useState(false);
+  const [showGenerationHistory, setShowGenerationHistory] = useState(false);
   const {
     project,
     closeProject,
@@ -144,6 +147,9 @@ export default function ProjectEditor() {
           <button onClick={() => setShowSkillManager(true)} className="p-2 rounded-lg hover:bg-dark-700 text-dark-300 hover:text-white transition-colors" title="Skill 工作区">
             <Library className="w-4 h-4" />
           </button>
+          <button onClick={() => setShowGenerationHistory(true)} className="p-2 rounded-lg hover:bg-dark-700 text-dark-300 hover:text-white transition-colors" title="生成历史">
+            <History className="w-4 h-4" />
+          </button>
           <button onClick={toggleSettings} className="p-2 rounded-lg hover:bg-dark-700 text-dark-300 hover:text-white transition-colors" title="项目设置">
             <Settings className="w-4 h-4" />
           </button>
@@ -160,6 +166,7 @@ export default function ProjectEditor() {
         <Suspense fallback={null}>
           <DirectorMode isOpen={showDirectorMode} onClose={() => setShowDirectorMode(false)} />
           <SkillManager isOpen={showSkillManager} onClose={() => setShowSkillManager(false)} />
+          {showGenerationHistory && <GenerationHistoryPanel onClose={() => setShowGenerationHistory(false)} />}
         </Suspense>
 
         {/* 底部状态栏 */}
