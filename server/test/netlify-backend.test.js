@@ -62,6 +62,28 @@ test('Netlify backend proxy reconstructs the protected path from a redirect scop
   assert.match(result.body, /captcha-2/);
 });
 
+test('Netlify backend proxy resolves the path suffix used by Netlify function rewrites', async (t) => {
+  const previousOrigin = process.env.API_ORIGIN;
+  const previousFetch = globalThis.fetch;
+  process.env.API_ORIGIN = 'https://api.example.com';
+  globalThis.fetch = async (url) => {
+    assert.equal(String(url), 'https://api.example.com/api/auth/captcha');
+    return new Response('{"captchaId":"captcha-3","image":"data:image/svg+xml;base64,abc"}', {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  t.after(() => {
+    if (previousOrigin === undefined) delete process.env.API_ORIGIN;
+    else process.env.API_ORIGIN = previousOrigin;
+    globalThis.fetch = previousFetch;
+  });
+
+  const result = await handler(createEvent('', { path: '/.netlify/functions/backend/auth/captcha', queryStringParameters: {} }));
+  assert.equal(result.statusCode, 200);
+  assert.match(result.body, /captcha-3/);
+});
+
 test('Netlify backend proxy rejects paths outside the protected API surface', async () => {
   const result = await handler(createEvent('/api/arbitrary-target'));
   assert.equal(result.statusCode, 400);
