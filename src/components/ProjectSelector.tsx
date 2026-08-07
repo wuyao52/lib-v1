@@ -9,9 +9,12 @@ import {
   Layers,
   FolderOpen,
   LogOut,
+  Wallet,
+  Shield,
 } from 'lucide-react';
 import useProjectStore from '@/store/useProjectStore';
 import { useAuth } from '@/auth/AuthContext';
+import AccountCenter from './AccountCenter';
 
 export default function ProjectSelector() {
   const { projects, createProject, openProject, deleteProject, refreshProjects } = useProjectStore();
@@ -19,6 +22,7 @@ export default function ProjectSelector() {
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newDescription, setNewDescription] = useState('');
+  const [accountMode, setAccountMode] = useState<'billing' | 'admin' | null>(null);
 
   useEffect(() => {
     refreshProjects();
@@ -67,6 +71,8 @@ export default function ProjectSelector() {
           bg-dark-900/80 backdrop-blur-xl border-b border-dark-700/50"
       >
         <div className="flex items-center gap-3">
+          <button onClick={() => setAccountMode('billing')} className="px-3 py-2 rounded-lg text-sm text-dark-200 hover:text-white hover:bg-dark-700 flex items-center gap-2"><Wallet className="w-4 h-4 text-green-400" />¥{((user?.balanceCents || 0) / 100).toFixed(2)}</button>
+          {user?.role === 'system' && <button onClick={() => setAccountMode('admin')} className="p-2 rounded-lg text-primary-400 hover:text-white hover:bg-dark-700" title="系统管理"><Shield className="w-4 h-4" /></button>}
           <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500 to-primary-700
             flex items-center justify-center shadow-lg shadow-primary-500/20">
             <Film className="w-6 h-6 text-white" />
@@ -315,6 +321,7 @@ export default function ProjectSelector() {
           </motion.div>
         )}
       </AnimatePresence>
+      {accountMode && <AccountCenter mode={accountMode} onClose={() => setAccountMode(null)} />}
     </div>
   );
 }
