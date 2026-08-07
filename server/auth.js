@@ -325,9 +325,10 @@ export function createAuthService(db, { secureCookies = false, sendEmailCode, ge
           return res.status(401).json({ error: 'CURRENT_PASSWORD_INVALID', message: '当前密码错误' });
         }
         const currentTokenHash = req.cookies?.[SESSION_COOKIE] ? hashToken(req.cookies[SESSION_COOKIE]) : '';
-        await db.mutate(async (data) => {
+        const newPasswordHash = await hashPassword(req.body.newPassword);
+        await db.mutate((data) => {
           const currentUser = data.users.find((item) => item.id === req.user.id);
-          if (currentUser) currentUser.passwordHash = await hashPassword(req.body.newPassword);
+          if (currentUser) currentUser.passwordHash = newPasswordHash;
           data.sessions = data.sessions.filter((session) => session.userId !== req.user.id || session.tokenHash === currentTokenHash);
         });
         return res.json({ message: '密码已修改，其他设备的登录会话已失效' });
@@ -341,9 +342,10 @@ export function createAuthService(db, { secureCookies = false, sendEmailCode, ge
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || newPasswordError) return res.status(400).json({ error: 'VALIDATION_ERROR', message: newPasswordError || '请输入有效邮箱' });
         const user = db.read('users').find((item) => item.email === email);
         if (!user || !(await consumeEmailCode(email, 'reset_password', req.body.verificationCode))) return res.status(400).json({ error: 'INVALID_RESET_CODE', message: '邮箱验证码错误、已过期或尝试次数过多' });
-        await db.mutate(async (data) => {
+        const newPasswordHash = await hashPassword(req.body.newPassword);
+        await db.mutate((data) => {
           const currentUser = data.users.find((item) => item.id === user.id);
-          if (currentUser) currentUser.passwordHash = await hashPassword(req.body.newPassword);
+          if (currentUser) currentUser.passwordHash = newPasswordHash;
           data.sessions = data.sessions.filter((session) => session.userId !== user.id);
         });
         return res.json({ message: '密码已重置，请使用新密码登录' });
