@@ -111,8 +111,9 @@ const createPersistableProject = (project: DramaProject): DramaProject => ({
     ...node,
     data: {
       ...node.data,
-      generatedContent: node.data.generatedContent?.startsWith('data:') ? '' : node.data.generatedContent,
-      thumbnail: node.data.thumbnail?.startsWith('data:') ? '' : node.data.thumbnail,
+      // 上传素材使用云端项目数据持久化，不能在退出时清空 data URL
+      generatedContent: node.data.generatedContent,
+      thumbnail: node.data.thumbnail,
     },
   })),
 });
@@ -972,6 +973,12 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
           duration: settings.duration,
           seconds: settings.duration,
         };
+        const referencedImages = latestProject.nodes
+          .filter((candidate) => candidate.id !== node.id && candidate.data.generatedContent && (candidate.data.type === 'image' || candidate.data.type === 'video'))
+          .map((candidate) => candidate.data.generatedContent)
+          .filter(Boolean);
+        const sourceImages = node.data.generatedContent ? [node.data.generatedContent] : referencedImages.slice(0, 4);
+        if (sourceImages.length) genSettings.images = sourceImages;
 
         console.log('生成设置 (startGenerationWithType):', { type, genSettings });
 
@@ -1019,6 +1026,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
             thumbnail: result.data.thumbnail,
             content: 'AI 生成完成 - 点击预览',
           });
+          void apiRequest('/api/generation-history', { method: 'POST', body: JSON.stringify({ projectId: latestProject.id, nodeId: newNodeId, type, prompt: settings.prompt, url: result.data.url, thumbnail: result.data.thumbnail }) }).catch(() => undefined);
         } else {
           markGenerationFailed(nodeId, newNodeId, result.error || 'AI 生成失败', get, set);
         }
@@ -1083,11 +1091,8 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
 
     set({ isSaving: true });
 
-    const saved = saveProjectDataToStorage(project);
-    if (!saved) {
-      set({ isSaving: false });
-      return;
-    }
+    saveProjectDataToStorage(project);
+    // 本地空间不足时仍继续上传云端，确保大图片素材不会丢失
 
     // 更新项目列表中的信息
     const updatedProjects = get().projects.map((p) =>
