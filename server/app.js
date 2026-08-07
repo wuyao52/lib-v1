@@ -84,6 +84,11 @@ export async function createApp(options = {}) {
   });
   const encryptionKey = options.encryptionKey ?? process.env.APP_ENCRYPTION_KEY;
   const vault = createSecretVault(encryptionKey || (process.env.NODE_ENV === 'production' ? '' : 'local-development-encryption-key-change-me'));
+  await db.mutate((data) => {
+    data.systemApis.forEach((api) => {
+      try { vault.decrypt(api.baseUrl); } catch { api.baseUrl = vault.encrypt(String(api.baseUrl || '')); }
+    });
+  });
 
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
@@ -107,6 +112,7 @@ export async function createApp(options = {}) {
   authRouter.use('/register', authRateLimiter);
   authRouter.use('/email-code', authRateLimiter);
   authRouter.use('/captcha', authRateLimiter);
+  authRouter.use('/reset-password', authRateLimiter);
   auth.registerRoutes(authRouter);
   app.use('/api/auth', authRouter);
   const directorRouter = express.Router();
