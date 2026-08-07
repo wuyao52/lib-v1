@@ -49,7 +49,8 @@ function createRateLimiter({ limit = 10, windowMs = 60_000 } = {}) {
 }
 
 export async function createApp(options = {}) {
-  const databasePath = options.databasePath || resolve(currentDir, 'data', 'database.json');
+  const dataDirectory = String(process.env.DATA_DIR || '').trim();
+  const databasePath = options.databasePath || resolve(dataDirectory || resolve(currentDir, 'data'), 'database.json');
   const db = await new JsonDatabase(databasePath).init();
   const app = express();
   const allowedOrigins = new Set(options.allowedOrigins || ['http://localhost:3000', 'http://127.0.0.1:3000']);
