@@ -40,6 +40,28 @@ test('Netlify backend proxy forwards protected APIs and preserves session cookie
   assert.match(result.multiValueHeaders['set-cookie'][0], /ads_session=/);
 });
 
+test('Netlify backend proxy reconstructs the protected path from a redirect scope', async (t) => {
+  const previousOrigin = process.env.API_ORIGIN;
+  const previousFetch = globalThis.fetch;
+  process.env.API_ORIGIN = 'https://api.example.com';
+  globalThis.fetch = async (url) => {
+    assert.equal(String(url), 'https://api.example.com/api/auth/captcha');
+    return new Response('{"captchaId":"captcha-2","image":"data:image/svg+xml;base64,abc"}', {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  t.after(() => {
+    if (previousOrigin === undefined) delete process.env.API_ORIGIN;
+    else process.env.API_ORIGIN = previousOrigin;
+    globalThis.fetch = previousFetch;
+  });
+
+  const result = await handler(createEvent('captcha', { queryStringParameters: { scope: 'auth', path: 'captcha' } }));
+  assert.equal(result.statusCode, 200);
+  assert.match(result.body, /captcha-2/);
+});
+
 test('Netlify backend proxy rejects paths outside the protected API surface', async () => {
   const result = await handler(createEvent('/api/arbitrary-target'));
   assert.equal(result.statusCode, 400);
