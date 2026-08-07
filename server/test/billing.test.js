@@ -11,6 +11,7 @@ async function setup() {
   const upstreamCalls = [];
   const fetchImpl = async (url, options) => {
     upstreamCalls.push({ url: String(url), authorization: options.headers.get('authorization'), apiKey: options.headers.get('x-api-key'), body: options.body });
+    if (String(url).endsWith('/v1/models')) return new Response(JSON.stringify({ data: [{ id: 'video-model', name: 'Video Model', type: 'video_generation', owned_by: 'Detected Provider' }] }), { status: 200, headers: { 'content-type': 'application/json' } });
     const body = JSON.parse(options.body || '{}');
     if (body.prompt === 'fail') return new Response(JSON.stringify({ error: { message: 'upstream failed' } }), { status: 500, headers: { 'content-type': 'application/json' } });
     return new Response(JSON.stringify({ id: 'task-1', status: 'queued' }), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -18,6 +19,7 @@ async function setup() {
   const { app, db } = await createApp({
     databasePath: join(directory, 'database.json'), secureCookies: false,
     encryptionKey: 'test-encryption-key-with-at-least-32-characters', fetchImpl,
+    resolveHost: async () => [{ address: '203.0.113.10', family: 4 }],
     sendEmailCode: async ({ email, code }) => codes.set(email, code),
   });
   const server = app.listen(0, '127.0.0.1');
@@ -42,6 +44,16 @@ test('system APIs, pricing, balances and managed gateway enforce roles and billi
   await context.db.mutate((data) => { data.users.find((item) => item.id === admin.user.id).role = 'system'; });
 
   assert.equal((await context.request('/api/admin/users', normal.cookie)).status, 403);
+  assert.equal((await context.request('/api/admin/system-apis/discover', normal.cookie, { method: 'POST', body: JSON.stringify({ baseUrl: 'https://upstream.example', apiKey: 'secret-system-key' }) })).status, 403);
+  const discoveryResponse = await context.request('/api/admin/system-apis/discover', admin.cookie, { method: 'POST', body: JSON.stringify({ baseUrl: 'https://upstream.example', apiKey: 'secret-system-key' }) });
+  assert.equal(discoveryResponse.status, 200);
+  const discovery = await discoveryResponse.json();
+  assert.equal(discovery.provider, 'Detected Provider');
+  assert.equal(discovery.models[0].id, 'video-model');
+  assert.equal(JSON.stringify(discovery).includes('secret-system-key'), false);
+  const privateDiscovery = await context.request('/api/admin/system-apis/discover', admin.cookie, { method: 'POST', body: JSON.stringify({ baseUrl: 'https://127.0.0.1', apiKey: 'secret-system-key' }) });
+  assert.equal(privateDiscovery.status, 400);
+  assert.equal((await privateDiscovery.json()).error, 'API_DISCOVERY_FAILED');
   const createdApiResponse = await context.request('/api/admin/system-apis', admin.cookie, { method: 'POST', body: JSON.stringify({ name: 'Managed', provider: 'Compatible', baseUrl: 'https://upstream.example', apiKey: 'secret-system-key' }) });
   assert.equal(createdApiResponse.status, 201);
   const createdApi = (await createdApiResponse.json()).api;
@@ -58,8 +70,9 @@ test('system APIs, pricing, balances and managed gateway enforce roles and billi
   await context.request(`/api/admin/users/${normal.user.id}/balance`, admin.cookie, { method: 'POST', body: JSON.stringify({ amountCents: 1000 }) });
   const success = await context.request(`/api/system-ai/${createdApi.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'ok', duration: 5 }) });
   assert.equal(success.status, 200);
-  assert.equal(context.upstreamCalls[0].authorization, 'Bearer secret-system-key');
-  assert.equal(context.upstreamCalls[0].apiKey, 'secret-system-key');
+  const generationCall = context.upstreamCalls.find((call) => call.body?.includes('"prompt":"ok"'));
+  assert.equal(generationCall.authorization, 'Bearer secret-system-key');
+  assert.equal(generationCall.apiKey, 'secret-system-key');
   let billing = await (await context.request('/api/billing/me', normal.cookie)).json();
   assert.equal(billing.balanceCents, 950);
   assert.equal(billing.transactions.some((item) => item.type === 'model_usage' && item.amountCents === -50), true);

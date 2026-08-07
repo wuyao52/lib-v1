@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { discoverSystemApi } from './api-discovery.js';
 
 const CATEGORIES = new Set(['text', 'image', 'video']);
 const BILLING_UNITS = new Set(['request', 'image', 'second']);
@@ -103,7 +104,7 @@ export function registerBillingRoutes(router, { db, requireAuth }) {
   });
 }
 
-export function registerAdminRoutes(router, { db, requireSystem, vault }) {
+export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImpl, resolveHost }) {
   router.use(requireSystem);
   router.get('/users', (_req, res) => res.json({ users: db.read('users').map(safeUser) }));
   router.patch('/users/:id/role', async (req, res) => {
@@ -137,6 +138,20 @@ export function registerAdminRoutes(router, { db, requireSystem, vault }) {
   });
 
   router.get('/system-apis', (_req, res) => res.json({ apis: db.read('systemApis').map((api) => exposedApi(api, vault)) }));
+  router.post('/system-apis/discover', async (req, res) => {
+    try {
+      const existing = req.body.apiId ? db.read('systemApis').find((api) => api.id === req.body.apiId) : null;
+      if (req.body.apiId && !existing) return res.status(404).json({ error: 'API_NOT_FOUND', message: '系统 API 不存在' });
+      const result = await discoverSystemApi({
+        baseUrl: req.body.baseUrl || existing?.baseUrl,
+        apiKey: String(req.body.apiKey || '').trim() || (existing ? vault.decrypt(existing.encryptedApiKey) : ''),
+        fetchImpl, resolveHost,
+      });
+      return res.json(result);
+    } catch (error) {
+      return res.status(400).json({ error: 'API_DISCOVERY_FAILED', message: error.message || 'API 自动识别失败' });
+    }
+  });
   router.post('/system-apis', async (req, res) => {
     try {
       const now = nowIso();

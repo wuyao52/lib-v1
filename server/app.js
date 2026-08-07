@@ -125,7 +125,7 @@ export async function createApp(options = {}) {
   registerCatalogRoutes(catalogRouter, { db, requireAuth: auth.requireAuth });
   app.use('/api/catalog', catalogRouter);
   const adminRouter = express.Router();
-  registerAdminRoutes(adminRouter, { db, requireSystem: auth.requireSystem, vault });
+  registerAdminRoutes(adminRouter, { db, requireSystem: auth.requireSystem, vault, fetchImpl: options.fetchImpl, resolveHost: options.resolveHost });
   app.use('/api/admin', adminRouter);
   const systemAiRouter = express.Router();
   registerSystemAiRoutes(systemAiRouter, { db, requireAuth: auth.requireAuth, vault, fetchImpl: options.fetchImpl });
