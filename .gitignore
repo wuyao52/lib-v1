@@ -27,6 +27,9 @@ Thumbs.db
 # Vercel
 .vercel/
 
+# Netlify local build and function cache
+.netlify/
+
 # Logs
 *.log
 
