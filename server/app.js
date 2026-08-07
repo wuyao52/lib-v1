@@ -9,6 +9,9 @@ import { registerDirectorRoutes } from './director.js';
 import { registerSkillRoutes } from './skills.js';
 import { createEmailSenderFromEnv } from './email.js';
 import { registerProjectRoutes } from './projects.js';
+import { createSecretVault } from './secrets.js';
+import { registerAdminRoutes, registerBillingRoutes, registerCatalogRoutes } from './billing.js';
+import { registerSystemAiRoutes } from './system-ai.js';
 
 const currentDir = fileURLToPath(new URL('.', import.meta.url));
 
@@ -79,6 +82,8 @@ export async function createApp(options = {}) {
     generateImageCaptcha: options.generateImageCaptcha,
     systemUserEmails,
   });
+  const encryptionKey = options.encryptionKey ?? process.env.APP_ENCRYPTION_KEY;
+  const vault = createSecretVault(encryptionKey || (process.env.NODE_ENV === 'production' ? '' : 'local-development-encryption-key-change-me'));
 
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
@@ -113,6 +118,18 @@ export async function createApp(options = {}) {
   const projectRouter = express.Router();
   registerProjectRoutes(projectRouter, { db, requireAuth: auth.requireAuth });
   app.use('/api/projects', projectRouter);
+  const billingRouter = express.Router();
+  registerBillingRoutes(billingRouter, { db, requireAuth: auth.requireAuth });
+  app.use('/api/billing', billingRouter);
+  const catalogRouter = express.Router();
+  registerCatalogRoutes(catalogRouter, { db, requireAuth: auth.requireAuth });
+  app.use('/api/catalog', catalogRouter);
+  const adminRouter = express.Router();
+  registerAdminRoutes(adminRouter, { db, requireSystem: auth.requireSystem, vault });
+  app.use('/api/admin', adminRouter);
+  const systemAiRouter = express.Router();
+  registerSystemAiRoutes(systemAiRouter, { db, requireAuth: auth.requireAuth, vault, fetchImpl: options.fetchImpl });
+  app.use('/api/system-ai', systemAiRouter);
 
   if (options.serveFrontend) {
     const distPath = resolve(currentDir, '..', 'dist');
