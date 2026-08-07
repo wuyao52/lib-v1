@@ -71,8 +71,9 @@ export default function ProjectSelector() {
           bg-dark-900/80 backdrop-blur-xl border-b border-dark-700/50"
       >
         <div className="flex items-center gap-3">
-          <button onClick={() => setAccountMode('billing')} className="px-3 py-2 rounded-lg text-sm text-dark-200 hover:text-white hover:bg-dark-700 flex items-center gap-2"><Wallet className="w-4 h-4 text-green-400" />¥{((user?.balanceCents || 0) / 100).toFixed(2)}</button>
-          {user?.role === 'system' && <button onClick={() => setAccountMode('admin')} className="p-2 rounded-lg text-primary-400 hover:text-white hover:bg-dark-700" title="系统管理"><Shield className="w-4 h-4" /></button>}
+          <span className={`hidden md:inline-flex px-2 py-1 rounded border text-xs ${user?.role === 'system' ? 'border-primary-500/40 bg-primary-500/10 text-primary-300' : 'border-dark-600 bg-dark-800 text-dark-400'}`}>{user?.role === 'system' ? '系统用户' : '普通用户'}</span>
+          <button onClick={() => setAccountMode('billing')} className="px-3 py-2 rounded-lg text-sm text-dark-200 hover:text-white hover:bg-dark-700 flex items-center gap-2"><Wallet className="w-4 h-4 text-green-400" />余额 ¥{((user?.balanceCents || 0) / 100).toFixed(2)}</button>
+          {user?.role === 'system' && <button onClick={() => setAccountMode('admin')} className="px-3 py-2 rounded-lg text-sm text-primary-300 hover:text-white hover:bg-dark-700 flex items-center gap-2" title="管理 API、用户和充值审核"><Shield className="w-4 h-4" />系统管理</button>}
           <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500 to-primary-700
             flex items-center justify-center shadow-lg shadow-primary-500/20">
             <Film className="w-6 h-6 text-white" />
