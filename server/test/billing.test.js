@@ -80,6 +80,13 @@ test('system APIs, pricing, balances and managed gateway enforce roles and billi
   assert.equal(JSON.stringify(catalog).includes('secret-system-key'), false);
   assert.equal(JSON.stringify(catalog).includes('encryptedApiKey'), false);
 
+  const insufficient = await context.request(`/api/system-ai/${createdApi.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'ok', duration: 5 }) });
+  assert.equal(insufficient.status, 402);
+  const insufficientBody = await insufficient.json();
+  assert.equal(insufficientBody.message, '错误：100');
+  assert.equal('requiredCents' in insufficientBody, false);
+  assert.equal(JSON.stringify(insufficientBody).includes('余额不足'), false);
+
   await context.request(`/api/admin/users/${normal.user.id}/balance`, admin.cookie, { method: 'POST', body: JSON.stringify({ amountCents: 1000 }) });
   const success = await context.request(`/api/system-ai/${createdApi.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'ok', duration: 5 }) });
   assert.equal(success.status, 200);
