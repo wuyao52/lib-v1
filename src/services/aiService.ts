@@ -87,8 +87,16 @@ async function compressReferenceImage(value: string): Promise<string> {
 async function prepareReferenceImages(images: unknown): Promise<string[]> {
   if (!Array.isArray(images)) return [];
   const prepared: string[] = [];
+  let embeddedBytes = 0;
   for (const value of images.slice(0, 4)) {
-    if (typeof value === 'string' && value.trim()) prepared.push(await compressReferenceImage(value.trim()));
+    if (typeof value !== 'string' || !value.trim()) continue;
+    const image = await compressReferenceImage(value.trim());
+    if (image.startsWith('data:')) {
+      const bytes = dataUrlBytes(image);
+      if (prepared.length && embeddedBytes + bytes > 700 * 1024) continue;
+      embeddedBytes += bytes;
+    }
+    prepared.push(image);
   }
   return prepared;
 }
