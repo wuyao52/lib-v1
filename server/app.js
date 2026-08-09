@@ -1,5 +1,6 @@
 import express from 'express';
 import cookieParser from 'cookie-parser';
+import { createHash, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { JsonDatabase } from './store.js';
@@ -16,6 +17,9 @@ import { registerSystemAiRoutes } from './system-ai.js';
 import { registerAssetRoutes } from './assets.js';
 import { createObjectStorageFromEnv } from './object-storage.js';
 import { createVideoQueue } from './video-queue.js';
+import { createGeneratedMediaService, registerGeneratedMediaRoutes } from './generated-media.js';
+import { registerUserApiConfigRoutes, registerUserAiRoutes } from './user-api-configs.js';
+import { createPaymentService, registerPaymentRoutes } from './payments.js';
 
 const currentDir = fileURLToPath(new URL('.', import.meta.url));
 
@@ -41,20 +45,32 @@ function createOriginGuard(allowedOrigins) {
   };
 }
 
-function createRateLimiter({ limit = 10, windowMs = 60_000 } = {}) {
-  const buckets = new Map();
-  return (req, res, next) => {
+function createRateLimiter({ db, limit = 10, windowMs = 60_000 } = {}) {
+  return async (req, res, next) => {
     const identity = req.body?.email || req.body?.identifier || req.body?.username || '';
-    const key = `${req.ip}:${String(identity).toLowerCase()}`;
+    const key = createHash('sha256').update(`${req.ip}:${String(identity).toLowerCase()}`).digest('hex');
     const now = Date.now();
-    const bucket = buckets.get(key);
-    if (!bucket || bucket.resetAt <= now) {
-      buckets.set(key, { count: 1, resetAt: now + windowMs });
+    try {
+      let bucket;
+      if (db.consumeRateLimit) bucket = await db.consumeRateLimit(key, limit, windowMs, now);
+      else await db.mutate((data) => {
+        data.rateLimits = data.rateLimits.filter((item) => item.resetAt > now - windowMs);
+        let stored = data.rateLimits.find((item) => item.id === key);
+        if (!stored || stored.resetAt <= now) {
+          stored = { id: key, count: 1, resetAt: now + windowMs };
+          data.rateLimits = data.rateLimits.filter((item) => item.id !== key);
+          data.rateLimits.push(stored);
+        } else stored.count += 1;
+        bucket = { allowed: stored.count <= limit, count: stored.count, resetAt: stored.resetAt };
+      });
+      if (!bucket.allowed) {
+        res.setHeader('Retry-After', String(Math.max(1, Math.ceil((bucket.resetAt - now) / 1000))));
+        return res.status(429).json({ error: 'RATE_LIMITED', message: '尝试次数过多，请稍后重试' });
+      }
       return next();
+    } catch (error) {
+      return next(error);
     }
-    bucket.count += 1;
-    if (bucket.count > limit) return res.status(429).json({ error: 'RATE_LIMITED', message: '尝试次数过多，请稍后重试' });
-    return next();
   };
 }
 
@@ -68,6 +84,8 @@ export async function createApp(options = {}) {
       : new JsonDatabase(databasePath).init()
   );
   const assetStorage = options.assetStorage === undefined ? createObjectStorageFromEnv() : options.assetStorage;
+  const generatedMedia = createGeneratedMediaService({ db, storage: assetStorage, fetchImpl: options.fetchImpl });
+  const paymentService = createPaymentService({ db, fetchImpl: options.fetchImpl, env: process.env, config: options.paymentConfig });
   const systemUserEmails = new Set(String(process.env.SYSTEM_USER_EMAILS || '')
     .split(',').map((value) => value.trim().toLowerCase()).filter(Boolean));
   if (systemUserEmails.size) {
@@ -95,32 +113,40 @@ export async function createApp(options = {}) {
     });
   });
   const videoQueue = options.videoQueue === false ? null : await createVideoQueue({
-    db, vault, fetchImpl: options.fetchImpl, autoStart: options.videoQueueAutoStart !== false,
+    db, vault, fetchImpl: options.fetchImpl, autoStart: options.videoQueueAutoStart !== false, generatedMedia,
   });
 
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
   app.use(securityHeaders);
-  app.use(express.json({ limit: '25mb' }));
+  const preserveRawBody = (req, _res, buffer) => { req.rawBody = Buffer.from(buffer); };
+  app.use(express.json({ limit: '25mb', verify: preserveRawBody }));
+  app.use(express.urlencoded({ extended: false, limit: '1mb', verify: preserveRawBody }));
   app.use(cookieParser());
   app.use(createOriginGuard(allowedOrigins));
   app.use(auth.authenticate);
+  const requestLogger = options.logger === undefined ? (process.env.NODE_ENV === 'production' ? console : null) : options.logger;
+  app.use((req, res, next) => {
+    const requestId = String(req.get('x-request-id') || randomUUID()).slice(0, 100);
+    const startedAt = Date.now();
+    req.requestId = requestId;
+    res.setHeader('x-request-id', requestId);
+    res.on('finish', () => requestLogger?.info?.(JSON.stringify({
+      event: 'http_request', requestId, method: req.method, path: req.path,
+      status: res.statusCode, durationMs: Date.now() - startedAt, userId: req.user?.id || null,
+    })));
+    next();
+  });
 
-  app.get('/api/health', async (_req, res, next) => {
-    try {
-      if (db.ping) await db.ping();
-      return res.json({
-        ok: true,
-        service: 'ai-drama-studio',
-        database: db.kind || 'json',
-        assetStorage: assetStorage?.provider || 'database',
-      });
-    } catch (error) {
-      return next(error);
-    }
+  app.get('/api/health', async (_req, res) => {
+    const checks = { database: 'ok', objectStorage: assetStorage ? 'ok' : 'not_configured', queue: videoQueue ? 'ok' : 'disabled' };
+    try { if (db.ping) await db.ping(); } catch { checks.database = 'error'; }
+    try { if (assetStorage?.health) await assetStorage.health(); } catch { checks.objectStorage = 'error'; }
+    const ok = checks.database === 'ok' && checks.objectStorage !== 'error';
+    return res.status(ok ? 200 : 503).json({ ok, service: 'ai-drama-studio', checks });
   });
   const authRouter = express.Router();
-  const authRateLimiter = createRateLimiter({ limit: 12, windowMs: 60_000 });
+  const authRateLimiter = createRateLimiter({ db, limit: 12, windowMs: 60_000 });
   authRouter.use('/login', authRateLimiter);
   authRouter.use('/register', authRateLimiter);
   authRouter.use('/email-code', authRateLimiter);
@@ -128,6 +154,9 @@ export async function createApp(options = {}) {
   authRouter.use('/reset-password', authRateLimiter);
   auth.registerRoutes(authRouter);
   app.use('/api/auth', authRouter);
+  const paymentRouter = express.Router();
+  registerPaymentRoutes(paymentRouter, { db, requireAuth: auth.requireAuth, paymentService });
+  app.use('/api/payments', paymentRouter);
   const directorRouter = express.Router();
   registerDirectorRoutes(directorRouter, { db, requireAuth: auth.requireAuth });
   app.use('/api/director', directorRouter);
@@ -138,8 +167,11 @@ export async function createApp(options = {}) {
   registerProjectRoutes(projectRouter, { db, requireAuth: auth.requireAuth });
   app.use('/api/projects', projectRouter);
   const assetRouter = express.Router();
-  registerAssetRoutes(assetRouter, { db, requireAuth: auth.requireAuth, assetStorage });
+  registerAssetRoutes(assetRouter, { db, requireAuth: auth.requireAuth, assetStorage, assetSigningKey: encryptionKey || 'local-development-encryption-key-change-me' });
   app.use('/api/assets', assetRouter);
+  const generatedMediaRouter = express.Router();
+  registerGeneratedMediaRoutes(generatedMediaRouter, { db, requireAuth: auth.requireAuth, storage: assetStorage });
+  app.use('/api/generated-media', generatedMediaRouter);
   const generationHistoryRouter = express.Router();
   registerGenerationHistoryRoutes(generationHistoryRouter, { db, requireAuth: auth.requireAuth });
   app.use('/api/generation-history', generationHistoryRouter);
@@ -155,6 +187,12 @@ export async function createApp(options = {}) {
   const systemAiRouter = express.Router();
   registerSystemAiRoutes(systemAiRouter, { db, requireAuth: auth.requireAuth, vault, fetchImpl: options.fetchImpl, videoQueue });
   app.use('/api/system-ai', systemAiRouter);
+  const userApiConfigRouter = express.Router();
+  registerUserApiConfigRoutes(userApiConfigRouter, { db, requireAuth: auth.requireAuth, vault, fetchImpl: options.fetchImpl, resolveHost: options.resolveHost });
+  app.use('/api/user-api-configs', userApiConfigRouter);
+  const userAiRouter = express.Router();
+  registerUserAiRoutes(userAiRouter, { db, requireAuth: auth.requireAuth, vault, fetchImpl: options.fetchImpl, resolveHost: options.resolveHost });
+  app.use('/api/user-ai', userAiRouter);
 
   if (options.serveFrontend) {
     const distPath = resolve(currentDir, '..', 'dist');
