@@ -40,6 +40,7 @@ function generationSettings(project: DramaProject, model: AIModelConfig, shot: D
     duration,
     seconds: duration,
     style: project.settings.defaultStyle,
+    _client: { projectId: project.id, nodeId: `${project.id}-${shot.clipId}` },
     ...(images.length ? { images } : {}),
   };
 }
