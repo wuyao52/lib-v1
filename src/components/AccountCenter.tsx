@@ -5,7 +5,7 @@ import { useAuth, type AuthUser } from '@/auth/AuthContext';
 
 type Transaction = { id: string; amountCents: number; type: string; description: string; createdAt: string };
 type Recharge = { id: string; amountCents: number; status: string; note: string; createdAt: string; user?: AuthUser };
-type PaymentOrder = { id: string; provider: 'alipay' | 'wechat'; amountCents: number; status: string; payUrl: string; createdAt: string; paidAt?: string | null };
+type PaymentOrder = { id: string; userId?: string; provider: 'alipay' | 'wechat'; amountCents: number; status: string; payUrl: string; createdAt: string; paidAt?: string | null };
 type SystemApi = { id: string; name: string; provider: string; baseUrl: string; apiKey: string; enabled: boolean };
 type Pricing = { id: string; apiId: string; modelId: string; displayName: string; category: string; billingUnit: string; unitPriceCents: number; minDurationSec?: number | null; maxDurationSec?: number | null; allowedDurationsSec?: number[]; enabled: boolean };
 type DiscoveredModel = { id: string; name: string; type: string };
@@ -56,15 +56,17 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
       setPaymentProviders(providerData.providers); setPaymentOrders(orderData.orders);
       return;
     }
-    const [apiData, priceData, userData, rechargeData, queueData] = await Promise.all([
+    const [apiData, priceData, userData, rechargeData, queueData, paymentData] = await Promise.all([
       apiRequest<{ apis: SystemApi[] }>('/api/admin/system-apis'),
       apiRequest<{ pricing: Pricing[] }>('/api/admin/pricing'),
       apiRequest<{ users: AuthUser[] }>('/api/admin/users'),
       apiRequest<{ recharges: Recharge[] }>('/api/admin/recharges'),
       apiRequest<QueueOverview>('/api/admin/video-queue'),
+      apiRequest<{ orders: PaymentOrder[] }>('/api/payments/admin/orders'),
     ]);
     setApis(apiData.apis); setPricing(priceData.pricing); setUsers(userData.users); setRecharges(rechargeData.recharges);
     setQueue(queueData);
+    setPaymentOrders(paymentData.orders);
   }, [mode]);
 
   useEffect(() => { load().catch((error) => setMessage(error.message)); }, [load]);
@@ -222,6 +224,7 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
           </section>
 
           <QueueView overview={queue} users={users} />
+          <AdminPaymentOrders orders={paymentOrders} users={users} act={act} />
           <AdminUsers users={users} currentUserId={user?.id} recharges={recharges} balanceAdjustments={balanceAdjustments} setBalanceAdjustments={setBalanceAdjustments} act={act} />
         </>}
       </div>
@@ -241,6 +244,11 @@ function QueueView({ overview, users }: { overview: QueueOverview | null; users:
     <div className="grid grid-cols-2 gap-2 md:grid-cols-5">{Object.entries(labels).map(([status, label]) => <div key={status} className="rounded border border-dark-600 bg-dark-900 px-3 py-2"><p className="text-[10px] text-dark-500">{label}</p><p className="mt-1 text-lg text-white">{overview?.counts[status as keyof QueueOverview['counts']] || 0}</p></div>)}</div>
     <div className="mt-3 max-h-52 overflow-y-auto divide-y divide-dark-700">{overview?.recent.length ? overview.recent.map((job) => <div key={job.id} className="grid grid-cols-[1fr_auto] gap-3 py-2 text-xs"><span className="min-w-0 text-dark-300"><span className="block truncate">{userNames.get(job.userId) || job.userId} · {job.modelId}</span><small className="text-dark-500">{new Date(job.createdAt).toLocaleString()} · {job.id.slice(0, 8)}</small></span><span className={job.status === 'failed' ? 'text-red-400' : job.status === 'completed' ? 'text-green-400' : 'text-cyan-400'}>{labels[job.status] || job.status}{job.status === 'processing' && job.progress ? ` ${job.progress}%` : ''}{job.errorCode ? ` · ${job.errorCode}` : ''}</span></div>) : <p className="py-5 text-center text-xs text-dark-500">暂无视频队列任务</p>}</div>
   </section>;
+}
+
+function AdminPaymentOrders({ orders, users, act }: { orders: PaymentOrder[]; users: AuthUser[]; act: (job: () => Promise<unknown>, success: string) => Promise<void> }) {
+  const names = new Map(users.map((user) => [user.id, user.username]));
+  return <section><h3 className="mb-2 text-sm font-medium text-white">在线支付与退款</h3><div className="max-h-64 divide-y divide-dark-700 overflow-y-auto">{orders.length ? orders.map((order) => <div key={order.id} className="grid grid-cols-[1fr_auto] items-center gap-3 py-2 text-sm"><span className="text-dark-300">{names.get(order.userId || '') || order.userId} · {order.provider === 'alipay' ? '支付宝' : '微信支付'} · {yuan(order.amountCents)}<small className="block text-dark-500">{new Date(order.createdAt).toLocaleString()} · {order.status}</small></span>{order.status === 'paid' && <button className="border border-red-500/40 px-2 py-1 text-xs text-red-300" onClick={() => void act(() => apiRequest(`/api/payments/admin/orders/${order.id}/refund`, { method: 'POST' }), '退款已提交')}>原路退款</button>}</div>) : <p className="py-4 text-xs text-dark-500">暂无在线支付订单</p>}</div></section>;
 }
 
 function AdminUsers({ users, currentUserId, recharges, balanceAdjustments, setBalanceAdjustments, act }: any) {
