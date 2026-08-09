@@ -47,6 +47,7 @@ export interface SceneNodeData {
   status: 'idle' | 'generating' | 'completed' | 'error';
   error?: string;
   thumbnail?: string;
+  mediaSource?: 'uploaded' | 'generated';
   progress?: any;  // 简化类型，支持数字或对象
   [key: string]: any;  // 添加索引签名
 }
