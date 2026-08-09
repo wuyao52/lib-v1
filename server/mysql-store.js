@@ -432,6 +432,20 @@ export class MySqlDatabase {
     return this.data[collection];
   }
 
+  async refreshCollections(collections) {
+    const names = [...new Set(collections)].filter((name) => TABLES[name]);
+    if (!names.length) return;
+    const operation = this.writeQueue.then(async () => {
+      const refreshed = await Promise.all(names.map(async (name) => {
+        const spec = TABLES[name]; const [rows] = await this.pool.query(spec.select);
+        return [name, spec.parse ? rows.map(spec.parse) : rows];
+      }));
+      for (const [name, rows] of refreshed) this.data[name] = rows;
+    });
+    this.writeQueue = operation.catch(() => undefined);
+    await operation;
+  }
+
   async createUser(user) {
     let result = { created: false, error: null };
     const operation = this.writeQueue.then(async () => {
@@ -480,6 +494,28 @@ export class MySqlDatabase {
     this.writeQueue = operation.catch(() => undefined);
     await operation;
     return result;
+  }
+
+  async changeBalanceAtomic({ userId, amountCents, type, description, referenceId = null, createdBy = null }) {
+    let result = { failure: null, balance: null, transaction: null };
+    const operation = this.writeQueue.then(async () => {
+      const connection = await this.pool.getConnection();
+      try {
+        await connection.beginTransaction();
+        const [users] = await connection.query('SELECT balance_cents AS balanceCents FROM users WHERE id = ? FOR UPDATE', [userId]);
+        if (!users.length) { result.failure = 'USER_NOT_FOUND'; await connection.rollback(); return; }
+        const next = Number(users[0].balanceCents) + Number(amountCents);
+        if (next < 0) { result.failure = 'INSUFFICIENT_BALANCE'; await connection.rollback(); return; }
+        const transaction = { id: randomUUID(), userId, amountCents: Number(amountCents), type, description, referenceId, createdBy, createdAt: new Date().toISOString() };
+        await connection.query('UPDATE users SET balance_cents = ? WHERE id = ?', [next, userId]);
+        await connection.query(TABLES.balanceTransactions.insert, [[TABLES.balanceTransactions.values(transaction)]]);
+        await connection.commit();
+        const user = this.data.users.find((item) => item.id === userId); if (user) user.balanceCents = next;
+        this.data.balanceTransactions.push(transaction);
+        result = { failure: null, balance: next, transaction };
+      } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+    });
+    this.writeQueue = operation.catch(() => undefined); await operation; return result;
   }
 
   async saveProject(record, expectedVersion) {
@@ -822,7 +858,7 @@ export class MySqlDatabase {
         const cachedOrder = this.data.paymentOrders.find((item) => item.id === orderId); if (cachedOrder) cachedOrder.status = 'refunding';
         const user = this.data.users.find((item) => item.id === row.user_id); if (user) user.balanceCents -= Number(row.amount_cents);
         this.data.balanceTransactions.push(transaction);
-        result = { ok: true, error: null, order: { ...cachedOrder } };
+        result = { ok: true, error: null, order: cachedOrder ? { ...cachedOrder } : { id: row.id, userId: row.user_id, merchantOrderNo: row.merchant_order_no, provider: row.provider, amountCents: Number(row.amount_cents), status: 'refunding', providerTradeNo: row.provider_trade_no, payUrl: row.pay_url, createdAt: row.created_at, expiresAt: row.expires_at, paidAt: row.paid_at, refundedAt: row.refunded_at } };
       } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
     });
     this.writeQueue = operation.catch(() => undefined); await operation; return result;
