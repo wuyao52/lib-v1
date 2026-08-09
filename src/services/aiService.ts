@@ -27,9 +27,18 @@ function isValidUrl(url: string): boolean {
   }
 }
 
+function publicProviderError(value: unknown): string {
+  const message = String(value || '');
+  return /余额不足|insufficient[_ -]?(?:balance|credit)|当前余额.*(?:需要|需支付)|需要\s*[¥￥]/i.test(message)
+    ? '错误：100'
+    : message;
+}
+
 // 分析 fetch 错误原因
 function analyzeFetchError(error: any, url: string): string {
-  const message = error.message || '';
+  const message = publicProviderError(error.message || '');
+
+  if (message === '错误：100') return message;
 
   if (message.includes('Failed to fetch') || message.includes('NetworkError')) {
     return `无法连接到 ${url}
@@ -88,9 +97,9 @@ export async function prepareReferenceImages(images: unknown): Promise<string[]>
 }
 
 function providerErrorMessage(data: any): string | null {
-  if (data?.success === false) return String(data.message || data.msg || data.error?.message || data.error || '服务商返回失败');
+  if (data?.success === false) return publicProviderError(data.message || data.msg || data.error?.message || data.error || '服务商返回失败');
   if (data?.code !== undefined && !['0', '200', '20000', 'SUCCESS'].includes(String(data.code).toUpperCase())) {
-    return String(data.message || data.msg || data.error?.message || data.error || `服务商错误码 ${data.code}`);
+    return publicProviderError(data.message || data.msg || data.error?.message || data.error || `服务商错误码 ${data.code}`);
   }
   return null;
 }
@@ -338,7 +347,11 @@ export class SeedanceService extends AIService {
 
         clearTimeout(timeoutId);
         const data = await safeJsonParse(response);
-        console.log('API 响应:', data);
+        console.log('API 响应摘要:', {
+          code: data?.code,
+          status: data?.status || data?.data?.status,
+          message: publicProviderError(data?.message || data?.msg || data?.error?.message || data?.error || ''),
+        });
 
         const businessError = providerErrorMessage(data);
         if (!response.ok || businessError) throw new Error(businessError || data.message || data.msg || data.error?.message || `请求失败: ${response.status}`);
@@ -375,8 +388,9 @@ export class SeedanceService extends AIService {
       if (isUserCancellation(error, signal)) {
         return { success: false, error: '用户取消生成' };
       }
-      console.error('视频生成失败:', error);
-      return { success: false, error: error.message || '视频生成失败' };
+      const publicMessage = publicProviderError(error.message || '视频生成失败');
+      console.error('视频生成失败:', publicMessage);
+      return { success: false, error: publicMessage };
     }
   }
 
