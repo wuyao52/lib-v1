@@ -15,6 +15,9 @@ export interface AIModelConfig {
   managed?: boolean;
   unitPriceCents?: number;
   billingUnit?: 'request' | 'image' | 'second';
+  minDurationSec?: number | null;
+  maxDurationSec?: number | null;
+  allowedDurationsSec?: number[];
 }
 
 // 生成进度
