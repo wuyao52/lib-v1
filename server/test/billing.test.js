@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createApp } from '../app.js';
 
-async function setup() {
+async function setup({ videoQueue = false, videoQueueAutoStart = true } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'ads-billing-'));
   const codes = new Map();
   const upstreamCalls = [];
@@ -21,9 +21,10 @@ async function setup() {
     if (body.prompt === 'moderation-later') return new Response(JSON.stringify({ id: 'moderation-task', status: 'queued' }), { status: 200, headers: { 'content-type': 'application/json' } });
     return new Response(JSON.stringify({ id: 'task-1', status: 'queued' }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
-  const { app, db } = await createApp({
+  const { app, db, videoQueue: queue } = await createApp({
     databasePath: join(directory, 'database.json'), secureCookies: false,
     encryptionKey: 'test-encryption-key-with-at-least-32-characters', fetchImpl,
+    videoQueue, videoQueueAutoStart,
     resolveHost: async () => [{ address: '203.0.113.10', family: 4 }],
     sendEmailCode: async ({ email, code }) => codes.set(email, code),
   });
@@ -38,7 +39,7 @@ async function setup() {
     return { cookie: response.headers.get('set-cookie').split(';')[0], user: (await response.json()).user };
   };
   const request = (path, cookie, options = {}) => fetch(`${baseUrl}${path}`, { ...options, headers: { ...(options.body ? { 'content-type': 'application/json' } : {}), cookie, ...options.headers } });
-  return { server, db, register, request, upstreamCalls };
+  return { server, db, register, request, upstreamCalls, videoQueue: queue };
 }
 
 test('system APIs, pricing, balances and managed gateway enforce roles and billing', async (t) => {
@@ -183,4 +184,46 @@ test('recharge approval is single-use and credits the requested user', async (t)
   assert.equal((await approved.json()).user.balanceCents, 2500);
   const duplicate = await context.request(`/api/admin/recharges/${recharge.id}/review`, admin.cookie, { method: 'POST', body: JSON.stringify({ decision: 'approved' }) });
   assert.equal(duplicate.status, 409);
+});
+
+test('managed video requests use the persistent queue protocol and expose an admin overview', async (t) => {
+  const context = await setup({ videoQueue: true, videoQueueAutoStart: false });
+  t.after(() => context.server.close());
+  const normal = await context.register('queue-normal');
+  const admin = await context.register('queue-admin');
+  await context.db.mutate((data) => { data.users.find((item) => item.id === admin.user.id).role = 'system'; });
+  const apiResponse = await context.request('/api/admin/system-apis', admin.cookie, {
+    method: 'POST', body: JSON.stringify({ name: 'Queue API', provider: 'Compatible', baseUrl: 'https://upstream.example', apiKey: 'secret-system-key' }),
+  });
+  const api = (await apiResponse.json()).api;
+  await context.request('/api/admin/pricing', admin.cookie, {
+    method: 'POST', body: JSON.stringify({ apiId: api.id, modelId: 'video-model', displayName: '队列视频', category: 'video', billingUnit: 'second', unitPriceCents: 10, allowedDurationsSec: [5] }),
+  });
+  await context.request(`/api/admin/users/${normal.user.id}/balance`, admin.cookie, { method: 'POST', body: JSON.stringify({ amountCents: 100 }) });
+
+  const queuedResponse = await context.request(`/api/system-ai/${api.id}/v1/videos`, normal.cookie, {
+    method: 'POST',
+    body: JSON.stringify({ model: 'video-model', prompt: 'queued-video', seconds: 5, _client: { projectId: 'project-1', nodeId: 'node-1' } }),
+  });
+  assert.equal(queuedResponse.status, 202);
+  const queued = await queuedResponse.json();
+  assert.match(queued.id, /^[0-9a-f-]{36}$/);
+
+  const startedAt = Date.now();
+  while (context.db.read('generationJobs')[0]?.status !== 'processing') {
+    if (Date.now() - startedAt > 1000) throw new Error('queued video was not submitted');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  const stored = context.db.read('generationJobs')[0];
+  assert.equal(stored.projectId, 'project-1');
+  assert.equal(stored.nodeId, 'node-1');
+  const submission = context.upstreamCalls.find((call) => call.body?.includes('queued-video'));
+  assert.equal(submission.body.includes('_client'), false);
+
+  const polledResponse = await context.request(`/api/system-ai/${api.id}/v1/videos/${queued.id}`, normal.cookie);
+  assert.equal(polledResponse.status, 200);
+  assert.equal((await polledResponse.json()).status, 'processing');
+  const overview = await (await context.request('/api/admin/video-queue', admin.cookie)).json();
+  assert.equal(overview.counts.processing, 1);
+  assert.equal(overview.config.userConcurrency, 20);
 });
