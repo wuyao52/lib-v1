@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
-import { X, History, ExternalLink } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { X, History, ExternalLink, Film, ChevronDown } from 'lucide-react';
 import { apiRequest } from '@/services/apiClient';
 import useProjectStore from '@/store/useProjectStore';
 import { PromptMentionContent } from './PromptMentionEditor';
@@ -7,20 +7,50 @@ import { PromptMentionContent } from './PromptMentionEditor';
 type HistoryItem = { id: string; type: string; prompt: string; url: string; thumbnail?: string | null; createdAt: string };
 
 function HistoryThumbnail({ item }: { item: HistoryItem }) {
+  const containerRef = useRef<HTMLSpanElement>(null);
+  const [visible, setVisible] = useState(item.type !== 'video' || Boolean(item.thumbnail));
+  useEffect(() => {
+    if (visible || !containerRef.current) return;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) { setVisible(true); observer.disconnect(); }
+    }, { rootMargin: '160px' });
+    observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, [visible]);
   const className = 'h-full w-full object-cover';
-  if (item.thumbnail) return <img src={item.thumbnail} alt="" loading="lazy" className={className} />;
-  if (item.type === 'video') return <video src={item.url} muted preload="metadata" className={className} />;
-  return <img src={item.url} alt="" loading="lazy" className={className} />;
+  return <span ref={containerRef} className="flex h-full w-full items-center justify-center bg-black">{item.thumbnail
+    ? <img src={item.thumbnail} alt="" loading="lazy" className={className} />
+    : item.type === 'video'
+      ? visible ? <video src={item.url} muted preload="metadata" className={className} /> : <Film className="h-5 w-5 text-dark-500" />
+      : <img src={item.url} alt="" loading="lazy" className={className} />}</span>;
 }
 
 export default function GenerationHistoryPanel({ onClose }: { onClose: () => void }) {
   const project = useProjectStore((state) => state.project);
   const [items, setItems] = useState<HistoryItem[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const refresh = useCallback(() => {
-    void apiRequest<{ history: HistoryItem[] }>('/api/generation-history')
-      .then((result) => setItems(result.history))
+    void apiRequest<{ history: HistoryItem[]; nextCursor: string | null }>('/api/generation-history?limit=50')
+      .then((result) => {
+        setItems((current) => {
+          const merged = new Map([...current, ...result.history].map((item) => [item.id, item]));
+          return [...merged.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+        });
+        setNextCursor((current) => current ?? result.nextCursor);
+      })
       .catch((error) => console.warn('读取生成历史失败:', error));
   }, []);
+  const loadMore = useCallback(async () => {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const result = await apiRequest<{ history: HistoryItem[]; nextCursor: string | null }>(`/api/generation-history?limit=50&cursor=${encodeURIComponent(nextCursor)}`);
+      setItems((current) => [...current, ...result.history.filter((item) => !current.some((existing) => existing.id === item.id))]);
+      setNextCursor(result.nextCursor);
+    } catch (error) { console.warn('读取更多生成历史失败:', error); }
+    finally { setLoadingMore(false); }
+  }, [loadingMore, nextCursor]);
   useEffect(() => {
     refresh();
     const timer = window.setInterval(refresh, 5000);
@@ -64,6 +94,7 @@ export default function GenerationHistoryPanel({ onClose }: { onClose: () => voi
                 </a>
               );
             })}
+            {nextCursor && <button type="button" onClick={() => void loadMore()} disabled={loadingMore} className="flex h-10 w-full items-center justify-center gap-2 text-xs text-dark-300 hover:text-white disabled:opacity-50"><ChevronDown className="h-4 w-4" />{loadingMore ? '正在加载' : '加载更多'}</button>}
             {items.length === 0 && <p className="py-12 text-center text-sm text-dark-500">最近 3 天没有成功生成记录</p>}
           </div>
         </div>
