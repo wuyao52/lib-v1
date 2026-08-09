@@ -236,6 +236,7 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
   const isCompleted = nodeData.status === 'completed';
   const isError = nodeData.status === 'error';
   const hasContent = nodeData.generatedContent || nodeData.content;
+  const canGenerate = Boolean(nodeData.generatedContent || String(nodeData.prompt || nodeData.content || '').trim());
 
   return (
     <>
@@ -621,11 +622,13 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
             {/* 生成按钮 */}
             {!isGenerating && !isCompleted && (
               <button
+                disabled={!canGenerate}
+                title={canGenerate ? 'AI 生成' : '请先填写提示词或添加素材'}
                 onClick={(e) => {
                   e.stopPropagation();
-                  handleGenerate();
+                  if (canGenerate) handleGenerate();
                 }}
-                className="w-full py-2 rounded-lg text-xs font-medium
+                className="w-full py-2 rounded-lg text-xs font-medium disabled:cursor-not-allowed disabled:opacity-40
                   bg-gradient-to-r from-primary-600 to-primary-500
                   hover:from-primary-500 hover:to-primary-400
                   text-white shadow-lg shadow-primary-500/20
@@ -641,11 +644,13 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
             {/* 重新生成按钮 */}
             {(isCompleted || isError) && (
               <button
+                disabled={!canGenerate}
+                title={canGenerate ? '重新生成' : '请先填写提示词或添加素材'}
                 onClick={(e) => {
                   e.stopPropagation();
-                  handleGenerate();
+                  if (canGenerate) handleGenerate();
                 }}
-                className="w-full py-2 rounded-lg text-xs font-medium
+                className="w-full py-2 rounded-lg text-xs font-medium disabled:cursor-not-allowed disabled:opacity-40
                   bg-dark-700 hover:bg-dark-600 text-dark-300 hover:text-white
                   transition-all duration-300"
               >
