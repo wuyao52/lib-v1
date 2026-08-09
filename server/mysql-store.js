@@ -1,5 +1,5 @@
 import mysql from 'mysql2/promise';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 const EMPTY_DATABASE = {
   users: [],
@@ -15,6 +15,12 @@ const EMPTY_DATABASE = {
   generationHistory: [],
   generationJobs: [],
   assets: [],
+  generatedMedia: [],
+  rateLimits: [],
+  auditLogs: [],
+  userApiConfigs: [],
+  paymentOrders: [],
+  paymentEvents: [],
 };
 
 const TABLES = {
@@ -107,13 +113,14 @@ const TABLES = {
       title VARCHAR(160) NOT NULL,
       description TEXT NOT NULL,
       project_data JSON NOT NULL,
+      version INT NOT NULL DEFAULT 1,
       created_at VARCHAR(35) NOT NULL,
       updated_at VARCHAR(35) NOT NULL,
       INDEX projects_user_id_updated_idx (user_id, updated_at)
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
-    select: 'SELECT id, user_id AS userId, title, description, project_data AS projectData, created_at AS createdAt, updated_at AS updatedAt FROM projects',
-    insert: 'INSERT INTO projects (id, user_id, title, description, project_data, created_at, updated_at) VALUES ?',
-    values: (row) => [row.id, row.userId, row.title, row.description, JSON.stringify(row.projectData), row.createdAt, row.updatedAt],
+    select: 'SELECT id, user_id AS userId, title, description, project_data AS projectData, version, created_at AS createdAt, updated_at AS updatedAt FROM projects',
+    insert: 'INSERT INTO projects (id, user_id, title, description, project_data, version, created_at, updated_at) VALUES ?',
+    values: (row) => [row.id, row.userId, row.title, row.description, JSON.stringify(row.projectData), Number(row.version || 1), row.createdAt, row.updatedAt],
     parse: (row) => ({ ...row, projectData: typeof row.projectData === 'string' ? JSON.parse(row.projectData) : row.projectData }),
   },
   systemApis: {
@@ -133,6 +140,23 @@ const TABLES = {
     insert: 'INSERT INTO system_apis (id, name, provider, base_url, encrypted_api_key, enabled, created_by, created_at, updated_at) VALUES ?',
     values: (row) => [row.id, row.name, row.provider, row.baseUrl, row.encryptedApiKey, row.enabled ? 1 : 0, row.createdBy, row.createdAt, row.updatedAt],
     parse: (row) => ({ ...row, enabled: Boolean(row.enabled) }),
+  },
+  userApiConfigs: {
+    table: 'user_api_configs',
+    create: `CREATE TABLE IF NOT EXISTS user_api_configs (
+      id CHAR(36) PRIMARY KEY,
+      user_id CHAR(36) NOT NULL,
+      name VARCHAR(100) NOT NULL,
+      provider VARCHAR(80) NOT NULL,
+      encrypted_base_url TEXT NOT NULL,
+      encrypted_api_key TEXT NOT NULL,
+      created_at VARCHAR(35) NOT NULL,
+      updated_at VARCHAR(35) NOT NULL,
+      INDEX user_api_configs_user_idx (user_id, updated_at)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+    select: 'SELECT id, user_id AS userId, name, provider, encrypted_base_url AS encryptedBaseUrl, encrypted_api_key AS encryptedApiKey, created_at AS createdAt, updated_at AS updatedAt FROM user_api_configs',
+    insert: 'INSERT INTO user_api_configs (id, user_id, name, provider, encrypted_base_url, encrypted_api_key, created_at, updated_at) VALUES ?',
+    values: (row) => [row.id, row.userId, row.name, row.provider, row.encryptedBaseUrl, row.encryptedApiKey, row.createdAt, row.updatedAt],
   },
   modelPricing: {
     table: 'model_pricing',
@@ -191,6 +215,45 @@ const TABLES = {
     insert: 'INSERT INTO recharge_requests (id, user_id, amount_cents, status, note, reviewed_by, created_at, reviewed_at) VALUES ?',
     values: (row) => [row.id, row.userId, row.amountCents, row.status, row.note, row.reviewedBy || null, row.createdAt, row.reviewedAt || null],
   },
+  paymentOrders: {
+    table: 'payment_orders',
+    create: `CREATE TABLE IF NOT EXISTS payment_orders (
+      id CHAR(36) PRIMARY KEY,
+      user_id CHAR(36) NOT NULL,
+      merchant_order_no VARCHAR(64) NOT NULL UNIQUE,
+      provider VARCHAR(20) NOT NULL,
+      amount_cents BIGINT NOT NULL,
+      status VARCHAR(24) NOT NULL,
+      provider_trade_no VARCHAR(100) NULL,
+      pay_url TEXT NOT NULL,
+      created_at VARCHAR(35) NOT NULL,
+      expires_at VARCHAR(35) NOT NULL,
+      paid_at VARCHAR(35) NULL,
+      refunded_at VARCHAR(35) NULL,
+      INDEX payment_orders_user_created_idx (user_id, created_at),
+      INDEX payment_orders_status_created_idx (status, created_at)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+    select: 'SELECT id, user_id AS userId, merchant_order_no AS merchantOrderNo, provider, amount_cents AS amountCents, status, provider_trade_no AS providerTradeNo, pay_url AS payUrl, created_at AS createdAt, expires_at AS expiresAt, paid_at AS paidAt, refunded_at AS refundedAt FROM payment_orders',
+    insert: 'INSERT INTO payment_orders (id, user_id, merchant_order_no, provider, amount_cents, status, provider_trade_no, pay_url, created_at, expires_at, paid_at, refunded_at) VALUES ?',
+    values: (row) => [row.id, row.userId, row.merchantOrderNo, row.provider, row.amountCents, row.status, row.providerTradeNo || null, row.payUrl || '', row.createdAt, row.expiresAt, row.paidAt || null, row.refundedAt || null],
+  },
+  paymentEvents: {
+    table: 'payment_events',
+    create: `CREATE TABLE IF NOT EXISTS payment_events (
+      id CHAR(64) PRIMARY KEY,
+      provider VARCHAR(20) NOT NULL,
+      provider_event_id VARCHAR(160) NOT NULL,
+      order_id CHAR(36) NOT NULL,
+      event_type VARCHAR(40) NOT NULL,
+      payload_hash CHAR(64) NOT NULL,
+      created_at VARCHAR(35) NOT NULL,
+      UNIQUE KEY payment_events_provider_event_unique (provider, provider_event_id),
+      INDEX payment_events_order_idx (order_id, created_at)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+    select: 'SELECT id, provider, provider_event_id AS providerEventId, order_id AS orderId, event_type AS eventType, payload_hash AS payloadHash, created_at AS createdAt FROM payment_events',
+    insert: 'INSERT INTO payment_events (id, provider, provider_event_id, order_id, event_type, payload_hash, created_at) VALUES ?',
+    values: (row) => [row.id, row.provider, row.providerEventId, row.orderId, row.eventType, row.payloadHash, row.createdAt],
+  },
   generationHistory: {
     table: 'generation_history',
     create: `CREATE TABLE IF NOT EXISTS generation_history (
@@ -228,6 +291,8 @@ const TABLES = {
       created_at VARCHAR(35) NOT NULL,
       updated_at VARCHAR(35) NOT NULL,
       completed_at VARCHAR(35) NULL,
+      lease_owner VARCHAR(64) NULL,
+      lease_until BIGINT NOT NULL DEFAULT 0,
       INDEX generation_jobs_status_poll_idx (status, next_poll_at),
       INDEX generation_jobs_user_created_idx (user_id, created_at),
       INDEX generation_jobs_api_status_idx (api_id, status)
@@ -237,16 +302,16 @@ const TABLES = {
       error_code AS errorCode, error_message AS errorMessage, charge_cents AS chargeCents,
       billing_reference AS billingReference, project_id AS projectId, node_id AS nodeId, prompt,
       attempt_count AS attemptCount, next_poll_at AS nextPollAt, created_at AS createdAt,
-      updated_at AS updatedAt, completed_at AS completedAt FROM generation_jobs`,
+      updated_at AS updatedAt, completed_at AS completedAt, lease_owner AS leaseOwner, lease_until AS leaseUntil FROM generation_jobs`,
     insert: `INSERT INTO generation_jobs (id, user_id, api_id, model_id, request_body, status, provider_task_id,
       progress, result_url, thumbnail, error_code, error_message, charge_cents, billing_reference, project_id,
-      node_id, prompt, attempt_count, next_poll_at, created_at, updated_at, completed_at) VALUES ?`,
+      node_id, prompt, attempt_count, next_poll_at, created_at, updated_at, completed_at, lease_owner, lease_until) VALUES ?`,
     values: (row) => [
       row.id, row.userId, row.apiId, row.modelId, typeof row.requestBody === 'string' ? row.requestBody : JSON.stringify(row.requestBody || {}),
       row.status, row.providerTaskId || null, Number(row.progress || 0), row.resultUrl || null, row.thumbnail || null,
       row.errorCode || null, row.errorMessage || null, Number(row.chargeCents || 0), row.billingReference || null,
       row.projectId || null, row.nodeId || null, row.prompt || '', Number(row.attemptCount || 0), Number(row.nextPollAt || 0),
-      row.createdAt, row.updatedAt, row.completedAt || null,
+      row.createdAt, row.updatedAt, row.completedAt || null, row.leaseOwner || null, Number(row.leaseUntil || 0),
     ],
     parse: (row) => ({ ...row, requestBody: typeof row.requestBody === 'string' ? JSON.parse(row.requestBody || '{}') : (row.requestBody || {}) }),
   },
@@ -267,12 +332,52 @@ const TABLES = {
     insert: 'INSERT INTO assets (id, user_id, sha256, mime_type, data_base64, object_key, storage_provider, byte_size, created_at) VALUES ?',
     values: (row) => [row.id, row.userId, row.sha256, row.mimeType, row.dataBase64 || null, row.objectKey || null, row.storageProvider || 'database', row.byteSize, row.createdAt],
   },
+  generatedMedia: {
+    table: 'generated_media',
+    create: `CREATE TABLE IF NOT EXISTS generated_media (
+      id CHAR(36) PRIMARY KEY,
+      user_id CHAR(36) NOT NULL,
+      job_id CHAR(36) NOT NULL,
+      object_key VARCHAR(1024) NOT NULL,
+      mime_type VARCHAR(100) NOT NULL,
+      byte_size BIGINT NOT NULL,
+      source_url TEXT NULL,
+      created_at VARCHAR(35) NOT NULL,
+      expires_at VARCHAR(35) NOT NULL,
+      UNIQUE KEY generated_media_job_unique (job_id),
+      INDEX generated_media_user_expiry_idx (user_id, expires_at)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+    select: 'SELECT id, user_id AS userId, job_id AS jobId, object_key AS objectKey, mime_type AS mimeType, byte_size AS byteSize, source_url AS sourceUrl, created_at AS createdAt, expires_at AS expiresAt FROM generated_media',
+    insert: 'INSERT INTO generated_media (id, user_id, job_id, object_key, mime_type, byte_size, source_url, created_at, expires_at) VALUES ?',
+    values: (row) => [row.id, row.userId, row.jobId, row.objectKey, row.mimeType, row.byteSize, row.sourceUrl || null, row.createdAt, row.expiresAt],
+  },
+  auditLogs: {
+    table: 'audit_logs',
+    create: `CREATE TABLE IF NOT EXISTS audit_logs (
+      id CHAR(36) PRIMARY KEY,
+      user_id CHAR(36) NOT NULL,
+      action VARCHAR(80) NOT NULL,
+      target_type VARCHAR(40) NOT NULL,
+      target_id VARCHAR(100) NULL,
+      ip_address VARCHAR(100) NOT NULL,
+      user_agent VARCHAR(300) NOT NULL,
+      metadata JSON NOT NULL,
+      created_at VARCHAR(35) NOT NULL,
+      INDEX audit_logs_user_created_idx (user_id, created_at),
+      INDEX audit_logs_target_idx (target_type, target_id, created_at)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+    select: 'SELECT id, user_id AS userId, action, target_type AS targetType, target_id AS targetId, ip_address AS ipAddress, user_agent AS userAgent, metadata, created_at AS createdAt FROM audit_logs',
+    insert: 'INSERT INTO audit_logs (id, user_id, action, target_type, target_id, ip_address, user_agent, metadata, created_at) VALUES ?',
+    values: (row) => [row.id, row.userId, row.action, row.targetType, row.targetId || null, row.ipAddress, row.userAgent, JSON.stringify(row.metadata || {}), row.createdAt],
+    parse: (row) => ({ ...row, metadata: typeof row.metadata === 'string' ? JSON.parse(row.metadata || '{}') : (row.metadata || {}) }),
+  },
 };
 
 const GENERATION_JOB_PATCH_COLUMNS = {
   status: 'status', providerTaskId: 'provider_task_id', progress: 'progress', resultUrl: 'result_url',
   thumbnail: 'thumbnail', errorCode: 'error_code', errorMessage: 'error_message', attemptCount: 'attempt_count',
   nextPollAt: 'next_poll_at', updatedAt: 'updated_at', completedAt: 'completed_at',
+  leaseOwner: 'lease_owner', leaseUntil: 'lease_until',
 };
 
 export class MySqlDatabase {
@@ -291,13 +396,22 @@ export class MySqlDatabase {
 
   async init() {
     for (const spec of Object.values(TABLES)) await this.pool.query(spec.create);
+    await this.pool.query(`CREATE TABLE IF NOT EXISTS rate_limits (
+      id CHAR(64) PRIMARY KEY,
+      request_count INT NOT NULL,
+      reset_at BIGINT NOT NULL,
+      INDEX rate_limits_reset_idx (reset_at)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
     await this.ensureColumn('users', 'role', "VARCHAR(16) NOT NULL DEFAULT 'user'");
     await this.ensureColumn('users', 'balance_cents', 'BIGINT NOT NULL DEFAULT 0');
     await this.ensureColumn('model_pricing', 'min_duration_sec', 'INT NULL');
     await this.ensureColumn('model_pricing', 'max_duration_sec', 'INT NULL');
     await this.ensureColumn('model_pricing', 'allowed_durations_sec', 'JSON NULL');
+    await this.ensureColumn('projects', 'version', 'INT NOT NULL DEFAULT 1');
     await this.ensureColumn('assets', 'object_key', 'VARCHAR(1024) NULL');
     await this.ensureColumn('assets', 'storage_provider', "VARCHAR(20) NOT NULL DEFAULT 'database'");
+    await this.ensureColumn('generation_jobs', 'lease_owner', 'VARCHAR(64) NULL');
+    await this.ensureColumn('generation_jobs', 'lease_until', 'BIGINT NOT NULL DEFAULT 0');
     await this.pool.query('ALTER TABLE `assets` MODIFY COLUMN `data_base64` MEDIUMTEXT NULL');
     for (const [collection, spec] of Object.entries(TABLES)) {
       const [rows] = await this.pool.query(spec.select);
@@ -318,6 +432,88 @@ export class MySqlDatabase {
     return this.data[collection];
   }
 
+  async createUser(user) {
+    let result = { created: false, error: null };
+    const operation = this.writeQueue.then(async () => {
+      try {
+        await this.pool.query(TABLES.users.insert, [[TABLES.users.values(user)]]);
+        this.data.users.push(user);
+        result = { created: true, error: null };
+      } catch (error) {
+        if (error.code !== 'ER_DUP_ENTRY') throw error;
+        const [rows] = await this.pool.query('SELECT email, username FROM users WHERE email = ? OR username = ? LIMIT 1', [user.email, user.username]);
+        result = { created: false, error: rows.some((row) => row.email === user.email) ? 'EMAIL_EXISTS' : 'USERNAME_EXISTS' };
+      }
+    });
+    this.writeQueue = operation.catch(() => undefined);
+    await operation;
+    return result;
+  }
+
+  async consumeRateLimit(id, limit, windowMs, now = Date.now()) {
+    let result;
+    const operation = this.writeQueue.then(async () => {
+      const connection = await this.pool.getConnection();
+      try {
+        await connection.beginTransaction();
+        const [rows] = await connection.query('SELECT request_count AS count, reset_at AS resetAt FROM rate_limits WHERE id = ? FOR UPDATE', [id]);
+        let count = 1;
+        let resetAt = now + windowMs;
+        if (rows.length && Number(rows[0].resetAt) > now) {
+          count = Number(rows[0].count) + 1;
+          resetAt = Number(rows[0].resetAt);
+          await connection.query('UPDATE rate_limits SET request_count = ? WHERE id = ?', [count, id]);
+        } else if (rows.length) {
+          await connection.query('UPDATE rate_limits SET request_count = 1, reset_at = ? WHERE id = ?', [resetAt, id]);
+        } else {
+          await connection.query('INSERT INTO rate_limits (id, request_count, reset_at) VALUES (?, 1, ?)', [id, resetAt]);
+        }
+        await connection.commit();
+        result = { allowed: count <= limit, count, resetAt };
+      } catch (error) {
+        await connection.rollback();
+        throw error;
+      } finally {
+        connection.release();
+      }
+    });
+    this.writeQueue = operation.catch(() => undefined);
+    await operation;
+    return result;
+  }
+
+  async saveProject(record, expectedVersion) {
+    let result;
+    const operation = this.writeQueue.then(async () => {
+      const nextVersion = expectedVersion + 1;
+      if (expectedVersion === 0) {
+        try {
+          await this.pool.query(TABLES.projects.insert, [[TABLES.projects.values({ ...record, version: nextVersion })]]);
+          const stored = { ...record, version: nextVersion };
+          this.data.projects.push(stored);
+          result = { record: stored, conflict: false };
+        } catch (error) {
+          if (error.code !== 'ER_DUP_ENTRY') throw error;
+          result = { record: null, conflict: true };
+        }
+        return;
+      }
+      const [update] = await this.pool.query(
+        'UPDATE projects SET title = ?, description = ?, project_data = ?, version = ?, updated_at = ? WHERE id = ? AND user_id = ? AND version = ?',
+        [record.title, record.description, JSON.stringify(record.projectData), nextVersion, record.updatedAt, record.id, record.userId, expectedVersion],
+      );
+      if (!update.affectedRows) { result = { record: null, conflict: true }; return; }
+      const stored = { ...record, version: nextVersion };
+      const index = this.data.projects.findIndex((item) => item.id === record.id);
+      if (index >= 0) this.data.projects[index] = stored;
+      else this.data.projects.push(stored);
+      result = { record: stored, conflict: false };
+    });
+    this.writeQueue = operation.catch(() => undefined);
+    await operation;
+    return result;
+  }
+
   async mutate(mutator) {
     let result;
     const operation = this.writeQueue.then(async () => {
@@ -327,7 +523,7 @@ export class MySqlDatabase {
       const connection = await this.pool.getConnection();
       try {
         await connection.beginTransaction();
-        for (const collection of changedCollections) await this.replaceCollection(connection, collection);
+        for (const collection of changedCollections) await this.syncCollection(connection, collection, before[collection]);
         await connection.commit();
       } catch (error) {
         await connection.rollback();
@@ -397,19 +593,71 @@ export class MySqlDatabase {
     return updated;
   }
 
-  async claimGenerationJobs(jobIds, updatedAt) {
+  async refreshGenerationJobs() {
+    const operation = this.writeQueue.then(async () => {
+      const spec = TABLES.generationJobs;
+      const [rows] = await this.pool.query(spec.select);
+      this.data.generationJobs = rows.map(spec.parse);
+    });
+    this.writeQueue = operation.catch(() => undefined);
+    await operation;
+    return this.data.generationJobs;
+  }
+
+  async claimGenerationJobs(jobIds, updatedAt, workerId = 'single-worker', leaseUntil = Date.now() + 120000) {
     if (!jobIds.length) return [];
     let claimed = [];
     const operation = this.writeQueue.then(async () => {
       const eligible = this.data.generationJobs.filter((job) => jobIds.includes(job.id) && job.status === 'queued');
       if (!eligible.length) return;
-      await this.pool.query('UPDATE generation_jobs SET status = ?, updated_at = ? WHERE id IN (?) AND status = ?', ['submitting', updatedAt, eligible.map((job) => job.id), 'queued']);
-      eligible.forEach((job) => { job.status = 'submitting'; job.updatedAt = updatedAt; });
-      claimed = eligible.map((job) => ({ ...job }));
+      for (const job of eligible) {
+        const [result] = await this.pool.query(
+          'UPDATE generation_jobs SET status = ?, updated_at = ?, lease_owner = ?, lease_until = ? WHERE id = ? AND status = ?',
+          ['submitting', updatedAt, workerId, leaseUntil, job.id, 'queued'],
+        );
+        if (!result.affectedRows) continue;
+        Object.assign(job, { status: 'submitting', updatedAt, leaseOwner: workerId, leaseUntil });
+        claimed.push({ ...job });
+      }
     });
     this.writeQueue = operation.catch(() => undefined);
     await operation;
     return claimed;
+  }
+
+  async claimGenerationJobsForPolling(jobIds, workerId, leaseUntil, now = Date.now()) {
+    if (!jobIds.length) return [];
+    let claimed = [];
+    const operation = this.writeQueue.then(async () => {
+      for (const jobId of jobIds) {
+        const job = this.data.generationJobs.find((item) => item.id === jobId && item.status === 'processing');
+        if (!job) continue;
+        const [result] = await this.pool.query(
+          'UPDATE generation_jobs SET lease_owner = ?, lease_until = ? WHERE id = ? AND status = ? AND (lease_owner = ? OR lease_owner IS NULL OR lease_until < ?)',
+          [workerId, leaseUntil, jobId, 'processing', workerId, now],
+        );
+        if (!result.affectedRows) continue;
+        Object.assign(job, { leaseOwner: workerId, leaseUntil });
+        claimed.push({ ...job });
+      }
+    });
+    this.writeQueue = operation.catch(() => undefined);
+    await operation;
+    return claimed;
+  }
+
+  async recoverExpiredGenerationJobs(now = Date.now()) {
+    const operation = this.writeQueue.then(async () => {
+      await this.pool.query(
+        'UPDATE generation_jobs SET status = ?, lease_owner = NULL, lease_until = 0, next_poll_at = 0 WHERE status = ? AND (lease_owner IS NULL OR lease_until < ?)',
+        ['queued', 'submitting', now],
+      );
+      const spec = TABLES.generationJobs;
+      const [rows] = await this.pool.query(spec.select);
+      this.data.generationJobs = rows.map(spec.parse);
+    });
+    this.writeQueue = operation.catch(() => undefined);
+    await operation;
   }
 
   async finalizeGenerationJob(jobId, patch, historyRecord = null) {
@@ -453,7 +701,7 @@ export class MySqlDatabase {
       const shouldRefund = Number(job.chargeCents || 0) > 0 && job.billingReference && user && !alreadyRefunded;
       const refund = shouldRefund ? {
         id: randomUUID(), userId: job.userId, amountCents: Number(job.chargeCents), type: 'model_refund',
-        description: '视频队列任务失败退款', referenceId: job.billingReference, createdBy: null, createdAt: new Date().toISOString(),
+        description: patch.status === 'cancelled' ? '视频队列任务取消退款' : '视频队列任务失败退款', referenceId: job.billingReference, createdBy: null, createdAt: new Date().toISOString(),
       } : null;
       const connection = await this.pool.getConnection();
       try {
@@ -493,16 +741,71 @@ export class MySqlDatabase {
     await operation;
   }
 
-  async replaceCollection(connection, collection) {
+  async syncCollection(connection, collection, previousRows = []) {
     const spec = TABLES[collection];
     const table = spec.table || collection;
-    await connection.query(`DELETE FROM \`${table}\``);
-    const rows = this.data[collection].map(spec.values);
-    if (rows.length) await connection.query(spec.insert, [rows]);
+    const currentRows = this.data[collection];
+    const previousById = new Map(previousRows.map((row) => [row.id, row]));
+    const currentIds = new Set(currentRows.map((row) => row.id));
+    const removedIds = previousRows.filter((row) => !currentIds.has(row.id)).map((row) => row.id);
+    const changedRows = currentRows.filter((row) => {
+      const previous = previousById.get(row.id);
+      return !previous || JSON.stringify(previous) !== JSON.stringify(row);
+    });
+
+    if (removedIds.length) await connection.query(`DELETE FROM \`${table}\` WHERE id IN (?)`, [removedIds]);
+    if (!changedRows.length) return;
+
+    const columnMatch = spec.insert.match(/\(([^)]+)\)\s+VALUES\s+\?/i);
+    if (!columnMatch) throw new Error(`无法为 ${table} 生成行级 UPSERT`);
+    const columns = columnMatch[1].split(',').map((column) => column.trim().replace(/^`|`$/g, ''));
+    const updates = columns.slice(1).map((column) => `\`${column}\` = VALUES(\`${column}\`)`).join(', ');
+    await connection.query(`${spec.insert} ON DUPLICATE KEY UPDATE ${updates}`, [changedRows.map(spec.values)]);
+  }
+
+  async settlePaymentOrder(provider, payment) {
+    const result = { found: false, credited: false, mismatch: false };
+    const operation = this.writeQueue.then(async () => {
+      const connection = await this.pool.getConnection();
+      try {
+        await connection.beginTransaction();
+        const [rows] = await connection.query('SELECT id, user_id AS userId, amount_cents AS amountCents, status FROM payment_orders WHERE provider = ? AND merchant_order_no = ? FOR UPDATE', [provider, payment.merchantOrderNo]);
+        if (!rows.length) { await connection.rollback(); return; }
+        const order = rows[0]; result.found = true;
+        if (Number(order.amountCents) !== Number(payment.amountCents)) { result.mismatch = true; await connection.rollback(); return; }
+        const [events] = await connection.query('SELECT id FROM payment_events WHERE provider = ? AND provider_event_id = ? LIMIT 1', [provider, payment.eventId]);
+        if (events.length) { await connection.commit(); return; }
+        const event = { id: createHash('sha256').update(`${provider}:${payment.eventId}`).digest('hex'), provider, providerEventId: payment.eventId, orderId: order.id, eventType: 'payment_succeeded', payloadHash: payment.payloadHash, createdAt: new Date().toISOString() };
+        await connection.query(TABLES.paymentEvents.insert, [[TABLES.paymentEvents.values(event)]]);
+        if (order.status !== 'pending') { await connection.commit(); this.data.paymentEvents.push(event); return; }
+        const paidAt = new Date().toISOString();
+        const transaction = { id: randomUUID(), userId: order.userId, amountCents: Number(order.amountCents), type: 'payment_recharge', description: `${provider === 'alipay' ? '支付宝' : '微信支付'}充值`, referenceId: order.id, createdBy: null, createdAt: paidAt };
+        await connection.query('UPDATE payment_orders SET status = ?, provider_trade_no = ?, paid_at = ? WHERE id = ? AND status = ?', ['paid', payment.providerTradeNo, paidAt, order.id, 'pending']);
+        await connection.query('UPDATE users SET balance_cents = balance_cents + ? WHERE id = ?', [order.amountCents, order.userId]);
+        await connection.query(TABLES.balanceTransactions.insert, [[TABLES.balanceTransactions.values(transaction)]]);
+        await connection.commit();
+        this.data.paymentEvents.push(event);
+        const cachedOrder = this.data.paymentOrders.find((item) => item.id === order.id);
+        if (cachedOrder) Object.assign(cachedOrder, { status: 'paid', providerTradeNo: payment.providerTradeNo, paidAt });
+        const user = this.data.users.find((item) => item.id === order.userId);
+        if (user) user.balanceCents = Number(user.balanceCents || 0) + Number(order.amountCents);
+        this.data.balanceTransactions.push(transaction);
+        result.credited = true;
+      } catch (error) {
+        await connection.rollback(); throw error;
+      } finally { connection.release(); }
+    });
+    this.writeQueue = operation.catch(() => undefined);
+    await operation;
+    return result;
   }
 
   async ping() {
     await this.pool.query('SELECT 1');
     return true;
+  }
+
+  async close() {
+    await this.pool.end();
   }
 }
