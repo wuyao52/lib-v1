@@ -202,6 +202,20 @@ const createNewProject = (title: string, description: string): DramaProject => {
 const requiresReferenceImage = (result: { success: boolean; error?: string }) =>
   !result.success && /images?\s*(?:不能为空|cannot be empty|required)|参数\s*images/i.test(result.error || '');
 
+function collectReferenceImages(project: DramaProject, node: Node<SceneNodeData>): string[] {
+  const referencedIds = new Set<string>([node.id]);
+  const prompt = String(node.data.prompt || node.data.content || '');
+  for (const match of prompt.matchAll(/@\[[^\]]+\]\(([^)]+)\)/g)) referencedIds.add(match[1]);
+  for (const edge of project.edges) {
+    if (edge.source === node.id) referencedIds.add(edge.target);
+    if (edge.target === node.id) referencedIds.add(edge.source);
+  }
+  return [...new Set(project.nodes
+    .filter((candidate) => referencedIds.has(candidate.id) && candidate.data.type === 'image' && candidate.data.generatedContent)
+    .map((candidate) => String(candidate.data.generatedContent)))]
+    .slice(0, 4);
+}
+
 async function generateVideoWithFallback(
   videoService: ReturnType<typeof createAIService>,
   imageModel: AIModelConfig,
@@ -764,6 +778,8 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
           duration: Number(node.data.duration) || 5,
           seconds: Number(node.data.duration) || 5,
         };
+        const referenceImages = collectReferenceImages(latestProject, node);
+        if (referenceImages.length) settings.images = referenceImages;
 
         console.log('生成设置:', { type: node.data.type, settings });
 
@@ -1004,11 +1020,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
           duration: settings.duration,
           seconds: settings.duration,
         };
-        const referencedImages = latestProject.nodes
-          .filter((candidate) => candidate.id !== node.id && candidate.data.generatedContent && (candidate.data.type === 'image' || candidate.data.type === 'video'))
-          .map((candidate) => candidate.data.generatedContent)
-          .filter(Boolean);
-        const sourceImages = node.data.generatedContent ? [node.data.generatedContent] : referencedImages.slice(0, 4);
+        const sourceImages = collectReferenceImages(latestProject, node);
         if (sourceImages.length) genSettings.images = sourceImages;
 
         console.log('生成设置 (startGenerationWithType):', { type, genSettings });
