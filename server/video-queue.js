@@ -149,8 +149,8 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
       status: 'completed', progress: 100, resultUrl: result.url, thumbnail: result.thumbnail || null,
       completedAt, updatedAt: completedAt, nextPollAt: 0,
     };
-    const historyRecord = result.url && job.projectId ? {
-        id: randomUUID(), userId: job.userId, projectId: job.projectId, nodeId: job.nodeId || null,
+    const historyRecord = result.url ? {
+        id: randomUUID(), userId: job.userId, projectId: job.projectId || '', nodeId: job.nodeId || null,
         type: 'video', prompt: job.prompt || '', url: result.url, thumbnail: result.thumbnail || null,
         createdAt: completedAt, expiresAt: new Date(Date.parse(completedAt) + THREE_DAYS_MS).toISOString(),
       } : null;
@@ -347,9 +347,27 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
     return { counts, config, recent: jobs.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 50).map((job) => ({ id: job.id, userId: job.userId, apiId: job.apiId, modelId: job.modelId, status: job.status, progress: job.progress, errorCode: job.errorCode, createdAt: job.createdAt, updatedAt: job.updatedAt })) };
   };
 
-  await db.mutate((data) => data.generationJobs.forEach((job) => {
-    if (job.status === 'submitting') { job.status = 'queued'; job.nextPollAt = 0; job.updatedAt = nowIso(); }
-  }));
+  await db.mutate((data) => {
+    const historyCutoff = Date.now() - THREE_DAYS_MS;
+    data.generationJobs.forEach((job) => {
+      if (job.status === 'submitting') {
+        job.status = 'queued';
+        job.nextPollAt = 0;
+        job.updatedAt = nowIso();
+      }
+      const completedAt = job.completedAt || job.updatedAt || job.createdAt;
+      const missingHistory = job.status === 'completed' && job.resultUrl
+        && Date.parse(completedAt) > historyCutoff
+        && !data.generationHistory.some((item) => item.userId === job.userId && item.url === job.resultUrl);
+      if (missingHistory) {
+        data.generationHistory.push({
+          id: randomUUID(), userId: job.userId, projectId: job.projectId || '', nodeId: job.nodeId || null,
+          type: 'video', prompt: job.prompt || '', url: job.resultUrl, thumbnail: job.thumbnail || null,
+          createdAt: completedAt, expiresAt: new Date(Date.parse(completedAt) + THREE_DAYS_MS).toISOString(),
+        });
+      }
+    });
+  });
   const timer = autoStart ? setInterval(() => void tick(), 1000) : null;
   timer?.unref?.();
   return { enqueue, get, overview, tick, config };
