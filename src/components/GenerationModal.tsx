@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   X,
@@ -18,6 +18,7 @@ interface GenerationModalProps {
   sourceImageUrl?: string;
   sourceNodeType?: string;
   mentionableNodes?: Array<{ id: string; label: string; type: string }>;
+  durationRules?: { minDurationSec?: number | null; maxDurationSec?: number | null; allowedDurationsSec?: number[] };
 }
 
 export interface GenerationSettings {
@@ -47,6 +48,7 @@ export default function GenerationModal({
   sourceImageUrl,
   sourceNodeType,
   mentionableNodes = [],
+  durationRules,
 }: GenerationModalProps) {
   const [selectedType, setSelectedType] = useState<'video' | 'image' | 'img2img'>('video');
   const [prompt, setPrompt] = useState('');
@@ -55,9 +57,23 @@ export default function GenerationModal({
   const [strength, setStrength] = useState(0.7);
   const [negativePrompt, setNegativePrompt] = useState('');
   const [showMentions, setShowMentions] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const submittingRef = useRef(false);
+  const allowedDurations = [...new Set((durationRules?.allowedDurationsSec || []).map(Number).filter((value) => Number.isFinite(value) && value > 0))].sort((a, b) => a - b);
+  const minimumDuration = Number(durationRules?.minDurationSec) || 1;
+  const maximumDuration = Number(durationRules?.maxDurationSec) || 15;
+
+  useEffect(() => {
+    if (!isOpen) return;
+    submittingRef.current = false;
+    setIsSubmitting(false);
+    setDuration((current) => allowedDurations.length ? (allowedDurations.includes(current) ? current : allowedDurations[0]) : Math.min(maximumDuration, Math.max(minimumDuration, current)));
+  }, [isOpen, durationRules?.minDurationSec, durationRules?.maxDurationSec, JSON.stringify(durationRules?.allowedDurationsSec || [])]);
 
   const handleGenerate = () => {
-    if (!prompt.trim()) return;
+    if (!prompt.trim() || submittingRef.current) return;
+    submittingRef.current = true;
+    setIsSubmitting(true);
     onSelect(selectedType, {
       type: selectedType,
       prompt: prompt.trim(),
@@ -66,7 +82,6 @@ export default function GenerationModal({
       strength,
       negativePrompt: negativePrompt.trim(),
     });
-    onClose();
   };
 
   const typeOptions = [
@@ -283,18 +298,7 @@ export default function GenerationModal({
                     <Film className="w-4 h-4 text-primary-400" />
                     视频时长：{duration}秒
                   </label>
-                  <input
-                    type="range"
-                    min={1}
-                    max={15}
-                    value={duration}
-                    onChange={(e) => setDuration(Number(e.target.value))}
-                    className="w-full accent-primary-500"
-                  />
-                  <div className="flex justify-between text-xs text-dark-400">
-                    <span>1秒</span>
-                    <span>15秒</span>
-                  </div>
+                  {allowedDurations.length ? <div className="flex flex-wrap gap-2">{allowedDurations.map((seconds) => <button key={seconds} type="button" onClick={() => setDuration(seconds)} className={`rounded-lg border px-3 py-2 text-xs ${duration === seconds ? 'border-primary-500 bg-primary-500/15 text-white' : 'border-dark-600 bg-dark-700 text-dark-300'}`}>{seconds} 秒</button>)}</div> : <><input type="range" min={minimumDuration} max={maximumDuration} value={duration} onChange={(e) => setDuration(Number(e.target.value))} className="w-full accent-primary-500" /><div className="flex justify-between text-xs text-dark-400"><span>{minimumDuration}秒</span><span>{maximumDuration}秒</span></div></>}
                 </div>
               )}
 
@@ -337,10 +341,10 @@ export default function GenerationModal({
                 </button>
                 <button
                   onClick={handleGenerate}
-                  disabled={!prompt.trim()}
+                  disabled={!prompt.trim() || isSubmitting}
                   className={`
                     px-6 py-2.5 rounded-xl font-medium transition-all flex items-center gap-2
-                    ${prompt.trim()
+                    ${prompt.trim() && !isSubmitting
                       ? `bg-gradient-to-r ${
                           selectedType === 'video'
                             ? 'from-orange-500 to-red-500'
