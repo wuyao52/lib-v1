@@ -176,7 +176,7 @@ export class AIService {
         return { success: false, message: `无效的 API 地址: "${this.config.baseUrl}"` };
       }
 
-      if (!this.config.apiKey && !this.config.managed) {
+      if (!this.config.apiKey && !this.config.managed && !this.config.credentialManaged) {
         return { success: false, message: '请先输入 API Key' };
       }
 
@@ -306,7 +306,7 @@ export class SeedanceService extends AIService {
         throw new Error(`无效的 API 地址: "${this.config.baseUrl}"`);
       }
 
-      if (!this.config.apiKey && !this.config.managed) {
+      if (!this.config.apiKey && !this.config.managed && !this.config.credentialManaged) {
         throw new Error('请先配置 API Key');
       }
 
@@ -395,6 +395,9 @@ export class SeedanceService extends AIService {
         signal?.removeEventListener('abort', abortFromCaller);
       }
     } catch (error: any) {
+      if (error?.name === 'CancellationFailed') {
+        return { success: false, error: error.message };
+      }
       if (isUserCancellation(error, signal)) {
         return { success: false, error: '用户取消生成' };
       }
@@ -402,6 +405,22 @@ export class SeedanceService extends AIService {
       console.error('视频生成失败:', publicMessage);
       return { success: false, error: publicMessage };
     }
+  }
+
+  private async cancelVideoTask(taskId: string): Promise<void> {
+    const baseUrl = this.config.baseUrl.replace(/\/v1\/?$/, '');
+    const response = await fetch(`${baseUrl}/v1/videos/${encodeURIComponent(taskId)}`, {
+      method: 'DELETE',
+      headers: {
+        'Authorization': `Bearer ${this.config.apiKey}`,
+        'X-API-Key': this.config.apiKey,
+      },
+    });
+    if (response.ok) return;
+    const data = await safeJsonParse(response);
+    const error = new Error(data.message || '服务商未确认取消，任务仍在处理中且暂不退款');
+    error.name = 'CancellationFailed';
+    throw error;
   }
 
   // 轮询视频任务
@@ -412,8 +431,15 @@ export class SeedanceService extends AIService {
     console.log('开始轮询视频任务:', taskId);
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      if (signal?.aborted) throw new DOMException('用户取消生成', 'AbortError');
+      if (signal?.aborted) {
+        await this.cancelVideoTask(taskId);
+        throw userCancellationError();
+      }
       await new Promise(resolve => setTimeout(resolve, VIDEO_POLL_INTERVAL_MS));
+      if (signal?.aborted) {
+        await this.cancelVideoTask(taskId);
+        throw userCancellationError();
+      }
 
       const url = `${baseUrl}/v1/videos/${taskId}`;
       console.log(`轮询视频任务 (${attempt + 1}/${maxAttempts}):`, url);
@@ -487,7 +513,10 @@ export class SeedanceService extends AIService {
           console.log(`生成进度: ${progress}%`);
         }
       } catch (error: any) {
-        if (isUserCancellation(error, signal)) throw userCancellationError();
+        if (isUserCancellation(error, signal)) {
+          await this.cancelVideoTask(taskId);
+          throw userCancellationError();
+        }
         if (['ProviderError', 'ProviderTaskFailed', 'ProviderTaskTimeout'].includes(error.name)) throw error;
         if (error.message.includes('视频生成失败') || error.message.includes('未返回视频 URL')) {
           throw error;
@@ -510,7 +539,7 @@ export class SeedanceService extends AIService {
         throw new Error(`无效的 API 地址: "${this.config.baseUrl}"`);
       }
 
-      if (!this.config.apiKey && !this.config.managed) {
+      if (!this.config.apiKey && !this.config.managed && !this.config.credentialManaged) {
         throw new Error('请先配置 API Key');
       }
 
