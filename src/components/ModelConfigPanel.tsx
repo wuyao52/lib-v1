@@ -21,6 +21,7 @@ import useProjectStore from '@/store/useProjectStore';
 import { createAIService, SeedanceService } from '@/services/aiService';
 import type { AIModelConfig } from '@/types';
 import { apiRequest } from '@/services/apiClient';
+import { describeModelDuration } from '@/services/modelDuration';
 
 // 预设模型
 const presetModels = {
@@ -253,6 +254,7 @@ export default function ModelConfigPanel() {
                       <button key={model.id} onClick={() => updateActiveModel({ ...model, apiKey: '', managed: true })} className={`w-full p-3 rounded-lg border text-left ${activeModel.managed && activeModel.id === model.id ? 'border-green-500 bg-green-500/10' : 'border-dark-600 bg-dark-700 hover:border-dark-400'}`}>
                         <div className="flex items-center justify-between gap-3"><span className="text-sm text-white">{model.name}</span><span className="text-xs text-green-400">¥{((model.unitPriceCents || 0) / 100).toFixed(2)} / {model.billingUnit === 'second' ? '秒' : model.billingUnit === 'image' ? '张' : '次'}</span></div>
                         <div className="text-[10px] text-dark-400 mt-1">{model.provider} · 密钥由系统安全托管</div>
+                        {model.category === 'video' && <div className="mt-1 text-[10px] text-primary-300">{describeModelDuration(model)}</div>}
                       </button>
                     ))}
                   </div>
@@ -306,7 +308,7 @@ export default function ModelConfigPanel() {
 
               {/* API 地址 */}
               {activeModel.managed ? (
-                <div className="p-3 rounded-lg border border-green-500/30 bg-green-500/5 text-sm text-green-300">系统模型已启用。API 地址和 API Key 由服务端安全托管，当前用户不可查看、复制或修改。</div>
+                <div className="space-y-1 p-3 rounded-lg border border-green-500/30 bg-green-500/5 text-sm text-green-300"><p>系统模型已启用。API 地址和 API Key 由服务端安全托管，当前用户不可查看、复制或修改。</p>{activeTab === 'video' && <p className="text-xs text-primary-300">{describeModelDuration(activeModel)}</p>}</div>
               ) : <div className="space-y-2">
                 <label className="text-xs font-medium text-dark-300 flex items-center gap-2">
                   <Globe className="w-3 h-3 text-primary-400" />
