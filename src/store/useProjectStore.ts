@@ -671,20 +671,23 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     const node = project.nodes.find((n) => n.id === nodeId);
     if (!node) return;
     if (isUploadedImageNode(node.data)) return;
-    if (node.data.status === 'generating') return;
+    if (node.data.status === 'generating' || hasActiveGenerationFromSource(project, nodeId, get().activeGenerations)) return;
     const nodePrompt = String(node.data.prompt || node.data.content || '').trim();
     if (!nodePrompt && !node.data.generatedContent) return;
-
-    // 更新当前节点状态为生成中
-    get().updateNodeData(nodeId, {
-      status: 'generating',
-      progress: 0,
-    });
 
     // 创建新的生成结果节点
     const generationTarget = planGenerationTarget(nodeId, node.data.type, generateId);
     const generateInPlace = generationTarget.inPlace;
     const newNodeId = generationTarget.targetNodeId;
+    if (generateInPlace) {
+      get().updateNodeData(nodeId, { status: 'generating', error: undefined, progress: 0 });
+    } else if (node.data.status === 'error') {
+      get().updateNodeData(nodeId, {
+        status: node.data.generatedContent ? 'completed' : 'idle',
+        error: undefined,
+        progress: node.data.generatedContent ? 100 : 0,
+      });
+    }
     const newNode: Node<SceneNodeData> = {
       id: newNodeId,
       type: 'sceneNode',
@@ -872,12 +875,6 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
         });
 
         if (result.success && result.data) {
-          // 生成成功
-          get().updateNodeData(nodeId, {
-            status: 'completed',
-            progress: 100,
-          });
-
           get().updateNodeData(newNodeId, {
             status: 'completed',
             progress: 100,
@@ -948,14 +945,16 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
 
     const node = project.nodes.find((n) => n.id === nodeId);
     if (!node) return;
-    if (node.data.status === 'generating') return;
+    if (node.data.status === 'generating' || hasActiveGenerationFromSource(project, nodeId, get().activeGenerations)) return;
     if (!String(settings.prompt || '').trim() && !node.data.generatedContent) return;
 
-    // 更新当前节点状态为生成中
-    get().updateNodeData(nodeId, {
-      status: 'generating',
-      progress: 0,
-    });
+    if (node.data.status === 'error') {
+      get().updateNodeData(nodeId, {
+        status: node.data.generatedContent ? 'completed' : 'idle',
+        error: undefined,
+        progress: node.data.generatedContent ? 100 : 0,
+      });
+    }
 
     // 创建新的生成结果节点
     const newNodeId = generateId();
@@ -1145,12 +1144,6 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
         });
 
         if (result.success && result.data) {
-          // 生成成功
-          get().updateNodeData(nodeId, {
-            status: 'completed',
-            progress: 100,
-          });
-
           get().updateNodeData(newNodeId, {
             status: 'completed',
             progress: 100,
@@ -1409,9 +1402,22 @@ function markGenerationFailed(
   get: () => ProjectStore,
   set: (partial: Partial<ProjectStore>) => void
 ) {
-  get().updateNodeData(sourceNodeId, { status: 'error', error: message, progress: 0 });
-  if (newNodeId !== sourceNodeId) get().updateNodeData(newNodeId, { status: 'error', error: message, progress: 0, content: message });
+  get().updateNodeData(newNodeId, {
+    status: 'error', error: message, progress: 0,
+    ...(newNodeId === sourceNodeId ? {} : { content: message }),
+  });
   set({ isGenerating: false });
+}
+
+function hasActiveGenerationFromSource(
+  project: DramaProject,
+  sourceNodeId: string,
+  activeGenerations: Map<string, AbortController>,
+) {
+  if (activeGenerations.has(sourceNodeId)) return true;
+  return [...activeGenerations.keys()].some((targetNodeId) => (
+    project.edges.find((edge) => edge.target === targetNodeId)?.source === sourceNodeId
+  ));
 }
 
 function finishGenerationTask(
