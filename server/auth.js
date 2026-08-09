@@ -34,7 +34,7 @@ async function hashPassword(password, salt = randomBytes(16).toString('hex')) {
   return `${salt}:${Buffer.from(derived).toString('hex')}`;
 }
 
-async function verifyPassword(password, storedHash) {
+export async function verifyPassword(password, storedHash) {
   const [salt, expectedHex] = String(storedHash).split(':');
   if (!salt || !expectedHex) return false;
   const derived = Buffer.from(await scrypt(password, salt, 64));
@@ -54,13 +54,12 @@ function publicUser(user) {
   };
 }
 
-function validateCredentials({ email, password, name, username }, requireRegistrationFields = false) {
+function validateCredentials({ email, password, username }, requireRegistrationFields = false) {
   if (requireRegistrationFields && !/^[\p{L}\p{N}_-]{3,30}$/u.test(normalizeUsername(username))) {
     return '用户名需为 3-30 位，只能包含文字、字母、数字、下划线或连字符';
   }
   if (requireRegistrationFields && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(email))) return '请输入有效邮箱';
   if (typeof password !== 'string' || password.length < 8 || password.length > 128) return '密码长度需为 8-128 位';
-  if (requireRegistrationFields && (typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 40)) return '昵称长度需为 2-40 位';
   return null;
 }
 
@@ -281,13 +280,21 @@ export function createAuthService(db, { secureCookies = false, sendEmailCode, ge
           id: randomUUID(),
           username,
           email,
-          name: req.body.name.trim(),
+          name: username,
           passwordHash: await hashPassword(req.body.password),
           role: systemUserEmails.has(email) ? 'system' : 'user',
           balanceCents: 0,
           createdAt: new Date().toISOString(),
         };
-        await db.mutate((data) => data.users.push(user));
+        const created = db.createUser ? await db.createUser(user) : await db.mutate((data) => {
+          if (data.users.some((item) => item.email === email)) return { created: false, error: 'EMAIL_EXISTS' };
+          if (data.users.some((item) => item.username.toLowerCase() === username.toLowerCase())) return { created: false, error: 'USERNAME_EXISTS' };
+          data.users.push(user); return { created: true, error: null };
+        });
+        if (!created.created) {
+          if (created.error === 'EMAIL_EXISTS') return res.status(409).json({ error: created.error, message: '该邮箱已注册' });
+          return res.status(409).json({ error: 'USERNAME_EXISTS', message: '该用户名已被使用' });
+        }
         await createSession(user.id, req, res);
         return res.status(201).json({ user: publicUser(user) });
       } catch (routeError) {
