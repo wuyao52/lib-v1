@@ -15,6 +15,12 @@ const EMPTY_DATABASE = {
   generationHistory: [],
   generationJobs: [],
   assets: [],
+  generatedMedia: [],
+  rateLimits: [],
+  auditLogs: [],
+  userApiConfigs: [],
+  paymentOrders: [],
+  paymentEvents: [],
 };
 
 export class JsonDatabase {
@@ -39,6 +45,15 @@ export class JsonDatabase {
 
   read(collection) {
     return this.data[collection];
+  }
+
+  async createUser(user) {
+    return this.mutate((data) => {
+      if (data.users.some((item) => item.email === user.email)) return { created: false, error: 'EMAIL_EXISTS' };
+      if (data.users.some((item) => item.username.toLowerCase() === user.username.toLowerCase())) return { created: false, error: 'USERNAME_EXISTS' };
+      data.users.push(user);
+      return { created: true, error: null };
+    });
   }
 
   async mutate(mutator) {
