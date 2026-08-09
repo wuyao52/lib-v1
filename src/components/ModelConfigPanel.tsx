@@ -16,6 +16,7 @@ import {
   Check,
   RefreshCw,
   MessageSquareText,
+  Trash2,
 } from 'lucide-react';
 import useProjectStore from '@/store/useProjectStore';
 import { createAIService, SeedanceService } from '@/services/aiService';
@@ -59,6 +60,7 @@ const presetModels = {
 };
 
 type ModelCategory = 'text' | 'video' | 'image';
+type UserApiConfig = { id: string; name: string; provider: string; baseUrl: string; hasApiKey: boolean };
 
 export default function ModelConfigPanel() {
   const { showModelConfig, toggleModelConfig, project, updateProjectSettings } = useProjectStore();
@@ -73,12 +75,19 @@ export default function ModelConfigPanel() {
   const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [selectedModelId, setSelectedModelId] = useState<string>('');
   const [managedModels, setManagedModels] = useState<Array<AIModelConfig & { category: ModelCategory }>>([]);
+  const [userApiConfigs, setUserApiConfigs] = useState<UserApiConfig[]>([]);
+  const [draftApiKey, setDraftApiKey] = useState('');
+  const [draftBaseUrl, setDraftBaseUrl] = useState('');
+  const [savingCredentials, setSavingCredentials] = useState(false);
 
   useEffect(() => {
     if (!showModelConfig) return;
-    apiRequest<{ models: Array<AIModelConfig & { category: ModelCategory }> }>('/api/catalog/models')
-      .then(({ models }) => setManagedModels(models.map((model) => ({ ...model, apiKey: '', parameters: {} }))))
-      .catch(() => setManagedModels([]));
+    void Promise.all([
+      apiRequest<{ models: Array<AIModelConfig & { category: ModelCategory }> }>('/api/catalog/models')
+        .then(({ models }) => setManagedModels(models.map((model) => ({ ...model, apiKey: '', parameters: {} })))).catch(() => setManagedModels([])),
+      apiRequest<{ configs: UserApiConfig[] }>('/api/user-api-configs')
+        .then(({ configs }) => setUserApiConfigs(configs)).catch(() => setUserApiConfigs([])),
+    ]);
   }, [showModelConfig]);
 
   if (!project) return null;
@@ -118,7 +127,11 @@ export default function ModelConfigPanel() {
       modelId: preset.id,
       apiKey: activeModel.managed ? '' : activeModel.apiKey,
       managed: false,
+      credentialManaged: false,
+      credentialConfigId: undefined,
     });
+    setDraftBaseUrl(preset.baseUrl);
+    setDraftApiKey('');
     setSelectedModelId('');
     setTestStatus('idle');
     setTestMessage('');
@@ -126,7 +139,7 @@ export default function ModelConfigPanel() {
 
   // 获取可用模型列表
   const fetchAvailableModels = async () => {
-    if (!activeModel.apiKey && !activeModel.managed) {
+    if (!activeModel.apiKey && !activeModel.managed && !activeModel.credentialManaged) {
       setTestMessage('请先输入 API Key');
       return;
     }
@@ -146,6 +159,55 @@ export default function ModelConfigPanel() {
     }
   };
 
+  const selectUserApiConfig = (config: UserApiConfig) => {
+    updateActiveModel({
+      baseUrl: config.baseUrl,
+      apiKey: '',
+      managed: false,
+      credentialManaged: true,
+      credentialConfigId: config.id,
+      provider: config.provider,
+    });
+    setDraftApiKey('');
+    setDraftBaseUrl('');
+    setTestStatus('idle');
+    setTestMessage('');
+  };
+
+  const savePrivateCredentials = async () => {
+    setSavingCredentials(true);
+    setTestStatus('testing');
+    setTestMessage('正在加密保存...');
+    try {
+      const { config } = await apiRequest<{ config: UserApiConfig }>('/api/user-api-configs', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: `${activeModel.provider || 'Custom'} API`,
+          provider: activeModel.provider || 'Custom',
+          baseUrl: draftBaseUrl || activeModel.baseUrl,
+          apiKey: draftApiKey,
+        }),
+      });
+      setUserApiConfigs((items) => [...items, config]);
+      selectUserApiConfig(config);
+      setTestStatus('success');
+      setTestMessage('凭据已加密保存，浏览器中的 API Key 已清除');
+    } catch (error: any) {
+      setTestStatus('error');
+      setTestMessage(error.message || '保存失败');
+    } finally {
+      setSavingCredentials(false);
+    }
+  };
+
+  const deleteUserApiConfig = async (config: UserApiConfig) => {
+    await apiRequest(`/api/user-api-configs/${config.id}`, { method: 'DELETE' });
+    setUserApiConfigs((items) => items.filter((item) => item.id !== config.id));
+    if (activeModel.credentialConfigId === config.id) {
+      updateActiveModel({ baseUrl: '', apiKey: '', credentialManaged: false, credentialConfigId: undefined });
+    }
+  };
+
   // 选择 API 返回的模型
   const handleSelectApiModel = (modelId: string) => {
     setSelectedModelId(modelId);
@@ -161,7 +223,7 @@ export default function ModelConfigPanel() {
   // 复制 API Key
   const handleCopyApiKey = async () => {
     try {
-      await navigator.clipboard.writeText(activeModel.apiKey);
+      await navigator.clipboard.writeText(draftApiKey);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (err) {
@@ -231,6 +293,8 @@ export default function ModelConfigPanel() {
                     setTestMessage('');
                     setAvailableModels([]);
                     setSelectedModelId('');
+                    setDraftApiKey('');
+                    setDraftBaseUrl('');
                   }}
                   className={`flex-1 flex items-center justify-center gap-2 py-3 text-sm font-medium transition-colors
                     ${activeTab === tab.id
@@ -251,11 +315,27 @@ export default function ModelConfigPanel() {
                   <label className="text-xs font-medium text-dark-300">系统模型</label>
                   <div className="space-y-2">
                     {managedModels.filter((model) => model.category === activeTab).map((model) => (
-                      <button key={model.id} onClick={() => updateActiveModel({ ...model, apiKey: '', managed: true })} className={`w-full p-3 rounded-lg border text-left ${activeModel.managed && activeModel.id === model.id ? 'border-green-500 bg-green-500/10' : 'border-dark-600 bg-dark-700 hover:border-dark-400'}`}>
+                      <button key={model.id} onClick={() => updateActiveModel({ ...model, apiKey: '', managed: true, credentialManaged: false, credentialConfigId: undefined })} className={`w-full p-3 rounded-lg border text-left ${activeModel.managed && activeModel.id === model.id ? 'border-green-500 bg-green-500/10' : 'border-dark-600 bg-dark-700 hover:border-dark-400'}`}>
                         <div className="flex items-center justify-between gap-3"><span className="text-sm text-white">{model.name}</span><span className="text-xs text-green-400">¥{((model.unitPriceCents || 0) / 100).toFixed(2)} / {model.billingUnit === 'second' ? '秒' : model.billingUnit === 'image' ? '张' : '次'}</span></div>
                         <div className="text-[10px] text-dark-400 mt-1">{model.provider} · 密钥由系统安全托管</div>
                         {model.category === 'video' && <div className="mt-1 text-[10px] text-primary-300">{describeModelDuration(model)}</div>}
                       </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {userApiConfigs.length > 0 && (
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-dark-300">我的加密 API</label>
+                  <div className="space-y-2">
+                    {userApiConfigs.map((config) => (
+                      <div key={config.id} className={`flex items-center gap-2 border p-2 ${activeModel.credentialConfigId === config.id ? 'border-primary-500 bg-primary-500/10' : 'border-dark-600 bg-dark-700'}`}>
+                        <button className="min-w-0 flex-1 text-left" onClick={() => selectUserApiConfig(config)}>
+                          <span className="block truncate text-xs text-white">{config.name}</span>
+                          <span className="block truncate text-[10px] text-dark-400">{config.provider} · 密钥已托管</span>
+                        </button>
+                        <button title="删除私有 API" className="p-1.5 text-red-400" onClick={() => void deleteUserApiConfig(config)}><Trash2 className="h-3.5 w-3.5" /></button>
+                      </div>
                     ))}
                   </div>
                 </div>
@@ -282,7 +362,7 @@ export default function ModelConfigPanel() {
               </div>
 
               {/* API Key */}
-              {!activeModel.managed && <div className="space-y-2">
+              {!activeModel.managed && !activeModel.credentialManaged && <div className="space-y-2">
                 <label className="text-xs font-medium text-dark-300 flex items-center gap-2">
                   <Key className="w-3 h-3 text-primary-400" />
                   API Key
@@ -290,8 +370,8 @@ export default function ModelConfigPanel() {
                 <div className="relative">
                   <input
                     type={showApiKey ? 'text' : 'password'}
-                    value={activeModel.apiKey}
-                    onChange={(e) => updateActiveModel({ apiKey: e.target.value })}
+                    value={draftApiKey}
+                    onChange={(e) => setDraftApiKey(e.target.value)}
                     placeholder="输入你的 API Key"
                     className="w-full px-3 py-2 pr-16 bg-dark-700 border border-dark-600 rounded-lg text-white text-sm focus:outline-none focus:border-primary-500"
                   />
@@ -309,6 +389,11 @@ export default function ModelConfigPanel() {
               {/* API 地址 */}
               {activeModel.managed ? (
                 <div className="space-y-1 p-3 rounded-lg border border-green-500/30 bg-green-500/5 text-sm text-green-300"><p>系统模型已启用。API 地址和 API Key 由服务端安全托管，当前用户不可查看、复制或修改。</p>{activeTab === 'video' && <p className="text-xs text-primary-300">{describeModelDuration(activeModel)}</p>}</div>
+              ) : activeModel.credentialManaged ? (
+                <div className="space-y-1 border border-primary-500/30 bg-primary-500/5 p-3 text-sm text-primary-300">
+                  <p>自定义 API 凭据已加密托管，项目只保存配置 ID 和代理地址。</p>
+                  <p className="text-xs text-dark-400">API Key 与真实根地址不会返回浏览器。</p>
+                </div>
               ) : <div className="space-y-2">
                 <label className="text-xs font-medium text-dark-300 flex items-center gap-2">
                   <Globe className="w-3 h-3 text-primary-400" />
@@ -316,19 +401,29 @@ export default function ModelConfigPanel() {
                 </label>
                 <input
                   type="text"
-                  value={activeModel.baseUrl}
-                  onChange={(e) => updateActiveModel({ baseUrl: e.target.value })}
+                  value={draftBaseUrl || activeModel.baseUrl}
+                  onChange={(e) => setDraftBaseUrl(e.target.value)}
                   placeholder="https://api.example.com"
                   className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-white text-sm focus:outline-none focus:border-primary-500"
                 />
               </div>}
 
+              {!activeModel.managed && !activeModel.credentialManaged && (
+                <button
+                  onClick={savePrivateCredentials}
+                  disabled={savingCredentials || !draftApiKey || !(draftBaseUrl || activeModel.baseUrl)}
+                  className="w-full bg-primary-600 py-2.5 text-sm font-medium text-white disabled:bg-dark-700 disabled:text-dark-500"
+                >
+                  {savingCredentials ? '正在加密保存...' : '加密保存并使用'}
+                </button>
+              )}
+
               {/* 测试连接 */}
               <button
                 onClick={handleTestConnection}
-                disabled={testStatus === 'testing' || (!activeModel.apiKey && !activeModel.managed)}
+                disabled={testStatus === 'testing' || (!activeModel.apiKey && !activeModel.managed && !activeModel.credentialManaged)}
                 className={`w-full py-2.5 rounded-lg font-medium transition-all flex items-center justify-center gap-2 ${
-                  (!activeModel.apiKey && !activeModel.managed)
+                  (!activeModel.apiKey && !activeModel.managed && !activeModel.credentialManaged)
                     ? 'bg-dark-700 text-dark-500 cursor-not-allowed'
                     : testStatus === 'success'
                     ? 'bg-green-600 text-white'
