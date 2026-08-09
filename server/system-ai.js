@@ -116,7 +116,7 @@ async function refundTaskCharge(db, { userId, referenceId }) {
   return refunded;
 }
 
-export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchImpl = fetch }) {
+export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchImpl = fetch, videoQueue = null }) {
   router.use(requireAuth);
   router.use('/:apiId', async (req, res, next) => {
     const api = db.read('systemApis').find((item) => item.id === req.params.apiId && item.enabled);
@@ -124,20 +124,28 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
 
     const relativeUrl = req.originalUrl.slice(req.originalUrl.indexOf(`/api/system-ai/${api.id}`) + `/api/system-ai/${api.id}`.length) || '/';
     const pathname = relativeUrl.split('?')[0].replace(/\/+$/, '') || '/';
+    if (req.method === 'GET' && videoQueue) {
+      const localJobId = decodeURIComponent(pathname.match(/^\/v1\/videos\/([^/]+)$/)?.[1] || '');
+      const localJob = localJobId ? videoQueue.get(localJobId, req.user.id) : null;
+      if (localJob) return res.json(localJob);
+    }
     if (req.method === 'GET' && pathname === '/v1/models') {
       const data = db.read('modelPricing').filter((item) => item.apiId === api.id && item.enabled)
         .map((item) => ({ id: item.modelId, object: 'model', name: item.displayName, category: item.category, billingUnit: item.billingUnit, unitPriceCents: item.unitPriceCents }));
       return res.json({ object: 'list', data });
     }
 
-    let requestBody = req.body;
+    const client = req.body?._client && typeof req.body._client === 'object' ? req.body._client : {};
+    let requestBody = req.body && typeof req.body === 'object' ? { ...req.body } : req.body;
+    if (requestBody && typeof requestBody === 'object') delete requestBody._client;
     let pricing; let chargeCents = 0; let transactionId;
     if (req.method === 'POST') {
       const modelId = String(requestBody?.model || '').trim();
       pricing = db.read('modelPricing').find((item) => item.apiId === api.id && item.modelId === modelId && item.enabled);
       if (!pricing) return res.status(403).json({ error: 'MODEL_NOT_PRICED', message: '该模型未开放或尚未定价' });
       try { chargeCents = computeCharge(pricing, requestBody); } catch (error) { return res.status(400).json({ error: error.code, message: error.message }); }
-      if (req.user.role !== 'system' && chargeCents > 0) {
+      const willUseVideoQueue = pathname === '/v1/videos' && pricing?.category === 'video' && videoQueue;
+      if (req.user.role !== 'system' && chargeCents > 0 && !willUseVideoQueue) {
         transactionId = randomUUID();
         try {
           await changeBalance(db, { userId: req.user.id, amountCents: -chargeCents, type: 'model_usage', description: `${pricing.displayName} 模型调用`, referenceId: transactionId });
@@ -153,6 +161,23 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
       await changeBalance(db, { userId: req.user.id, amountCents: chargeCents, type: 'model_refund', description: `${pricing.displayName} 调用失败退款`, referenceId: transactionId });
       transactionId = null;
     };
+
+    if (req.method === 'POST' && pathname === '/v1/videos' && pricing?.category === 'video' && videoQueue) {
+      try {
+        const jobId = randomUUID();
+        const queued = await videoQueue.enqueue({
+          id: jobId, userId: req.user.id, apiId: api.id, modelId: pricing.modelId,
+          requestBody, chargeCents: req.user.role === 'system' ? 0 : chargeCents,
+          billingReference: req.user.role === 'system' ? null : jobId, client,
+        });
+        return res.status(202).json({ ...videoQueue.get(queued.job.id, req.user.id), queue_position: queued.queuePosition });
+      } catch (error) {
+        try { await refund(); } catch (refundError) { return next(refundError); }
+        if (error.code === 'INSUFFICIENT_BALANCE') return res.status(402).json({ error: error.code, message: '错误：余额不足' });
+        const status = error.code === 'VIDEO_QUEUE_USER_LIMIT' ? 429 : 503;
+        return res.status(status).json({ error: error.code || 'VIDEO_QUEUE_UNAVAILABLE', message: error.message || '视频队列暂时不可用' });
+      }
+    }
 
     try {
       const target = buildTarget({ ...api, baseUrl: vault.decrypt(api.baseUrl) }, relativeUrl);
