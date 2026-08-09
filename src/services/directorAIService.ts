@@ -206,7 +206,7 @@ function chatCompletionUrl(baseUrl: string) {
 
 export function resolveDirectorTextModel(project: DramaProject): AIModelConfig | null {
   const model = project.settings.multiModel?.textModel;
-  return (model?.managed || model?.apiKey?.trim()) && model?.baseUrl?.trim() && model?.modelId?.trim() ? model : null;
+  return (model?.managed || model?.credentialManaged || model?.apiKey?.trim()) && model?.baseUrl?.trim() && model?.modelId?.trim() ? model : null;
 }
 
 function extractMessageContent(payload: any): string {
