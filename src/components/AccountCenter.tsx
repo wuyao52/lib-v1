@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Check, Coins, Copy, Eye, EyeOff, Pencil, Plus, RefreshCw, Shield, Trash2, Wallet, X } from 'lucide-react';
+import { Activity, Check, Coins, Copy, Eye, EyeOff, Pencil, Plus, RefreshCw, Shield, Trash2, Wallet, X } from 'lucide-react';
 import { apiRequest } from '@/services/apiClient';
 import { useAuth, type AuthUser } from '@/auth/AuthContext';
 
@@ -8,6 +8,11 @@ type Recharge = { id: string; amountCents: number; status: string; note: string;
 type SystemApi = { id: string; name: string; provider: string; baseUrl: string; apiKey: string; enabled: boolean };
 type Pricing = { id: string; apiId: string; modelId: string; displayName: string; category: string; billingUnit: string; unitPriceCents: number; minDurationSec?: number | null; maxDurationSec?: number | null; allowedDurationsSec?: number[]; enabled: boolean };
 type DiscoveredModel = { id: string; name: string; type: string };
+type QueueOverview = {
+  counts: Record<'queued' | 'submitting' | 'processing' | 'completed' | 'failed', number>;
+  config: { globalConcurrency: number; userConcurrency: number; apiConcurrency: number; maxQueuePerUser: number } | null;
+  recent: Array<{ id: string; userId: string; modelId: string; status: string; progress: number; errorCode?: string | null; createdAt: string }>;
+};
 
 const yuan = (cents: number) => `¥${(Number(cents || 0) / 100).toFixed(2)}`;
 const field = 'w-full px-3 py-2 bg-dark-900 border border-dark-600 rounded text-sm text-white focus:outline-none focus:border-primary-500';
@@ -33,6 +38,7 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
   const [balanceAdjustments, setBalanceAdjustments] = useState<Record<string, string>>({});
   const [discoveredModels, setDiscoveredModels] = useState<DiscoveredModel[]>([]);
   const [isDiscovering, setIsDiscovering] = useState(false);
+  const [queue, setQueue] = useState<QueueOverview | null>(null);
 
   const load = useCallback(async () => {
     if (mode === 'billing') {
@@ -40,16 +46,26 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
       setBalance(data.balanceCents); setTransactions(data.transactions); setRecharges(data.recharges);
       return;
     }
-    const [apiData, priceData, userData, rechargeData] = await Promise.all([
+    const [apiData, priceData, userData, rechargeData, queueData] = await Promise.all([
       apiRequest<{ apis: SystemApi[] }>('/api/admin/system-apis'),
       apiRequest<{ pricing: Pricing[] }>('/api/admin/pricing'),
       apiRequest<{ users: AuthUser[] }>('/api/admin/users'),
       apiRequest<{ recharges: Recharge[] }>('/api/admin/recharges'),
+      apiRequest<QueueOverview>('/api/admin/video-queue'),
     ]);
     setApis(apiData.apis); setPricing(priceData.pricing); setUsers(userData.users); setRecharges(rechargeData.recharges);
+    setQueue(queueData);
   }, [mode]);
 
   useEffect(() => { load().catch((error) => setMessage(error.message)); }, [load]);
+
+  useEffect(() => {
+    if (mode !== 'admin') return undefined;
+    const timer = window.setInterval(() => {
+      void apiRequest<QueueOverview>('/api/admin/video-queue').then(setQueue).catch(() => undefined);
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [mode]);
 
   const act = async (job: () => Promise<unknown>, success: string) => {
     try { await job(); await load(); await refresh(); setMessage(success); } catch (error: any) { setMessage(error.message); }
@@ -167,6 +183,7 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
             <div className="mt-3 divide-y divide-dark-700">{pricing.map((item) => <div key={item.id} className="py-2 flex justify-between text-sm"><span className="text-dark-200">{item.displayName} <small className="text-dark-500">{item.modelId} · {item.category}{item.category === 'video' && (item.allowedDurationsSec?.length ? ` · 仅 ${item.allowedDurationsSec.join('、')} 秒` : (item.minDurationSec || item.maxDurationSec) ? ` · ${item.minDurationSec || 1}-${item.maxDurationSec || 3600} 秒` : '')}</small></span><span className="flex items-center gap-3 text-green-400">{yuan(item.unitPriceCents)} / {item.billingUnit === 'second' ? '秒' : item.billingUnit === 'image' ? '张' : '次'}<button title="编辑" className="text-primary-400" onClick={() => { setEditingPriceId(item.id); setPriceForm({ apiId: item.apiId, modelId: item.modelId, displayName: item.displayName, category: item.category, billingUnit: item.billingUnit, priceYuan: String(item.unitPriceCents / 100), minDurationSec: String(item.minDurationSec || ''), maxDurationSec: String(item.maxDurationSec || ''), allowedDurations: (item.allowedDurationsSec || []).join(',') }); void loadModelsForPricing(item.apiId, false); }}><Pencil className="w-4 h-4" /></button><button title="删除" className="text-red-400" onClick={() => act(() => apiRequest(`/api/admin/pricing/${item.id}`, { method: 'DELETE' }), '定价已删除')}><Trash2 className="w-4 h-4" /></button></span></div>)}</div>
           </section>
 
+          <QueueView overview={queue} users={users} />
           <AdminUsers users={users} currentUserId={user?.id} recharges={recharges} balanceAdjustments={balanceAdjustments} setBalanceAdjustments={setBalanceAdjustments} act={act} />
         </>}
       </div>
@@ -176,6 +193,16 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
 
 function BillingView({ balance, transactions, recharges, amount, note, setAmount, setNote, act }: any) {
   return <><div className="grid md:grid-cols-[1fr_2fr] gap-5"><div><div className="text-xs text-dark-400">当前余额</div><div className="text-3xl text-white font-semibold mt-1">{yuan(balance)}</div><div className="mt-5 p-3 rounded border border-amber-500/30 bg-amber-500/5 text-xs text-amber-200">微信支付和支付宝商户支付尚未接入。这里提交的是人工充值申请，不会自动到账。</div><div className="mt-4 space-y-2"><input className={field} type="number" min="1" max="100000" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="申请入账金额（元）" /><textarea className={field} value={note} onChange={(e) => setNote(e.target.value)} placeholder="付款方式、流水号或审核说明" /><button className="w-full py-2 bg-primary-600 hover:bg-primary-500 rounded text-white text-sm" onClick={() => act(() => apiRequest('/api/billing/recharges', { method: 'POST', body: JSON.stringify({ amountCents: Math.round(Number(amount) * 100), note }) }), '人工充值申请已提交，等待系统用户审核')}>提交人工充值申请</button><p className="text-xs text-dark-500">审核路径：系统用户登录 → 系统管理 → 充值审核 → 通过或拒绝。</p></div></div><div><h3 className="text-sm text-white mb-2">余额流水</h3><div className="divide-y divide-dark-700">{transactions.map((item: Transaction) => <div key={item.id} className="py-2 flex justify-between text-sm"><span className="text-dark-300">{item.description}<small className="block text-dark-500">{new Date(item.createdAt).toLocaleString()}</small></span><span className={item.amountCents >= 0 ? 'text-green-400' : 'text-red-400'}>{item.amountCents >= 0 ? '+' : ''}{yuan(item.amountCents)}</span></div>)}</div></div></div><div><h3 className="text-sm text-white mb-2">充值申请</h3><div className="divide-y divide-dark-700">{recharges.map((item: Recharge) => <div key={item.id} className="py-2 flex justify-between text-sm text-dark-300"><span>{yuan(item.amountCents)} · {item.note || '无备注'}</span><span>{item.status === 'pending' ? '待审核' : item.status === 'approved' ? '已通过' : '已拒绝'}</span></div>)}</div></div></>;
+}
+
+function QueueView({ overview, users }: { overview: QueueOverview | null; users: AuthUser[] }) {
+  const labels: Record<string, string> = { queued: '排队', submitting: '提交中', processing: '生成中', completed: '成功', failed: '失败' };
+  const userNames = new Map(users.map((user) => [user.id, user.username]));
+  return <section>
+    <div className="mb-3 flex items-center justify-between gap-3"><div><h3 className="flex items-center gap-2 text-sm font-medium text-white"><Activity className="h-4 w-4 text-cyan-400" />视频任务队列</h3><p className="mt-1 text-xs text-dark-400">每 5 秒刷新。并发限制由 Railway 环境变量控制。</p></div>{overview?.config && <span className="text-xs text-dark-400">全站 {overview.config.globalConcurrency} · 单用户 {overview.config.userConcurrency} · 单 API {overview.config.apiConcurrency}</span>}</div>
+    <div className="grid grid-cols-2 gap-2 md:grid-cols-5">{Object.entries(labels).map(([status, label]) => <div key={status} className="rounded border border-dark-600 bg-dark-900 px-3 py-2"><p className="text-[10px] text-dark-500">{label}</p><p className="mt-1 text-lg text-white">{overview?.counts[status as keyof QueueOverview['counts']] || 0}</p></div>)}</div>
+    <div className="mt-3 max-h-52 overflow-y-auto divide-y divide-dark-700">{overview?.recent.length ? overview.recent.map((job) => <div key={job.id} className="grid grid-cols-[1fr_auto] gap-3 py-2 text-xs"><span className="min-w-0 text-dark-300"><span className="block truncate">{userNames.get(job.userId) || job.userId} · {job.modelId}</span><small className="text-dark-500">{new Date(job.createdAt).toLocaleString()} · {job.id.slice(0, 8)}</small></span><span className={job.status === 'failed' ? 'text-red-400' : job.status === 'completed' ? 'text-green-400' : 'text-cyan-400'}>{labels[job.status] || job.status}{job.status === 'processing' && job.progress ? ` ${job.progress}%` : ''}{job.errorCode ? ` · ${job.errorCode}` : ''}</span></div>) : <p className="py-5 text-center text-xs text-dark-500">暂无视频队列任务</p>}</div>
+  </section>;
 }
 
 function AdminUsers({ users, currentUserId, recharges, balanceAdjustments, setBalanceAdjustments, act }: any) {
