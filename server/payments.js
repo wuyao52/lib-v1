@@ -23,7 +23,22 @@ function chinaTimestamp(date = new Date()) {
   return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(date).replace('T', ' ');
 }
 
-function createAlipayProvider(config) {
+function extractJsonField(raw, field) {
+  const marker = `"${field}":`;
+  const start = raw.indexOf(marker);
+  if (start < 0) throw new Error('支付宝响应格式无效');
+  let index = raw.indexOf('{', start + marker.length); let depth = 0; let quoted = false; let escaped = false;
+  for (let cursor = index; cursor < raw.length; cursor += 1) {
+    const char = raw[cursor];
+    if (quoted) { if (escaped) escaped = false; else if (char === '\\') escaped = true; else if (char === '"') quoted = false; continue; }
+    if (char === '"') quoted = true;
+    else if (char === '{') depth += 1;
+    else if (char === '}' && --depth === 0) return raw.slice(index, cursor + 1);
+  }
+  throw new Error('支付宝响应格式无效');
+}
+
+function createAlipayProvider(config, fetchImpl) {
   const gateway = config.gateway || 'https://openapi.alipay.com/gateway.do';
   return {
     enabled: Boolean(config.appId && config.privateKey && config.publicKey && config.notifyUrl && config.returnUrl),
@@ -42,6 +57,22 @@ function createAlipayProvider(config) {
       if (config.sellerId && String(params.seller_id) !== String(config.sellerId)) throw new Error('支付宝收款账号不匹配');
       if (!['TRADE_SUCCESS', 'TRADE_FINISHED'].includes(String(params.trade_status))) throw new Error('支付宝交易尚未成功');
       return { merchantOrderNo: String(params.out_trade_no), providerTradeNo: String(params.trade_no), amountCents: Math.round(Number(params.total_amount) * 100), eventId: String(params.notify_id || params.trade_no), payloadHash: sha256(canonicalParams(params)) };
+    },
+    async refund(order) {
+      const params = {
+        app_id: config.appId, method: 'alipay.trade.refund', format: 'JSON', charset: 'utf-8', sign_type: 'RSA2',
+        timestamp: chinaTimestamp(), version: '1.0',
+        biz_content: JSON.stringify({ out_trade_no: order.merchantOrderNo, refund_amount: (order.amountCents / 100).toFixed(2), out_request_no: `R${order.merchantOrderNo}`, refund_reason: '用户余额退款' }),
+      };
+      params.sign = signAlipayParams(params, config.privateKey);
+      const response = await fetchImpl(gateway, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(params).toString() });
+      const raw = await response.text();
+      const resultRaw = extractJsonField(raw, 'alipay_trade_refund_response');
+      const payload = JSON.parse(raw);
+      if (!payload.sign || !rsaVerify('RSA-SHA256', Buffer.from(resultRaw), pem(config.publicKey), Buffer.from(payload.sign, 'base64'))) throw new Error('支付宝退款响应签名无效');
+      const result = payload.alipay_trade_refund_response;
+      if (!response.ok || result.code !== '10000' || Number(result.refund_fee) !== order.amountCents / 100) throw new Error(result.sub_msg || result.msg || '支付宝退款失败');
+      return { completed: true, providerRefundNo: String(result.trade_no || order.providerTradeNo || '') };
     },
   };
 }
@@ -83,7 +114,64 @@ function createWechatProvider(config, fetchImpl) {
       if (transaction.trade_state !== 'SUCCESS' || transaction.appid !== config.appId || transaction.mchid !== config.mchId) throw new Error('微信支付交易信息无效');
       return { merchantOrderNo: String(transaction.out_trade_no), providerTradeNo: String(transaction.transaction_id), amountCents: Number(transaction.amount?.total), eventId: String(notification.id), payloadHash: sha256(rawBody) };
     },
+    async refund(order) {
+      const path = '/v3/refund/domestic/refunds';
+      const body = JSON.stringify({ out_trade_no: order.merchantOrderNo, out_refund_no: `R${order.merchantOrderNo}`, reason: '用户余额退款', notify_url: config.refundNotifyUrl, amount: { refund: order.amountCents, total: order.amountCents, currency: 'CNY' } });
+      const response = await fetchImpl(`https://api.mch.weixin.qq.com${path}`, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', authorization: wechatAuthorization({ method: 'POST', path, body, mchId: config.mchId, serialNo: config.serialNo, privateKey: config.privateKey }) }, body });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !['PROCESSING', 'SUCCESS'].includes(result.status)) throw new Error(result.message || `微信退款创建失败 (${response.status})`);
+      return { completed: result.status === 'SUCCESS', providerRefundNo: String(result.refund_id || '') };
+    },
+    verifyRefund(rawBody, headers) {
+      const timestamp = String(headers['wechatpay-timestamp'] || ''); const nonce = String(headers['wechatpay-nonce'] || ''); const signature = String(headers['wechatpay-signature'] || '');
+      if (!signature || !rsaVerify('RSA-SHA256', Buffer.from(`${timestamp}\n${nonce}\n${rawBody}\n`), pem(config.platformCertificate), Buffer.from(signature, 'base64'))) throw new Error('微信退款回调签名无效');
+      if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) throw new Error('微信退款回调时间戳已过期');
+      const notification = JSON.parse(rawBody); const refund = decryptWechatResource(notification.resource, config.apiV3Key);
+      if (refund.refund_status !== 'SUCCESS' || Number(refund.amount?.refund) !== Number(refund.amount?.total)) throw new Error('微信退款状态无效');
+      return { merchantOrderNo: String(refund.out_refund_no || '').replace(/^R/, ''), eventId: String(notification.id), payloadHash: sha256(rawBody) };
+    },
   };
+}
+
+async function reserveRefund(db, orderId) {
+  if (db.reservePaymentRefund) return db.reservePaymentRefund(orderId);
+  let result = { ok: false, error: 'ORDER_NOT_FOUND', order: null };
+  await db.mutate((data) => {
+    const order = data.paymentOrders.find((item) => item.id === orderId);
+    if (!order) return;
+    if (order.status === 'refunding' || order.status === 'refunded') { result = { ok: false, error: 'REFUND_ALREADY_STARTED', order }; return; }
+    if (order.status !== 'paid') { result = { ok: false, error: 'ORDER_NOT_PAID', order }; return; }
+    const user = data.users.find((item) => item.id === order.userId);
+    if (!user || Number(user.balanceCents || 0) < Number(order.amountCents)) { result = { ok: false, error: 'REFUND_BALANCE_SPENT', order }; return; }
+    user.balanceCents -= Number(order.amountCents); order.status = 'refunding';
+    data.balanceTransactions.push({ id: randomUUID(), userId: user.id, amountCents: -Number(order.amountCents), type: 'payment_refund', description: '在线支付退款余额冻结', referenceId: order.id, createdBy: null, createdAt: nowIso() });
+    result = { ok: true, error: null, order: { ...order } };
+  });
+  return result;
+}
+
+async function finishRefund(db, orderId, eventId = `refund-${orderId}`) {
+  if (db.finishPaymentRefund) return db.finishPaymentRefund(orderId, eventId);
+  let completed = false;
+  await db.mutate((data) => {
+    const order = data.paymentOrders.find((item) => item.id === orderId);
+    if (!order || order.status === 'refunded') return;
+    if (order.status !== 'refunding') return;
+    order.status = 'refunded'; order.refundedAt = nowIso(); completed = true;
+    if (!data.paymentEvents.some((item) => item.provider === order.provider && item.providerEventId === eventId)) data.paymentEvents.push({ id: sha256(`${order.provider}:${eventId}`), provider: order.provider, providerEventId: eventId, orderId, eventType: 'refund_succeeded', payloadHash: sha256(eventId), createdAt: nowIso() });
+  });
+  return completed;
+}
+
+async function rollbackRefund(db, orderId) {
+  if (db.rollbackPaymentRefund) return db.rollbackPaymentRefund(orderId);
+  await db.mutate((data) => {
+    const order = data.paymentOrders.find((item) => item.id === orderId && item.status === 'refunding');
+    if (!order) return;
+    const user = data.users.find((item) => item.id === order.userId); if (!user) return;
+    order.status = 'paid'; user.balanceCents += Number(order.amountCents);
+    data.balanceTransactions.push({ id: randomUUID(), userId: user.id, amountCents: Number(order.amountCents), type: 'payment_refund_rollback', description: '商户退款创建失败，余额解冻', referenceId: order.id, createdBy: null, createdAt: nowIso() });
+  });
 }
 
 async function settlePaidOrder(db, provider, payment) {
@@ -114,15 +202,15 @@ export function createPaymentService({ db, fetchImpl = fetch, env = process.env,
     alipay: { appId: env.ALIPAY_APP_ID, privateKey: env.ALIPAY_PRIVATE_KEY, publicKey: env.ALIPAY_PUBLIC_KEY, sellerId: env.ALIPAY_SELLER_ID, notifyUrl: `${notifyBase}/api/payments/callback/alipay`, returnUrl: env.ALIPAY_RETURN_URL },
     wechat: { appId: env.WECHAT_PAY_APP_ID, mchId: env.WECHAT_PAY_MCH_ID, serialNo: env.WECHAT_PAY_SERIAL_NO, privateKey: env.WECHAT_PAY_PRIVATE_KEY, platformCertificate: env.WECHAT_PAY_PLATFORM_CERT, apiV3Key: env.WECHAT_PAY_API_V3_KEY, notifyUrl: `${notifyBase}/api/payments/callback/wechat` },
   };
-  const providers = { alipay: createAlipayProvider(paymentConfig.alipay || {}), wechat: createWechatProvider(paymentConfig.wechat || {}, fetchImpl) };
-  return { providers, settle: (provider, payment) => settlePaidOrder(db, provider, payment) };
+  const providers = { alipay: createAlipayProvider(paymentConfig.alipay || {}, fetchImpl), wechat: createWechatProvider(paymentConfig.wechat || {}, fetchImpl) };
+  return { providers, settle: (provider, payment) => settlePaidOrder(db, provider, payment), reserveRefund: (orderId) => reserveRefund(db, orderId), finishRefund: (orderId, eventId) => finishRefund(db, orderId, eventId), rollbackRefund: (orderId) => rollbackRefund(db, orderId) };
 }
 
 function publicOrder(order) {
   return { id: order.id, provider: order.provider, amountCents: order.amountCents, status: order.status, payUrl: order.payUrl, createdAt: order.createdAt, expiresAt: order.expiresAt, paidAt: order.paidAt || null };
 }
 
-export function registerPaymentRoutes(router, { db, requireAuth, paymentService }) {
+export function registerPaymentRoutes(router, { db, requireAuth, requireSystem, paymentService }) {
   router.post('/callback/alipay', async (req, res) => {
     try {
       const payment = paymentService.providers.alipay.verify(req.body || {});
@@ -138,6 +226,15 @@ export function registerPaymentRoutes(router, { db, requireAuth, paymentService 
       if (!result.found || result.mismatch) return res.status(400).json({ code: 'FAIL', message: '订单校验失败' });
       return res.json({ code: 'SUCCESS', message: '成功' });
     } catch { return res.status(401).json({ code: 'FAIL', message: '签名或交易校验失败' }); }
+  });
+  router.post('/callback/wechat-refund', async (req, res) => {
+    try {
+      const refund = paymentService.providers.wechat.verifyRefund(String(req.rawBody || ''), req.headers);
+      const order = db.read('paymentOrders').find((item) => item.provider === 'wechat' && item.merchantOrderNo === refund.merchantOrderNo);
+      if (!order) return res.status(400).json({ code: 'FAIL', message: '订单不存在' });
+      await paymentService.finishRefund(order.id, refund.eventId);
+      return res.json({ code: 'SUCCESS', message: '成功' });
+    } catch { return res.status(401).json({ code: 'FAIL', message: '退款回调校验失败' }); }
   });
   router.get('/providers', requireAuth, (_req, res) => res.json({ providers: Object.fromEntries(Object.entries(paymentService.providers).map(([name, provider]) => [name, provider.enabled])) }));
   router.get('/orders', requireAuth, (req, res) => res.json({ orders: db.read('paymentOrders').filter((item) => item.userId === req.user.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 100).map(publicOrder) }));
@@ -165,5 +262,21 @@ export function registerPaymentRoutes(router, { db, requireAuth, paymentService 
       return res.status(502).json({ error: 'PAYMENT_CREATE_FAILED', message: error.message });
     }
     return res.status(201).json({ order: publicOrder(order) });
+  });
+  router.post('/admin/orders/:id/refund', requireSystem, async (req, res) => {
+    const reserved = await paymentService.reserveRefund(req.params.id);
+    if (!reserved.ok) {
+      const status = reserved.error === 'ORDER_NOT_FOUND' ? 404 : 409;
+      return res.status(status).json({ error: reserved.error, message: reserved.error === 'REFUND_BALANCE_SPENT' ? '用户已消费部分充值余额，不能执行全额原路退款' : '订单当前状态不能退款' });
+    }
+    try {
+      const result = await paymentService.providers[reserved.order.provider].refund(reserved.order);
+      if (result.completed) await paymentService.finishRefund(reserved.order.id, result.providerRefundNo || `refund-${reserved.order.id}`);
+      const order = db.read('paymentOrders').find((item) => item.id === reserved.order.id);
+      return res.json({ order: publicOrder(order) });
+    } catch (error) {
+      await paymentService.rollbackRefund(reserved.order.id);
+      return res.status(502).json({ error: 'PAYMENT_REFUND_FAILED', message: error.message });
+    }
   });
 }
