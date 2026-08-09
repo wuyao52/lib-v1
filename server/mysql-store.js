@@ -800,6 +800,70 @@ export class MySqlDatabase {
     return result;
   }
 
+  async reservePaymentRefund(orderId) {
+    let result = { ok: false, error: 'ORDER_NOT_FOUND', order: null };
+    const operation = this.writeQueue.then(async () => {
+      const connection = await this.pool.getConnection();
+      try {
+        await connection.beginTransaction();
+        const [orders] = await connection.query('SELECT * FROM payment_orders WHERE id = ? FOR UPDATE', [orderId]);
+        if (!orders.length) { await connection.rollback(); return; }
+        const row = orders[0];
+        if (['refunding', 'refunded'].includes(row.status)) { result.error = 'REFUND_ALREADY_STARTED'; await connection.rollback(); return; }
+        if (row.status !== 'paid') { result.error = 'ORDER_NOT_PAID'; await connection.rollback(); return; }
+        const [users] = await connection.query('SELECT balance_cents AS balanceCents FROM users WHERE id = ? FOR UPDATE', [row.user_id]);
+        if (!users.length || Number(users[0].balanceCents) < Number(row.amount_cents)) { result.error = 'REFUND_BALANCE_SPENT'; await connection.rollback(); return; }
+        const createdAt = new Date().toISOString();
+        const transaction = { id: randomUUID(), userId: row.user_id, amountCents: -Number(row.amount_cents), type: 'payment_refund', description: '在线支付退款余额冻结', referenceId: orderId, createdBy: null, createdAt };
+        await connection.query('UPDATE users SET balance_cents = balance_cents - ? WHERE id = ?', [row.amount_cents, row.user_id]);
+        await connection.query('UPDATE payment_orders SET status = ? WHERE id = ?', ['refunding', orderId]);
+        await connection.query(TABLES.balanceTransactions.insert, [[TABLES.balanceTransactions.values(transaction)]]);
+        await connection.commit();
+        const cachedOrder = this.data.paymentOrders.find((item) => item.id === orderId); if (cachedOrder) cachedOrder.status = 'refunding';
+        const user = this.data.users.find((item) => item.id === row.user_id); if (user) user.balanceCents -= Number(row.amount_cents);
+        this.data.balanceTransactions.push(transaction);
+        result = { ok: true, error: null, order: { ...cachedOrder } };
+      } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+    });
+    this.writeQueue = operation.catch(() => undefined); await operation; return result;
+  }
+
+  async finishPaymentRefund(orderId, eventId) {
+    let completed = false;
+    const operation = this.writeQueue.then(async () => {
+      const order = this.data.paymentOrders.find((item) => item.id === orderId);
+      if (!order || order.status === 'refunded') return;
+      const refundedAt = new Date().toISOString();
+      const event = { id: createHash('sha256').update(`${order.provider}:${eventId}`).digest('hex'), provider: order.provider, providerEventId: eventId, orderId, eventType: 'refund_succeeded', payloadHash: createHash('sha256').update(eventId).digest('hex'), createdAt: refundedAt };
+      const connection = await this.pool.getConnection();
+      try {
+        await connection.beginTransaction();
+        const [update] = await connection.query('UPDATE payment_orders SET status = ?, refunded_at = ? WHERE id = ? AND status = ?', ['refunded', refundedAt, orderId, 'refunding']);
+        if (!update.affectedRows) { await connection.rollback(); return; }
+        await connection.query(`${TABLES.paymentEvents.insert} ON DUPLICATE KEY UPDATE id = id`, [[TABLES.paymentEvents.values(event)]]);
+        await connection.commit(); Object.assign(order, { status: 'refunded', refundedAt }); this.data.paymentEvents.push(event); completed = true;
+      } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+    });
+    this.writeQueue = operation.catch(() => undefined); await operation; return completed;
+  }
+
+  async rollbackPaymentRefund(orderId) {
+    const operation = this.writeQueue.then(async () => {
+      const order = this.data.paymentOrders.find((item) => item.id === orderId && item.status === 'refunding'); if (!order) return;
+      const transaction = { id: randomUUID(), userId: order.userId, amountCents: Number(order.amountCents), type: 'payment_refund_rollback', description: '商户退款创建失败，余额解冻', referenceId: order.id, createdBy: null, createdAt: new Date().toISOString() };
+      const connection = await this.pool.getConnection();
+      try {
+        await connection.beginTransaction();
+        const [update] = await connection.query('UPDATE payment_orders SET status = ? WHERE id = ? AND status = ?', ['paid', orderId, 'refunding']);
+        if (!update.affectedRows) { await connection.rollback(); return; }
+        await connection.query('UPDATE users SET balance_cents = balance_cents + ? WHERE id = ?', [order.amountCents, order.userId]);
+        await connection.query(TABLES.balanceTransactions.insert, [[TABLES.balanceTransactions.values(transaction)]]);
+        await connection.commit(); order.status = 'paid'; const user = this.data.users.find((item) => item.id === order.userId); if (user) user.balanceCents += Number(order.amountCents); this.data.balanceTransactions.push(transaction);
+      } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+    });
+    this.writeQueue = operation.catch(() => undefined); await operation;
+  }
+
   async ping() {
     await this.pool.query('SELECT 1');
     return true;
