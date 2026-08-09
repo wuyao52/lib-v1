@@ -18,6 +18,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Upload, Image, Video, Droplets, Wand2, Plus, Wallet } from 'lucide-react';
 import { useAuth } from '@/auth/AuthContext';
 import { apiRequest } from '@/services/apiClient';
+import { materializeReferenceImages } from '@/services/assetService';
 
 // 自定义节点类型
 const nodeTypes: NodeTypes = {
@@ -134,6 +135,9 @@ export default function Canvas() {
 
       try {
         const dataUrl = await readFileAsDataURL(file);
+        const storedUrl = fileType === 'image'
+          ? (await materializeReferenceImages([dataUrl]))[0]
+          : dataUrl;
         const fileName = file.name.replace(/\.[^/.]+$/, '');
 
         addNode({
@@ -146,7 +150,7 @@ export default function Canvas() {
             content: file.name,
             duration: fileType === 'video' ? 10 : 5,
             prompt: '',
-            generatedContent: dataUrl,
+            generatedContent: storedUrl,
             mediaSource: 'uploaded',
             settings: { style: project.settings.defaultStyle, mood: '', camera: '', lighting: '' },
             status: 'completed',
@@ -154,7 +158,8 @@ export default function Canvas() {
           },
         });
       } catch (error) {
-        console.error('读取文件失败:', error);
+        console.error('素材上传失败:', error);
+        window.alert(error instanceof Error ? `图片上传失败：${error.message}` : '图片上传失败，请稍后重试');
       }
     }
     setIsDraggingFile(false);
