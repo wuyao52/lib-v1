@@ -18,6 +18,7 @@ interface GenerationModalProps {
   sourceImageUrl?: string;
   sourceNodeType?: string;
   mentionableNodes?: Array<{ id: string; label: string; type: string }>;
+  initialReferences?: Array<{ id: string; label: string; type: string; imageUrl?: string }>;
   durationRules?: { minDurationSec?: number | null; maxDurationSec?: number | null; allowedDurationsSec?: number[] };
 }
 
@@ -28,6 +29,7 @@ export interface GenerationSettings {
   duration?: number;
   strength?: number; // 用于图生图的相似度
   negativePrompt?: string;
+  referenceNodeIds?: string[];
 }
 
 const styles = [
@@ -48,6 +50,7 @@ export default function GenerationModal({
   sourceImageUrl,
   sourceNodeType,
   mentionableNodes = [],
+  initialReferences = [],
   durationRules,
 }: GenerationModalProps) {
   const [selectedType, setSelectedType] = useState<'video' | 'image' | 'img2img'>('video');
@@ -62,13 +65,16 @@ export default function GenerationModal({
   const allowedDurations = [...new Set((durationRules?.allowedDurationsSec || []).map(Number).filter((value) => Number.isFinite(value) && value > 0))].sort((a, b) => a - b);
   const minimumDuration = Number(durationRules?.minDurationSec) || 1;
   const maximumDuration = Number(durationRules?.maxDurationSec) || 15;
+  const initialReferencesKey = initialReferences.map((node) => `${node.id}:${node.label}`).join('|');
 
   useEffect(() => {
     if (!isOpen) return;
     submittingRef.current = false;
     setIsSubmitting(false);
+    setPrompt(initialReferences.map((node) => `@[${node.label}](${node.id})`).join(' ') + (initialReferences.length ? ' ' : ''));
+    setShowMentions(false);
     setDuration((current) => allowedDurations.length ? (allowedDurations.includes(current) ? current : allowedDurations[0]) : Math.min(maximumDuration, Math.max(minimumDuration, current)));
-  }, [isOpen, durationRules?.minDurationSec, durationRules?.maxDurationSec, JSON.stringify(durationRules?.allowedDurationsSec || [])]);
+  }, [isOpen, initialReferencesKey, durationRules?.minDurationSec, durationRules?.maxDurationSec, JSON.stringify(durationRules?.allowedDurationsSec || [])]);
 
   const handleGenerate = () => {
     if (!prompt.trim() || submittingRef.current) return;
@@ -81,6 +87,7 @@ export default function GenerationModal({
       duration,
       strength,
       negativePrompt: negativePrompt.trim(),
+      referenceNodeIds: initialReferences.map((node) => node.id),
     });
   };
 
@@ -224,6 +231,18 @@ export default function GenerationModal({
                   <Sparkles className="w-4 h-4 text-primary-400" />
                   提示词
                 </label>
+                {initialReferences.length > 0 && (
+                  <div className="flex flex-wrap gap-2" aria-label="已引用的画布目标">
+                    {initialReferences.map((node) => (
+                      <span key={node.id} className="inline-flex h-8 max-w-48 items-center gap-1.5 rounded-md border border-primary-500/40 bg-primary-500/10 px-1.5 text-xs text-primary-200" title={`@${node.label}`}>
+                        {node.type === 'image' && node.imageUrl
+                          ? <img src={node.imageUrl} alt="" className="h-5 w-5 shrink-0 rounded-sm object-cover" />
+                          : <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-sm bg-dark-700"><Sparkles className="h-3 w-3" /></span>}
+                        <span className="truncate">@{node.label}</span>
+                      </span>
+                    ))}
+                  </div>
+                )}
                 <textarea
                   value={prompt}
                   onChange={(e) => { setPrompt(e.target.value); setShowMentions(e.target.value.slice(-1) === '@'); }}
