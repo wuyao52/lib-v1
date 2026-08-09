@@ -42,7 +42,7 @@ export function createInitialDirectorAssets(plan: StoryboardPlan): DirectorAsset
 
 export function resolveDirectorImageModel(project: DramaProject): AIModelConfig | null {
   const candidates = [project.settings.multiModel?.imageModel, project.settings.aiModel];
-  return candidates.find((model): model is AIModelConfig => Boolean((model?.managed || model?.apiKey) && model.baseUrl && model.modelId)) || null;
+  return candidates.find((model): model is AIModelConfig => Boolean((model?.managed || model?.credentialManaged || model?.apiKey) && model.baseUrl && model.modelId)) || null;
 }
 
 export function validateDirectorAssets(assets: DirectorAsset[]): DirectorAssetValidation {
