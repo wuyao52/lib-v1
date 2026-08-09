@@ -59,10 +59,11 @@ function normalizePricingInput(input, existing) {
     const parsed = integer(value);
     return Number.isInteger(parsed) && parsed > 0 && parsed <= 3600 ? parsed : NaN;
   };
-  const minDurationSec = parseDuration(input.minDurationSec ?? existing?.minDurationSec);
-  const maxDurationSec = parseDuration(input.maxDurationSec ?? existing?.maxDurationSec);
+  let minDurationSec = parseDuration(input.minDurationSec ?? existing?.minDurationSec);
+  let maxDurationSec = parseDuration(input.maxDurationSec ?? existing?.maxDurationSec);
   const rawAllowed = input.allowedDurationsSec ?? existing?.allowedDurationsSec ?? [];
   const allowedDurationsSec = Array.isArray(rawAllowed) ? [...new Set(rawAllowed.map((v) => parseDuration(v)))].sort((a, b) => a - b) : String(rawAllowed).split(',').map((v) => v.trim()).filter(Boolean).map(parseDuration).sort((a, b) => a - b);
+  if (allowedDurationsSec.length) { minDurationSec = null; maxDurationSec = null; }
   if (!apiId || !modelId || !displayName) throw new Error('API、模型 ID 和显示名称不能为空');
   if (!CATEGORIES.has(category) || !BILLING_UNITS.has(billingUnit)) throw new Error('模型类别或计费单位无效');
   if (!Number.isInteger(unitPriceCents) || unitPriceCents < 0 || unitPriceCents > 10_000_000) throw new Error('模型价格必须是有效的分值');
