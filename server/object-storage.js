@@ -1,4 +1,4 @@
-import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 
 const requiredR2Variables = ['R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET'];
 
@@ -29,6 +29,9 @@ export function createObjectStorageFromEnv(env = process.env) {
       const response = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
       if (!response.Body) throw new Error('R2 对象内容为空');
       return Buffer.from(await response.Body.transformToByteArray());
+    },
+    async delete(key) {
+      await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
     },
   };
 }
