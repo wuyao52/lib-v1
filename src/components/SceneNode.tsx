@@ -26,6 +26,7 @@ import {
 import type { SceneNodeData } from '@/types';
 import useProjectStore from '@/store/useProjectStore';
 import { PromptMentionContent } from './PromptMentionEditor';
+import { isUploadedImageNode } from '@/services/nodeMediaSource';
 
 const typeIcons: Record<string, React.ReactNode> = {
   text: <Type className="w-4 h-4" />,
@@ -201,8 +202,9 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
   const isGenerating = nodeData.status === 'generating';
   const isCompleted = nodeData.status === 'completed';
   const isError = nodeData.status === 'error';
+  const isUploadedImage = isUploadedImageNode(nodeData);
   const hasContent = nodeData.generatedContent || nodeData.content;
-  const canGenerate = Boolean(nodeData.generatedContent || String(nodeData.prompt || nodeData.content || '').trim());
+  const canGenerate = !isUploadedImage && Boolean(nodeData.generatedContent || String(nodeData.prompt || nodeData.content || '').trim());
 
   return (
     <>
@@ -514,7 +516,7 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
             )}
 
             {/* 提示词/内容（支持@引用） */}
-            {(nodeData.prompt || nodeData.content) && !isGenerating && (
+            {!isUploadedImage && (nodeData.prompt || nodeData.content) && !isGenerating && (
               <div className="relative">
                 <div className="text-xs text-dark-300 line-clamp-3 leading-relaxed">
                   {renderContentWithMentions(nodeData.prompt || nodeData.content)}
@@ -574,7 +576,7 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
             )}
 
             {/* 时长和风格标签 */}
-            <div className="flex items-center justify-between">
+            {!isUploadedImage && <div className="flex items-center justify-between">
               <span className="text-[10px] px-2 py-1 rounded-full bg-dark-700 text-dark-300">
                 {nodeData.duration}秒
               </span>
@@ -583,10 +585,10 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
                   {styleLabels[nodeData.settings.style] || nodeData.settings.style}
                 </span>
               )}
-            </div>
+            </div>}
 
             {/* 生成按钮 */}
-            {!isGenerating && !isCompleted && (
+            {!isUploadedImage && !isGenerating && !isCompleted && (
               <button
                 disabled={!canGenerate}
                 title={canGenerate ? 'AI 生成' : '请先填写提示词或添加素材'}
@@ -608,7 +610,7 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
             )}
 
             {/* 重新生成按钮 */}
-            {(isCompleted || isError) && (
+            {!isUploadedImage && (isCompleted || isError) && (
               <button
                 disabled={!canGenerate}
                 title={canGenerate ? '重新生成' : '请先填写提示词或添加素材'}
