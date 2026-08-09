@@ -1,4 +1,5 @@
 import mysql from 'mysql2/promise';
+import { randomUUID } from 'node:crypto';
 
 const EMPTY_DATABASE = {
   users: [],
@@ -12,6 +13,7 @@ const EMPTY_DATABASE = {
   balanceTransactions: [],
   rechargeRequests: [],
   generationHistory: [],
+  generationJobs: [],
   assets: [],
 };
 
@@ -201,6 +203,53 @@ const TABLES = {
     insert: 'INSERT INTO generation_history (id, user_id, project_id, node_id, type, prompt, url, thumbnail, created_at, expires_at) VALUES ?',
     values: (row) => [row.id, row.userId, row.projectId, row.nodeId || null, row.type, row.prompt, row.url, row.thumbnail || null, row.createdAt, row.expiresAt],
   },
+  generationJobs: {
+    table: 'generation_jobs',
+    create: `CREATE TABLE IF NOT EXISTS generation_jobs (
+      id CHAR(36) PRIMARY KEY,
+      user_id CHAR(36) NOT NULL,
+      api_id CHAR(36) NOT NULL,
+      model_id VARCHAR(191) NOT NULL,
+      request_body MEDIUMTEXT NOT NULL,
+      status VARCHAR(24) NOT NULL,
+      provider_task_id VARCHAR(255) NULL,
+      progress INT NOT NULL DEFAULT 0,
+      result_url TEXT NULL,
+      thumbnail TEXT NULL,
+      error_code VARCHAR(100) NULL,
+      error_message VARCHAR(500) NULL,
+      charge_cents BIGINT NOT NULL DEFAULT 0,
+      billing_reference VARCHAR(100) NULL,
+      project_id VARCHAR(100) NULL,
+      node_id VARCHAR(100) NULL,
+      prompt TEXT NOT NULL,
+      attempt_count INT NOT NULL DEFAULT 0,
+      next_poll_at BIGINT NOT NULL DEFAULT 0,
+      created_at VARCHAR(35) NOT NULL,
+      updated_at VARCHAR(35) NOT NULL,
+      completed_at VARCHAR(35) NULL,
+      INDEX generation_jobs_status_poll_idx (status, next_poll_at),
+      INDEX generation_jobs_user_created_idx (user_id, created_at),
+      INDEX generation_jobs_api_status_idx (api_id, status)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+    select: `SELECT id, user_id AS userId, api_id AS apiId, model_id AS modelId, request_body AS requestBody,
+      status, provider_task_id AS providerTaskId, progress, result_url AS resultUrl, thumbnail,
+      error_code AS errorCode, error_message AS errorMessage, charge_cents AS chargeCents,
+      billing_reference AS billingReference, project_id AS projectId, node_id AS nodeId, prompt,
+      attempt_count AS attemptCount, next_poll_at AS nextPollAt, created_at AS createdAt,
+      updated_at AS updatedAt, completed_at AS completedAt FROM generation_jobs`,
+    insert: `INSERT INTO generation_jobs (id, user_id, api_id, model_id, request_body, status, provider_task_id,
+      progress, result_url, thumbnail, error_code, error_message, charge_cents, billing_reference, project_id,
+      node_id, prompt, attempt_count, next_poll_at, created_at, updated_at, completed_at) VALUES ?`,
+    values: (row) => [
+      row.id, row.userId, row.apiId, row.modelId, typeof row.requestBody === 'string' ? row.requestBody : JSON.stringify(row.requestBody || {}),
+      row.status, row.providerTaskId || null, Number(row.progress || 0), row.resultUrl || null, row.thumbnail || null,
+      row.errorCode || null, row.errorMessage || null, Number(row.chargeCents || 0), row.billingReference || null,
+      row.projectId || null, row.nodeId || null, row.prompt || '', Number(row.attemptCount || 0), Number(row.nextPollAt || 0),
+      row.createdAt, row.updatedAt, row.completedAt || null,
+    ],
+    parse: (row) => ({ ...row, requestBody: typeof row.requestBody === 'string' ? JSON.parse(row.requestBody || '{}') : (row.requestBody || {}) }),
+  },
   assets: {
     create: `CREATE TABLE IF NOT EXISTS assets (
       id CHAR(36) PRIMARY KEY,
@@ -218,6 +267,12 @@ const TABLES = {
     insert: 'INSERT INTO assets (id, user_id, sha256, mime_type, data_base64, object_key, storage_provider, byte_size, created_at) VALUES ?',
     values: (row) => [row.id, row.userId, row.sha256, row.mimeType, row.dataBase64 || null, row.objectKey || null, row.storageProvider || 'database', row.byteSize, row.createdAt],
   },
+};
+
+const GENERATION_JOB_PATCH_COLUMNS = {
+  status: 'status', providerTaskId: 'provider_task_id', progress: 'progress', resultUrl: 'result_url',
+  thumbnail: 'thumbnail', errorCode: 'error_code', errorMessage: 'error_message', attemptCount: 'attempt_count',
+  nextPollAt: 'next_poll_at', updatedAt: 'updated_at', completedAt: 'completed_at',
 };
 
 export class MySqlDatabase {
@@ -285,6 +340,157 @@ export class MySqlDatabase {
     this.writeQueue = operation.catch(() => undefined);
     await operation;
     return result;
+  }
+
+  async enqueueGenerationJob(job, maxPendingPerUser, terminalStatuses) {
+    let result = { inserted: false, error: null };
+    const operation = this.writeQueue.then(async () => {
+      const pending = this.data.generationJobs.filter((item) => item.userId === job.userId && !terminalStatuses.has(item.status)).length;
+      if (pending >= maxPendingPerUser) { result.error = 'VIDEO_QUEUE_USER_LIMIT'; return; }
+      const user = this.data.users.find((item) => item.id === job.userId);
+      if (!user) { result.error = 'USER_NOT_FOUND'; return; }
+      if (Number(job.chargeCents || 0) > Number(user.balanceCents || 0)) { result.error = 'INSUFFICIENT_BALANCE'; return; }
+      const charge = Number(job.chargeCents || 0) > 0 ? {
+        id: randomUUID(), userId: job.userId, amountCents: -Number(job.chargeCents), type: 'model_usage',
+        description: `${job.modelId} 视频队列调用`, referenceId: job.billingReference, createdBy: null, createdAt: new Date().toISOString(),
+      } : null;
+      const connection = await this.pool.getConnection();
+      try {
+        await connection.beginTransaction();
+        if (charge) {
+          const [balanceUpdate] = await connection.query('UPDATE users SET balance_cents = balance_cents - ? WHERE id = ? AND balance_cents >= ?', [job.chargeCents, job.userId, job.chargeCents]);
+          if (!balanceUpdate.affectedRows) { await connection.rollback(); result.error = 'INSUFFICIENT_BALANCE'; return; }
+          await connection.query(TABLES.balanceTransactions.insert, [[TABLES.balanceTransactions.values(charge)]]);
+        }
+        await connection.query(TABLES.generationJobs.insert, [[TABLES.generationJobs.values(job)]]);
+        await connection.commit();
+        if (charge) { user.balanceCents = Number(user.balanceCents || 0) - Number(job.chargeCents); this.data.balanceTransactions.push(charge); }
+        this.data.generationJobs.push(job);
+        result = { inserted: true, error: null };
+      } catch (error) {
+        await connection.rollback();
+        throw error;
+      } finally {
+        connection.release();
+      }
+    });
+    this.writeQueue = operation.catch(() => undefined);
+    await operation;
+    return result;
+  }
+
+  async patchGenerationJob(jobId, patch) {
+    let updated = null;
+    const operation = this.writeQueue.then(async () => {
+      const job = this.data.generationJobs.find((item) => item.id === jobId);
+      if (!job) return;
+      const entries = Object.entries(patch).filter(([key]) => GENERATION_JOB_PATCH_COLUMNS[key]);
+      if (!entries.length) { updated = { ...job }; return; }
+      const assignments = entries.map(([key]) => `\`${GENERATION_JOB_PATCH_COLUMNS[key]}\` = ?`).join(', ');
+      const values = entries.map(([, value]) => value ?? null);
+      await this.pool.query(`UPDATE generation_jobs SET ${assignments} WHERE id = ?`, [...values, jobId]);
+      Object.assign(job, patch);
+      updated = { ...job };
+    });
+    this.writeQueue = operation.catch(() => undefined);
+    await operation;
+    return updated;
+  }
+
+  async claimGenerationJobs(jobIds, updatedAt) {
+    if (!jobIds.length) return [];
+    let claimed = [];
+    const operation = this.writeQueue.then(async () => {
+      const eligible = this.data.generationJobs.filter((job) => jobIds.includes(job.id) && job.status === 'queued');
+      if (!eligible.length) return;
+      await this.pool.query('UPDATE generation_jobs SET status = ?, updated_at = ? WHERE id IN (?) AND status = ?', ['submitting', updatedAt, eligible.map((job) => job.id), 'queued']);
+      eligible.forEach((job) => { job.status = 'submitting'; job.updatedAt = updatedAt; });
+      claimed = eligible.map((job) => ({ ...job }));
+    });
+    this.writeQueue = operation.catch(() => undefined);
+    await operation;
+    return claimed;
+  }
+
+  async finalizeGenerationJob(jobId, patch, historyRecord = null) {
+    let updated = null;
+    const operation = this.writeQueue.then(async () => {
+      const job = this.data.generationJobs.find((item) => item.id === jobId);
+      if (!job || ['completed', 'failed', 'cancelled'].includes(job.status)) return;
+      const connection = await this.pool.getConnection();
+      try {
+        await connection.beginTransaction();
+        const entries = Object.entries(patch).filter(([key]) => GENERATION_JOB_PATCH_COLUMNS[key]);
+        const assignments = entries.map(([key]) => `\`${GENERATION_JOB_PATCH_COLUMNS[key]}\` = ?`).join(', ');
+        await connection.query(`UPDATE generation_jobs SET ${assignments} WHERE id = ?`, [...entries.map(([, value]) => value ?? null), jobId]);
+        const addHistory = historyRecord && !this.data.generationHistory.some((item) => item.userId === historyRecord.userId && item.url === historyRecord.url);
+        if (addHistory) {
+          await connection.query(TABLES.generationHistory.insert, [[TABLES.generationHistory.values(historyRecord)]]);
+        }
+        await connection.commit();
+        if (addHistory) this.data.generationHistory.push(historyRecord);
+        Object.assign(job, patch);
+        updated = { ...job };
+      } catch (error) {
+        await connection.rollback();
+        throw error;
+      } finally {
+        connection.release();
+      }
+    });
+    this.writeQueue = operation.catch(() => undefined);
+    await operation;
+    return updated;
+  }
+
+  async failGenerationJob(jobId, patch) {
+    let updated = null;
+    const operation = this.writeQueue.then(async () => {
+      const job = this.data.generationJobs.find((item) => item.id === jobId);
+      if (!job || ['completed', 'failed', 'cancelled'].includes(job.status)) return;
+      const user = this.data.users.find((item) => item.id === job.userId);
+      const alreadyRefunded = this.data.balanceTransactions.some((item) => item.type === 'model_refund' && item.referenceId === job.billingReference);
+      const shouldRefund = Number(job.chargeCents || 0) > 0 && job.billingReference && user && !alreadyRefunded;
+      const refund = shouldRefund ? {
+        id: randomUUID(), userId: job.userId, amountCents: Number(job.chargeCents), type: 'model_refund',
+        description: '视频队列任务失败退款', referenceId: job.billingReference, createdBy: null, createdAt: new Date().toISOString(),
+      } : null;
+      const connection = await this.pool.getConnection();
+      try {
+        await connection.beginTransaction();
+        if (refund) {
+          await connection.query('UPDATE users SET balance_cents = balance_cents + ? WHERE id = ?', [refund.amountCents, job.userId]);
+          await connection.query(TABLES.balanceTransactions.insert, [[TABLES.balanceTransactions.values(refund)]]);
+        }
+        const entries = Object.entries(patch).filter(([key]) => GENERATION_JOB_PATCH_COLUMNS[key]);
+        const assignments = entries.map(([key]) => `\`${GENERATION_JOB_PATCH_COLUMNS[key]}\` = ?`).join(', ');
+        await connection.query(`UPDATE generation_jobs SET ${assignments} WHERE id = ?`, [...entries.map(([, value]) => value ?? null), jobId]);
+        await connection.commit();
+        if (refund) { user.balanceCents = Number(user.balanceCents || 0) + refund.amountCents; this.data.balanceTransactions.push(refund); }
+        Object.assign(job, patch);
+        updated = { ...job };
+      } catch (error) {
+        await connection.rollback();
+        throw error;
+      } finally {
+        connection.release();
+      }
+    });
+    this.writeQueue = operation.catch(() => undefined);
+    await operation;
+    return updated;
+  }
+
+  async cleanupGenerationJobs(cutoff, terminalStatuses) {
+    const operation = this.writeQueue.then(async () => {
+      const ids = this.data.generationJobs.filter((job) => terminalStatuses.has(job.status) && String(job.completedAt || job.updatedAt) < cutoff).map((job) => job.id);
+      if (!ids.length) return;
+      await this.pool.query('DELETE FROM generation_jobs WHERE id IN (?)', [ids]);
+      const idSet = new Set(ids);
+      this.data.generationJobs = this.data.generationJobs.filter((job) => !idSet.has(job.id));
+    });
+    this.writeQueue = operation.catch(() => undefined);
+    await operation;
   }
 
   async replaceCollection(connection, collection) {
