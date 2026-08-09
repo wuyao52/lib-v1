@@ -2,13 +2,26 @@ import { randomUUID } from 'node:crypto';
 
 const THREE_DAYS = 3 * 24 * 60 * 60 * 1000;
 
+const encodeCursor = (item) => Buffer.from(JSON.stringify([item.createdAt, item.id])).toString('base64url');
+const decodeCursor = (value) => {
+  try {
+    const [createdAt, id] = JSON.parse(Buffer.from(String(value || ''), 'base64url').toString('utf8'));
+    return typeof createdAt === 'string' && typeof id === 'string' ? { createdAt, id } : null;
+  } catch { return null; }
+};
+
 export function registerGenerationHistoryRoutes(router, { db, requireAuth }) {
   router.use(requireAuth);
   router.get('/', async (req, res) => {
     const now = Date.now();
     await db.mutate((data) => { data.generationHistory = data.generationHistory.filter((item) => Date.parse(item.expiresAt) > now); });
-    const history = db.read('generationHistory').filter((item) => item.userId === req.user.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    return res.json({ history });
+    const limit = Math.min(100, Math.max(1, Number.parseInt(String(req.query.limit || '50'), 10) || 50));
+    const cursor = decodeCursor(req.query.cursor);
+    const sorted = db.read('generationHistory').filter((item) => item.userId === req.user.id)
+      .filter((item) => !cursor || item.createdAt < cursor.createdAt || (item.createdAt === cursor.createdAt && item.id < cursor.id))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+    const history = sorted.slice(0, limit);
+    return res.json({ history, nextCursor: sorted.length > limit && history.length ? encodeCursor(history.at(-1)) : null });
   });
   router.post('/', async (req, res) => {
     const url = String(req.body?.url || '').trim();
