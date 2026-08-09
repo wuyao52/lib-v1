@@ -12,10 +12,12 @@ async function setup() {
   const fetchImpl = async (url, options) => {
     upstreamCalls.push({ url: String(url), authorization: options.headers.get('authorization'), apiKey: options.headers.get('x-api-key'), body: options.body });
     if (String(url).endsWith('/v1/models')) return new Response(JSON.stringify({ data: [{ id: 'video-model', name: 'Video Model', type: 'video_generation', owned_by: 'Detected Provider' }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    if (String(url).endsWith('/v1/videos/moderation-task')) return new Response(JSON.stringify({ status: 'failed', progress: 100, error: 'PROVIDER_MODERATION_ERROR' }), { status: 200, headers: { 'content-type': 'application/json' } });
     const body = JSON.parse(options.body || '{}');
     if (body.prompt === 'fail') return new Response(JSON.stringify({ error: { message: 'upstream failed' } }), { status: 500, headers: { 'content-type': 'application/json' } });
     if (body.prompt === 'duration-fail') return new Response(JSON.stringify({ msg: `参数 seconds 不支持 ${body.seconds || body.duration}` }), { status: 400, headers: { 'content-type': 'application/json' } });
     if (body.prompt === 'business-fail') return new Response(JSON.stringify({ code: '9999', data: null, msg: 'request entity too large' }), { status: 200, headers: { 'content-type': 'application/json' } });
+    if (body.prompt === 'moderation-later') return new Response(JSON.stringify({ id: 'moderation-task', status: 'queued' }), { status: 200, headers: { 'content-type': 'application/json' } });
     return new Response(JSON.stringify({ id: 'task-1', status: 'queued' }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
   const { app, db } = await createApp({
@@ -104,6 +106,25 @@ test('system APIs, pricing, balances and managed gateway enforce roles and billi
   assert.equal((await durationMismatch.json()).error, 'UPSTREAM_DURATION_MISMATCH');
   billing = await (await context.request('/api/billing/me', normal.cookie)).json();
   assert.equal(billing.balanceCents, 950);
+
+  const moderationTask = await context.request(`/api/system-ai/${createdApi.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'moderation-later', seconds: 5 }) });
+  assert.equal(moderationTask.status, 200);
+  billing = await (await context.request('/api/billing/me', normal.cookie)).json();
+  assert.equal(billing.balanceCents, 900);
+  const moderationFailure = await context.request(`/api/system-ai/${createdApi.id}/v1/videos/moderation-task`, normal.cookie);
+  assert.equal(moderationFailure.status, 200);
+  const moderationBody = await moderationFailure.json();
+  assert.equal(moderationBody.error.code, 'PROVIDER_MODERATION_ERROR');
+  assert.match(moderationBody.message, /自动退回/);
+  billing = await (await context.request('/api/billing/me', normal.cookie)).json();
+  assert.equal(billing.balanceCents, 950);
+  const moderationRefunds = billing.transactions.filter((item) => item.type === 'model_refund' && item.description.includes('异步任务失败'));
+  assert.equal(moderationRefunds.length, 1);
+
+  await context.request(`/api/system-ai/${createdApi.id}/v1/videos/moderation-task`, normal.cookie);
+  billing = await (await context.request('/api/billing/me', normal.cookie)).json();
+  assert.equal(billing.balanceCents, 950);
+  assert.equal(billing.transactions.filter((item) => item.type === 'model_refund' && item.description.includes('异步任务失败')).length, 1);
 
   const pricing = (await pricingResponse.json()).pricing;
   const fixedPricingResponse = await context.request(`/api/admin/pricing/${pricing.id}`, admin.cookie, { method: 'PUT', body: JSON.stringify({ allowedDurationsSec: [15], minDurationSec: 20, maxDurationSec: 30 }) });
