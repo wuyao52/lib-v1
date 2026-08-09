@@ -199,6 +199,30 @@ const createNewProject = (title: string, description: string): DramaProject => {
   };
 };
 
+const requiresReferenceImage = (result: { success: boolean; error?: string }) =>
+  !result.success && /images?\s*(?:不能为空|cannot be empty|required)|参数\s*images/i.test(result.error || '');
+
+async function generateVideoWithFallback(
+  videoService: ReturnType<typeof createAIService>,
+  imageModel: AIModelConfig,
+  prompt: string,
+  settings: Record<string, any>,
+  signal: AbortSignal,
+  onFallback: () => void,
+) {
+  const firstAttempt = await videoService.generateVideo(prompt, settings, signal);
+  if (!requiresReferenceImage(firstAttempt) || settings.images?.length) return firstAttempt;
+  if ((!imageModel.apiKey && !imageModel.managed) || !imageModel.modelId) {
+    return { success: false, error: '当前视频模型要求参考图，请先配置图片模型，系统将自动生成首帧后重试' };
+  }
+  onFallback();
+  const firstFrame = await createAIService(imageModel).generateImage(prompt, { aspect_ratio: '16:9', resolution: '1080p' }, signal);
+  if (!firstFrame.success || !firstFrame.data?.url) {
+    return { success: false, error: `视频模型要求参考图，自动生成首帧失败：${firstFrame.error || '图片模型未返回图片'}` };
+  }
+  return videoService.generateVideo(prompt, { ...settings, images: [firstFrame.data.url] }, signal);
+}
+
 // 历史记录接口
 interface HistoryState {
   nodes: Node<SceneNodeData>[];
@@ -588,6 +612,9 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
 
     const node = project.nodes.find((n) => n.id === nodeId);
     if (!node) return;
+    if (node.data.status === 'generating') return;
+    const nodePrompt = String(node.data.prompt || node.data.content || '').trim();
+    if (!nodePrompt && !node.data.generatedContent) return;
 
     // 更新当前节点状态为生成中
     get().updateNodeData(nodeId, {
@@ -734,6 +761,8 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
           style: node.data.settings?.style || latestProject.settings.defaultStyle,
           resolution: '1080p',
           aspect_ratio: isImage ? '1:1' : '16:9',
+          duration: Number(node.data.duration) || 5,
+          seconds: Number(node.data.duration) || 5,
         };
 
         console.log('生成设置:', { type: node.data.type, settings });
@@ -748,12 +777,12 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
 
         // 根据类型调用不同的生成方法
         if (node.data.type === 'video') {
-          result = await aiService.generateVideo(prompt, settings, controller.signal);
+          result = await generateVideoWithFallback(aiService, multiModel!.imageModel, prompt, settings, controller.signal, () => get().updateNodeData(newNodeId, { progress: 35, content: '视频模型需要参考图，正在自动生成首帧...' }));
         } else if (node.data.type === 'image') {
           result = await aiService.generateImage(prompt, settings, controller.signal);
         } else {
           // 文本类型默认生成视频
-          result = await aiService.generateVideo(prompt, settings, controller.signal);
+          result = await generateVideoWithFallback(aiService, multiModel!.imageModel, prompt, settings, controller.signal, () => get().updateNodeData(newNodeId, { progress: 35, content: '视频模型需要参考图，正在自动生成首帧...' }));
         }
 
         // 更新进度：处理结果
@@ -835,6 +864,8 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
 
     const node = project.nodes.find((n) => n.id === nodeId);
     if (!node) return;
+    if (node.data.status === 'generating') return;
+    if (!String(settings.prompt || '').trim() && !node.data.generatedContent) return;
 
     // 更新当前节点状态为生成中
     get().updateNodeData(nodeId, {
@@ -992,7 +1023,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
 
         // 根据类型调用不同的生成方法
         if (type === 'video') {
-          result = await aiService.generateVideo(settings.prompt, genSettings, controller.signal);
+          result = await generateVideoWithFallback(aiService, multiModel!.imageModel, settings.prompt, genSettings, controller.signal, () => get().updateNodeData(newNodeId, { progress: 35, content: '视频模型需要参考图，正在自动生成首帧...' }));
         } else if (type === 'img2img') {
           // 图生图：获取源图片 URL
           const sourceImageUrl = node.data.generatedContent;
