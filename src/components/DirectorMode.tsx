@@ -10,6 +10,8 @@ import type { StoryboardPlan } from '@/types/director';
 import type { DirectorAsset } from '@/types/directorAsset';
 import type { UserSkill } from '@/types/skill';
 import DirectorAssetPreparation from '@/components/DirectorAssetPreparation';
+import VideoDurationControl from '@/components/VideoDurationControl';
+import { normalizeModelDuration, videoDurationRules } from '@/services/modelDuration';
 
 interface DirectorModeProps {
   isOpen: boolean;
@@ -62,6 +64,13 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
   const totalDurationSec = planDuration(plan);
   const parsedScript = useMemo(() => parseDirectorScript(story), [story]);
   const sourceBatches = useMemo(() => getStoryboardSourceBatches(story), [story]);
+  const configuredVideoModel = project?.settings.multiModel?.videoModel || project?.settings.aiModel;
+  const configuredDurationRules = videoDurationRules(configuredVideoModel);
+  const normalizeShotDuration = (duration: number) => Math.round(normalizeModelDuration(duration, configuredDurationRules, 5, 15));
+  const normalizePlanForModel = (sourcePlan: StoryboardPlan): StoryboardPlan => {
+    const shots = sourcePlan.shots.map((shot) => ({ ...shot, targetDurationSec: normalizeShotDuration(shot.targetDurationSec) }));
+    return { ...sourcePlan, shots, targetDurationSec: shots.reduce((sum, shot) => sum + shot.targetDurationSec, 0) };
+  };
 
   useEffect(() => {
     if (!isOpen) return;
@@ -94,7 +103,7 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
     const controller = new AbortController();
     storyboardController.current = controller;
     try {
-      const completePlan = await generateAIStoryboard({
+      const generatedPlan = await generateAIStoryboard({
         project,
         story,
         voice,
@@ -108,6 +117,7 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
           setGenerationProgress(progress);
         },
       });
+      const completePlan = normalizePlanForModel(generatedPlan);
       setGenerationStage('AI 已完成节奏分析，正在逐镜头校验与呈现…');
       setGenerationProgress(92);
       setPlan({ ...completePlan, shots: [] });
@@ -153,7 +163,7 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
     const controller = new AbortController();
     storyboardController.current = controller;
     try {
-      const replacement = await generateAIStoryboard({
+      const generatedReplacement = await generateAIStoryboard({
         project,
         story,
         voice,
@@ -166,6 +176,7 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
           setGenerationProgress(progress);
         },
       });
+      const replacement = normalizePlanForModel(generatedReplacement);
       setGenerationStage('正在替换并重新编号所选分镜…');
       setGenerationProgress(96);
       setPlan((current) => current ? mergeRegeneratedStoryboardShots(current, replacement, [...affectedSourceIds]) : current);
@@ -227,7 +238,7 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
   };
 
   const updateShotDuration = (clipId: string, duration: number) => {
-    const nextDuration = Math.min(15, Math.max(5, Math.round(duration || 5)));
+    const nextDuration = normalizeShotDuration(duration);
     setPlan((current) => {
       if (!current) return current;
       const shots = current.shots.map((shot) => shot.clipId === clipId ? { ...shot, targetDurationSec: nextDuration } : shot);
@@ -404,7 +415,7 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
                 <div className="space-y-3">{plan.shots.map((shot) => {
                   const generation = clipGenerations[shot.clipId];
                   const isSelected = selectedShotIds.includes(shot.clipId);
-                  return <article key={shot.clipId} className={`border rounded-md p-4 bg-dark-950/60 ${isSelected ? 'border-primary-500/70' : 'border-dark-700'}`}><div className="flex items-start justify-between gap-3"><div className="min-w-0 flex items-start gap-2"><input aria-label={`选择${shot.title}`} type="checkbox" checked={isSelected} disabled={isGenerating || isGeneratingDrama} onChange={() => setSelectedShotIds((current) => current.includes(shot.clipId) ? current.filter((id) => id !== shot.clipId) : [...current, shot.clipId])} className="mt-1 accent-primary-500" /><div className="min-w-0"><p className="text-xs text-primary-400">{shot.sceneId} / {shot.clipId} / {shot.arcPosition}</p><h3 className="font-medium mt-1">{shot.narrativeJob}</h3></div></div><div className="flex items-center gap-2 shrink-0"><label className="flex items-center gap-1 text-xs text-dark-400"><span>时长</span><input aria-label={`${shot.title}时长`} type="number" min={5} max={15} value={shot.targetDurationSec} disabled={isGenerating || isGeneratingDrama} onChange={(event) => updateShotDuration(shot.clipId, Number(event.target.value))} className="w-14 h-8 px-2 bg-dark-900 border border-dark-600 rounded-md text-center text-white disabled:opacity-50" /><span>秒</span></label><button type="button" onClick={() => void copyShotPrompt(shot.title, shot.prompt)} className="w-8 h-8 rounded-md border border-dark-700 bg-dark-800 hover:bg-dark-700 flex items-center justify-center" title="复制镜头提示词"><Copy className="w-3.5 h-3.5" /></button></div></div><div className="grid md:grid-cols-2 gap-3 mt-3 text-xs text-dark-400"><p>镜头：{shot.camera}</p><p>结束状态：{shot.plannedEndState}</p></div>{generation?.error && <p className="mt-3 text-xs text-red-300">{generation.error}</p>}<div className="mt-3 bg-dark-900 border border-dark-700 rounded-md p-3 text-sm text-dark-200 leading-relaxed">{shot.prompt}</div><div className="mt-3 flex justify-end"><span className={`text-[10px] px-2 py-1 rounded-full flex items-center gap-1 ${generation?.status === 'completed' ? 'bg-green-500/15 text-green-300' : generation?.status === 'error' ? 'bg-red-500/15 text-red-300' : generation ? 'bg-primary-500/15 text-primary-300' : shot.status === 'ready' ? 'bg-green-500/15 text-green-300' : 'bg-yellow-500/15 text-yellow-300'}`}>{generation?.status === 'completed' ? <CheckCircle2 className="w-3 h-3" /> : generation?.status === 'error' ? <AlertCircle className="w-3 h-3" /> : generation ? <Loader2 className={`w-3 h-3 ${generation.status === 'generating' ? 'animate-spin' : ''}`} /> : null}{generation ? ({ queued: '排队中', generating: '生成中', completed: '已完成', error: '失败' }[generation.status]) : shot.status === 'ready' ? '可生成' : '待上一镜验收'}</span></div></article>;
+                  return <article key={shot.clipId} className={`border rounded-md p-4 bg-dark-950/60 ${isSelected ? 'border-primary-500/70' : 'border-dark-700'}`}><div className="flex items-start justify-between gap-3"><div className="min-w-0 flex items-start gap-2"><input aria-label={`选择${shot.title}`} type="checkbox" checked={isSelected} disabled={isGenerating || isGeneratingDrama} onChange={() => setSelectedShotIds((current) => current.includes(shot.clipId) ? current.filter((id) => id !== shot.clipId) : [...current, shot.clipId])} className="mt-1 accent-primary-500" /><div className="min-w-0"><p className="text-xs text-primary-400">{shot.sceneId} / {shot.clipId} / {shot.arcPosition}</p><h3 className="font-medium mt-1">{shot.narrativeJob}</h3></div></div><div className="flex items-center gap-2 shrink-0"><label className="flex items-center gap-2 text-xs text-dark-400"><span>时长</span><VideoDurationControl value={shot.targetDurationSec} onChange={(duration) => updateShotDuration(shot.clipId, duration)} rules={configuredDurationRules} fallbackMin={5} fallbackMax={15} compact disabled={isGenerating || isGeneratingDrama} ariaLabel={`${shot.title}时长`} /></label><button type="button" onClick={() => void copyShotPrompt(shot.title, shot.prompt)} className="w-8 h-8 rounded-md border border-dark-700 bg-dark-800 hover:bg-dark-700 flex items-center justify-center" title="复制镜头提示词"><Copy className="w-3.5 h-3.5" /></button></div></div><div className="grid md:grid-cols-2 gap-3 mt-3 text-xs text-dark-400"><p>镜头：{shot.camera}</p><p>结束状态：{shot.plannedEndState}</p></div>{generation?.error && <p className="mt-3 text-xs text-red-300">{generation.error}</p>}<div className="mt-3 bg-dark-900 border border-dark-700 rounded-md p-3 text-sm text-dark-200 leading-relaxed">{shot.prompt}</div><div className="mt-3 flex justify-end"><span className={`text-[10px] px-2 py-1 rounded-full flex items-center gap-1 ${generation?.status === 'completed' ? 'bg-green-500/15 text-green-300' : generation?.status === 'error' ? 'bg-red-500/15 text-red-300' : generation ? 'bg-primary-500/15 text-primary-300' : shot.status === 'ready' ? 'bg-green-500/15 text-green-300' : 'bg-yellow-500/15 text-yellow-300'}`}>{generation?.status === 'completed' ? <CheckCircle2 className="w-3 h-3" /> : generation?.status === 'error' ? <AlertCircle className="w-3 h-3" /> : generation ? <Loader2 className={`w-3 h-3 ${generation.status === 'generating' ? 'animate-spin' : ''}`} /> : null}{generation ? ({ queued: '排队中', generating: '生成中', completed: '已完成', error: '失败' }[generation.status]) : shot.status === 'ready' ? '可生成' : '待上一镜验收'}</span></div></article>;
                 })}</div>
               </>}
             </div>}
