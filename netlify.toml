@@ -32,6 +32,12 @@
   force = true
 
 [[redirects]]
+  from = "/api/assets/*"
+  to = "/.netlify/functions/backend/assets/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
   from = "/api/admin/*"
   to = "/.netlify/functions/backend/admin/:splat"
   status = 200
