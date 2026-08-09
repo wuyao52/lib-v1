@@ -126,3 +126,54 @@ test('Netlify backend proxy forwards authenticated project storage routes', asyn
   }));
   assert.equal(result.statusCode, 200);
 });
+
+test('Netlify backend proxy forwards image asset uploads', async (t) => {
+  const previousOrigin = process.env.API_ORIGIN;
+  const previousFetch = globalThis.fetch;
+  process.env.API_ORIGIN = 'https://api.example.com';
+  globalThis.fetch = async (url, options) => {
+    assert.equal(String(url), 'https://api.example.com/api/assets');
+    assert.equal(options.method, 'POST');
+    assert.match(String(options.body), /data:image\/png;base64/);
+    return new Response('{"asset":{"id":"asset-1","url":"https://api.example.com/api/assets/public/asset-1"}}', {
+      status: 201,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  t.after(() => {
+    if (previousOrigin === undefined) delete process.env.API_ORIGIN;
+    else process.env.API_ORIGIN = previousOrigin;
+    globalThis.fetch = previousFetch;
+  });
+
+  const result = await handler(createEvent('/api/assets', {
+    httpMethod: 'POST',
+    headers: { cookie: 'ads_session=token', 'content-type': 'application/json' },
+    body: '{"dataUrl":"data:image/png;base64,AAAA"}',
+  }));
+  assert.equal(result.statusCode, 201);
+  assert.match(result.body, /asset-1/);
+});
+
+test('Netlify backend proxy preserves public image asset bytes', async (t) => {
+  const previousOrigin = process.env.API_ORIGIN;
+  const previousFetch = globalThis.fetch;
+  const imageBytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  process.env.API_ORIGIN = 'https://api.example.com';
+  globalThis.fetch = async (url, options) => {
+    assert.equal(String(url), 'https://api.example.com/api/assets/public/asset-1');
+    assert.equal(options.method, 'GET');
+    return new Response(imageBytes, { status: 200, headers: { 'content-type': 'image/png' } });
+  };
+  t.after(() => {
+    if (previousOrigin === undefined) delete process.env.API_ORIGIN;
+    else process.env.API_ORIGIN = previousOrigin;
+    globalThis.fetch = previousFetch;
+  });
+
+  const result = await handler(createEvent('/api/assets/public/asset-1'));
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.headers['content-type'], 'image/png');
+  assert.equal(result.isBase64Encoded, true);
+  assert.deepEqual(Buffer.from(result.body, 'base64'), imageBytes);
+});
