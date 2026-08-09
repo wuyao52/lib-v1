@@ -147,6 +147,7 @@ export default function Canvas() {
             duration: fileType === 'video' ? 10 : 5,
             prompt: '',
             generatedContent: dataUrl,
+            mediaSource: 'uploaded',
             settings: { style: project.settings.defaultStyle, mood: '', camera: '', lighting: '' },
             status: 'completed',
             progress: 100,
