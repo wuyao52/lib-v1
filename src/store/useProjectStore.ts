@@ -189,6 +189,28 @@ const loadProjectListFromCloud = async (): Promise<ProjectInfo[]> => {
   return result.projects;
 };
 
+const materializeProjectImages = async (project: DramaProject): Promise<DramaProject> => {
+  const pendingNodes = project.nodes.filter((node) => /^data:image\//i.test(String(node.data.generatedContent || '')));
+  if (!pendingNodes.length) return project;
+
+  const urls = await materializeReferenceImages(pendingNodes.map((node) => String(node.data.generatedContent)));
+  const replacements = new Map(pendingNodes.map((node, index) => [node.id, urls[index]]));
+  return {
+    ...project,
+    nodes: project.nodes.map((node) => {
+      const url = replacements.get(node.id);
+      return url ? {
+        ...node,
+        data: {
+          ...node.data,
+          generatedContent: url,
+          mediaSource: node.data.mediaSource || (String(node.data.prompt || '').trim() ? 'generated' : 'uploaded'),
+        },
+      } : node;
+    }),
+  };
+};
+
 // 创建新项目
 const createNewProject = (title: string, description: string): DramaProject => {
   const now = new Date().toISOString();
@@ -391,11 +413,21 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
   openProject: async (projectId) => {
     let projectData: DramaProject | null = null;
     try {
-      projectData = await loadProjectFromCloud(projectId);
+      projectData = await materializeProjectImages(await loadProjectFromCloud(projectId));
       saveProjectDataToStorage(projectData);
+      void saveProjectToCloud(projectData).catch((error) => console.error('旧图片云端迁移保存失败', error));
     } catch (error) {
       console.warn('云端项目读取失败，使用本地缓存', error);
       projectData = loadProjectDataFromStorage(projectId);
+      if (projectData) {
+        try {
+          projectData = await materializeProjectImages(projectData);
+          saveProjectDataToStorage(projectData);
+          void saveProjectToCloud(projectData).catch((saveError) => console.error('本地旧图片迁移保存失败', saveError));
+        } catch (migrationError) {
+          console.error('本地旧图片云端迁移失败', migrationError);
+        }
+      }
     }
     if (projectData) {
       set({
@@ -1194,24 +1226,53 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
 
     set({ isSaving: true });
 
-    saveProjectDataToStorage(project);
+    let projectToSave = project;
+    try {
+      const migratedProject = await materializeProjectImages(project);
+      const latestProject = get().project;
+      if (!latestProject || latestProject.id !== project.id) return set({ isSaving: false });
+      const migratedUrls = new Map(migratedProject.nodes.map((node) => [node.id, node.data.generatedContent]));
+      projectToSave = {
+        ...latestProject,
+        nodes: latestProject.nodes.map((node) => {
+          const migratedUrl = migratedUrls.get(node.id);
+          return /^data:image\//i.test(String(node.data.generatedContent || '')) && migratedUrl && !String(migratedUrl).startsWith('data:')
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  generatedContent: migratedUrl,
+                  mediaSource: node.data.mediaSource || (String(node.data.prompt || '').trim() ? 'generated' : 'uploaded'),
+                },
+              }
+            : node;
+        }),
+      };
+      if (projectToSave !== latestProject) set({ project: projectToSave });
+    } catch (error) {
+      console.error('项目图片云端迁移失败', error);
+      set({ isSaving: false });
+      return;
+    }
+
+    saveProjectDataToStorage(projectToSave);
     // 本地空间不足时仍继续上传云端，确保大图片素材不会丢失
 
     // 更新项目列表中的信息
     const updatedProjects = get().projects.map((p) =>
-      p.id === project.id
+      p.id === projectToSave.id
         ? {
             ...p,
-            title: project.title,
-            description: project.description,
-            updatedAt: project.updatedAt,
-            sceneCount: project.nodes.length,
+            title: projectToSave.title,
+            description: projectToSave.description,
+            updatedAt: projectToSave.updatedAt,
+            sceneCount: projectToSave.nodes.length,
           }
         : p
     );
     saveProjectsToStorage(updatedProjects);
     try {
-      await saveProjectToCloud(project);
+      await saveProjectToCloud(projectToSave);
       set({ projects: updatedProjects, lastSaveTime: new Date().toISOString(), isSaving: false });
     } catch (error) {
       console.error('云端保存失败，本地副本已保留', error);
