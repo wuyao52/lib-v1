@@ -841,6 +841,13 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
           aspect_ratio: isImage ? '1:1' : '16:9',
           duration: requestDuration,
           seconds: requestDuration,
+          _client: { projectId: latestProject.id, nodeId: newNodeId },
+          _onProgress: ({ status, progress, queuePosition }: { status: string; progress: number; queuePosition: number | null }) => get().updateNodeData(newNodeId, {
+            progress: progress > 0 ? progress : status === 'queued' ? 10 : 30,
+            generationMessage: status === 'queued'
+              ? `视频任务排队中${queuePosition ? `，当前第 ${queuePosition} 位` : ''}`
+              : status === 'submitting' ? '正在提交到视频服务...' : progress > 0 ? `视频生成中 ${progress}%` : '视频正在生成中...',
+          }),
         };
         const referenceImages = await materializeReferenceImages(
           await prepareReferenceImages(collectReferenceImages(latestProject, node)),
@@ -879,6 +886,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
             status: 'completed',
             progress: 100,
             error: undefined,
+            generationMessage: undefined,
             generatedContent: result.data.url,
             mediaSource: node.data.type === 'image' ? 'generated' : node.data.mediaSource,
             thumbnail: result.data.thumbnail,
@@ -1104,6 +1112,13 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
           aspect_ratio: isImage ? '1:1' : '16:9',
           duration: requestDuration,
           seconds: requestDuration,
+          _client: { projectId: latestProject.id, nodeId: newNodeId },
+          _onProgress: ({ status, progress, queuePosition }: { status: string; progress: number; queuePosition: number | null }) => get().updateNodeData(newNodeId, {
+            progress: progress > 0 ? progress : status === 'queued' ? 10 : 30,
+            generationMessage: status === 'queued'
+              ? `视频任务排队中${queuePosition ? `，当前第 ${queuePosition} 位` : ''}`
+              : status === 'submitting' ? '正在提交到视频服务...' : progress > 0 ? `视频生成中 ${progress}%` : '视频正在生成中...',
+          }),
         };
         const sourceImages = await materializeReferenceImages(
           await prepareReferenceImages(collectReferenceImages(latestProject, node, settings.prompt, settings.referenceNodeIds)),
@@ -1148,6 +1163,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
             status: 'completed',
             progress: 100,
             error: undefined,
+            generationMessage: undefined,
             generatedContent: result.data.url,
             mediaSource: type === 'image' || type === 'img2img' ? 'generated' : undefined,
             thumbnail: result.data.thumbnail,
