@@ -196,6 +196,7 @@ export default function Canvas() {
   if (!project) return null;
 
   const sourceNode = project.nodes.find(n => n.id === generationSourceNodeRef.current);
+  const configuredVideoModel = project.settings.multiModel?.videoModel || project.settings.aiModel;
   const selectedNodes = project.nodes.filter((node) => node.selected);
   const createBatchNode = () => {
     if (selectedNodes.length < 2) return;
@@ -348,6 +349,7 @@ export default function Canvas() {
         sourceImageUrl={sourceNode?.data?.generatedContent}
         sourceNodeType={sourceNode?.data?.type}
         mentionableNodes={project.nodes.filter((node) => node.id !== generationSourceNodeRef.current).map((node) => ({ id: node.id, label: node.data.label, type: node.data.type }))}
+        durationRules={{ minDurationSec: configuredVideoModel.minDurationSec, maxDurationSec: configuredVideoModel.maxDurationSec, allowedDurationsSec: configuredVideoModel.allowedDurationsSec }}
       />
 
       {/* 去水印弹窗 */}
