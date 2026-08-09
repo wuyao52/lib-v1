@@ -22,6 +22,7 @@ import { createAIService, prepareReferenceImages, SeedanceService } from '@/serv
 import { apiRequest } from '@/services/apiClient';
 import { materializeReferenceImages } from '@/services/assetService';
 import { planGenerationTarget } from './generationPolicy';
+import { normalizeModelDuration, videoDurationRules } from '@/services/modelDuration';
 
 // 默认AI模型配置
 const defaultModel: AIModelConfig = {
@@ -780,12 +781,13 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
         console.log('节点类型:', node.data.type, '是否图片:', isImage);
 
         // 只传递 API 支持的参数，不传 duration/seconds
+        const requestDuration = normalizeModelDuration(Number(node.data.duration) || 5, videoDurationRules(aiModel), 1, 15);
         const settings: any = {
           style: node.data.settings?.style || latestProject.settings.defaultStyle,
           resolution: '1080p',
           aspect_ratio: isImage ? '1:1' : '16:9',
-          duration: Number(node.data.duration) || 5,
-          seconds: Number(node.data.duration) || 5,
+          duration: requestDuration,
+          seconds: requestDuration,
         };
         const referenceImages = await materializeReferenceImages(
           await prepareReferenceImages(collectReferenceImages(latestProject, node)),
@@ -1030,12 +1032,13 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
 
         // 根据类型使用正确的参数格式（不传 duration/seconds）
         const isImage = type === 'image' || type === 'img2img';
+        const requestDuration = normalizeModelDuration(Number(settings.duration) || 5, videoDurationRules(aiModel), 1, 15);
         const genSettings: any = {
           style: settings.style,
           resolution: isImage ? undefined : '1080p',
           aspect_ratio: isImage ? '1:1' : '16:9',
-          duration: settings.duration,
-          seconds: settings.duration,
+          duration: requestDuration,
+          seconds: requestDuration,
         };
         const sourceImages = await materializeReferenceImages(
           await prepareReferenceImages(collectReferenceImages(latestProject, node, settings.prompt, settings.referenceNodeIds)),
