@@ -97,13 +97,14 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
 
   const submitPricing = async () => {
     const unitPriceCents = Math.round(Number(priceForm.priceYuan) * 100);
+    const fixedDurations = priceForm.allowedDurations.split(',').map((value) => Number(value.trim())).filter((value) => Number.isFinite(value) && value > 0);
     if (!priceForm.apiId) return setMessage('请先选择一个已保存的系统 API');
     if (!priceForm.modelId || !priceForm.displayName) return setMessage('请选择模型并填写显示名称');
     if (!Number.isFinite(unitPriceCents) || unitPriceCents < 0) return setMessage('请输入有效的模型单价');
     try {
       await apiRequest(editingPriceId ? `/api/admin/pricing/${editingPriceId}` : '/api/admin/pricing', {
         method: editingPriceId ? 'PUT' : 'POST',
-        body: JSON.stringify({ ...priceForm, unitPriceCents, allowedDurationsSec: priceForm.allowedDurations.split(',').map((value) => Number(value.trim())).filter((value) => Number.isFinite(value) && value > 0) }),
+        body: JSON.stringify({ ...priceForm, unitPriceCents, minDurationSec: fixedDurations.length ? null : priceForm.minDurationSec, maxDurationSec: fixedDurations.length ? null : priceForm.maxDurationSec, allowedDurationsSec: fixedDurations }),
       });
       const selectedApiId = priceForm.apiId;
       const wasEditing = Boolean(editingPriceId);
