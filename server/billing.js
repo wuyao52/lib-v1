@@ -69,6 +69,9 @@ function normalizePricingInput(input, existing) {
   if (!Number.isInteger(unitPriceCents) || unitPriceCents < 0 || unitPriceCents > 10_000_000) throw new Error('模型价格必须是有效的分值');
   if ([minDurationSec, maxDurationSec, ...allowedDurationsSec].some((v) => Number.isNaN(v))) throw new Error('视频时长规则无效');
   if (minDurationSec && maxDurationSec && maxDurationSec < minDurationSec) throw new Error('最长时长不能小于最短时长');
+  if (category === 'video' && !allowedDurationsSec.length && (!minDurationSec || !maxDurationSec)) {
+    throw new Error('视频模型必须填写固定时长，或同时填写最短和最长时长');
+  }
   return { apiId, modelId, displayName, category, billingUnit, unitPriceCents, minDurationSec, maxDurationSec, allowedDurationsSec, enabled: input.enabled === undefined ? (existing?.enabled ?? true) : Boolean(input.enabled) };
 }
 
