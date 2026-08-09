@@ -10,6 +10,9 @@ import {
   Film,
   Palette,
 } from 'lucide-react';
+import PromptMentionEditor, { type PromptMentionNode } from './PromptMentionEditor';
+import VideoDurationControl from './VideoDurationControl';
+import { normalizeModelDuration, type DurationRules } from '@/services/modelDuration';
 
 interface GenerationModalProps {
   isOpen: boolean;
@@ -17,9 +20,9 @@ interface GenerationModalProps {
   onSelect: (type: 'video' | 'image' | 'img2img', settings: GenerationSettings) => void;
   sourceImageUrl?: string;
   sourceNodeType?: string;
-  mentionableNodes?: Array<{ id: string; label: string; type: string }>;
+  mentionableNodes?: PromptMentionNode[];
   initialReferences?: Array<{ id: string; label: string; type: string; imageUrl?: string }>;
-  durationRules?: { minDurationSec?: number | null; maxDurationSec?: number | null; allowedDurationsSec?: number[] };
+  durationRules?: DurationRules;
 }
 
 export interface GenerationSettings {
@@ -59,22 +62,16 @@ export default function GenerationModal({
   const [duration, setDuration] = useState(5);
   const [strength, setStrength] = useState(0.7);
   const [negativePrompt, setNegativePrompt] = useState('');
-  const [showMentions, setShowMentions] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submittingRef = useRef(false);
-  const allowedDurations = [...new Set((durationRules?.allowedDurationsSec || []).map(Number).filter((value) => Number.isFinite(value) && value > 0))].sort((a, b) => a - b);
-  const minimumDuration = Number(durationRules?.minDurationSec) || 1;
-  const maximumDuration = Number(durationRules?.maxDurationSec) || 15;
-  const initialReferencesKey = initialReferences.map((node) => `${node.id}:${node.label}`).join('|');
 
   useEffect(() => {
     if (!isOpen) return;
     submittingRef.current = false;
     setIsSubmitting(false);
-    setPrompt(initialReferences.map((node) => `@[${node.label}](${node.id})`).join(' ') + (initialReferences.length ? ' ' : ''));
-    setShowMentions(false);
-    setDuration((current) => allowedDurations.length ? (allowedDurations.includes(current) ? current : allowedDurations[0]) : Math.min(maximumDuration, Math.max(minimumDuration, current)));
-  }, [isOpen, initialReferencesKey, durationRules?.minDurationSec, durationRules?.maxDurationSec, JSON.stringify(durationRules?.allowedDurationsSec || [])]);
+    setPrompt('');
+    setDuration((current) => normalizeModelDuration(current, durationRules, 1, 15));
+  }, [isOpen, durationRules?.managed, durationRules?.minDurationSec, durationRules?.maxDurationSec, JSON.stringify(durationRules?.allowedDurationsSec || [])]);
 
   const handleGenerate = () => {
     if (!prompt.trim() || submittingRef.current) return;
@@ -231,21 +228,10 @@ export default function GenerationModal({
                   <Sparkles className="w-4 h-4 text-primary-400" />
                   提示词
                 </label>
-                {initialReferences.length > 0 && (
-                  <div className="flex flex-wrap gap-2" aria-label="已引用的画布目标">
-                    {initialReferences.map((node) => (
-                      <span key={node.id} className="inline-flex h-8 max-w-48 items-center gap-1.5 rounded-md border border-primary-500/40 bg-primary-500/10 px-1.5 text-xs text-primary-200" title={`@${node.label}`}>
-                        {node.type === 'image' && node.imageUrl
-                          ? <img src={node.imageUrl} alt="" className="h-5 w-5 shrink-0 rounded-sm object-cover" />
-                          : <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-sm bg-dark-700"><Sparkles className="h-3 w-3" /></span>}
-                        <span className="truncate">@{node.label}</span>
-                      </span>
-                    ))}
-                  </div>
-                )}
-                <textarea
+                <PromptMentionEditor
                   value={prompt}
-                  onChange={(e) => { setPrompt(e.target.value); setShowMentions(e.target.value.slice(-1) === '@'); }}
+                  onChange={setPrompt}
+                  nodes={mentionableNodes}
                   placeholder={
                     selectedType === 'video'
                       ? '描述你想要生成的视频内容...'
@@ -253,21 +239,7 @@ export default function GenerationModal({
                       ? '描述你希望如何改变这张图片...'
                       : '描述你想要生成的图片内容...'
                   }
-                  rows={3}
-                  className="w-full px-4 py-3 bg-dark-700 border border-dark-600 rounded-xl
-                    text-white placeholder:text-dark-500 resize-none
-                    focus:outline-none focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
                 />
-                {showMentions && mentionableNodes.length > 0 && (
-                  <div className="mt-1 max-h-36 overflow-y-auto rounded-lg border border-dark-600 bg-dark-900 p-1">
-                    {mentionableNodes.map((node) => (
-                      <button key={node.id} type="button" className="block w-full rounded px-2 py-1.5 text-left text-xs text-dark-200 hover:bg-primary-600/20 hover:text-white" onClick={() => {
-                        setPrompt((value) => `${value.slice(0, -1)}@[${node.label}](${node.id}) `);
-                        setShowMentions(false);
-                      }}>@{node.label}</button>
-                    ))}
-                  </div>
-                )}
                 {mentionableNodes.length > 0 && <div className="mt-1 text-[10px] text-dark-500">输入 @ 可引用画布目标</div>}
               </div>
 
@@ -315,9 +287,9 @@ export default function GenerationModal({
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-dark-200 flex items-center gap-2">
                     <Film className="w-4 h-4 text-primary-400" />
-                    视频时长：{duration}秒
+                    视频时长
                   </label>
-                  {allowedDurations.length ? <div className="flex flex-wrap gap-2">{allowedDurations.map((seconds) => <button key={seconds} type="button" onClick={() => setDuration(seconds)} className={`rounded-lg border px-3 py-2 text-xs ${duration === seconds ? 'border-primary-500 bg-primary-500/15 text-white' : 'border-dark-600 bg-dark-700 text-dark-300'}`}>{seconds} 秒</button>)}</div> : <><input type="range" min={minimumDuration} max={maximumDuration} value={duration} onChange={(e) => setDuration(Number(e.target.value))} className="w-full accent-primary-500" /><div className="flex justify-between text-xs text-dark-400"><span>{minimumDuration}秒</span><span>{maximumDuration}秒</span></div></>}
+                  <VideoDurationControl value={duration} onChange={setDuration} rules={durationRules} fallbackMin={1} fallbackMax={15} ariaLabel="生成视频时长" />
                 </div>
               )}
 
