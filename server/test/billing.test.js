@@ -14,6 +14,7 @@ async function setup() {
     if (String(url).endsWith('/v1/models')) return new Response(JSON.stringify({ data: [{ id: 'video-model', name: 'Video Model', type: 'video_generation', owned_by: 'Detected Provider' }] }), { status: 200, headers: { 'content-type': 'application/json' } });
     const body = JSON.parse(options.body || '{}');
     if (body.prompt === 'fail') return new Response(JSON.stringify({ error: { message: 'upstream failed' } }), { status: 500, headers: { 'content-type': 'application/json' } });
+    if (body.prompt === 'business-fail') return new Response(JSON.stringify({ code: '9999', data: null, msg: 'request entity too large' }), { status: 200, headers: { 'content-type': 'application/json' } });
     return new Response(JSON.stringify({ id: 'task-1', status: 'queued' }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
   const { app, db } = await createApp({
@@ -88,6 +89,11 @@ test('system APIs, pricing, balances and managed gateway enforce roles and billi
   billing = await (await context.request('/api/billing/me', normal.cookie)).json();
   assert.equal(billing.balanceCents, 950);
   assert.equal(billing.transactions.some((item) => item.type === 'model_refund' && item.amountCents === 50), true);
+
+  const businessFailed = await context.request(`/api/system-ai/${createdApi.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'business-fail', duration: 5 }) });
+  assert.equal(businessFailed.status, 502);
+  billing = await (await context.request('/api/billing/me', normal.cookie)).json();
+  assert.equal(billing.balanceCents, 950);
 
   const pricing = (await pricingResponse.json()).pricing;
   const fixedPricingResponse = await context.request(`/api/admin/pricing/${pricing.id}`, admin.cookie, { method: 'PUT', body: JSON.stringify({ allowedDurationsSec: [15], minDurationSec: 20, maxDurationSec: 30 }) });
