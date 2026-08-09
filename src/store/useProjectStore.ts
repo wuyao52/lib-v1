@@ -814,7 +814,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
           }
         }
         if (generateInPlace && node.data.generatedContent) {
-          await apiRequest('/api/generation-history', { method: 'POST', body: JSON.stringify({ projectId: project.id, nodeId, type: 'video', prompt: nodePrompt, url: node.data.generatedContent, thumbnail: node.data.thumbnail }) }).catch(() => undefined);
+          await apiRequest('/api/generation-history', { method: 'POST', body: JSON.stringify({ projectId: project.id, nodeId, type: 'video', prompt: nodePrompt, url: node.data.generatedContent, thumbnail: node.data.thumbnail }) }).catch((error) => console.warn('保存生成历史失败:', error));
         }
         // 更新进度：准备中
         get().updateNodeData(newNodeId, {
@@ -892,7 +892,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
             thumbnail: result.data.thumbnail,
             ...(generateInPlace ? { prompt: nodePrompt, content: node.data.content } : { content: 'AI 生成完成 - 点击预览' }),
           });
-          await apiRequest('/api/generation-history', { method: 'POST', body: JSON.stringify({ projectId: latestProject.id, nodeId: newNodeId, type: node.data.type === 'text' ? 'video' : node.data.type, prompt, url: result.data.url, thumbnail: result.data.thumbnail }) }).catch(() => undefined);
+          await apiRequest('/api/generation-history', { method: 'POST', body: JSON.stringify({ projectId: latestProject.id, nodeId: newNodeId, type: node.data.type === 'text' ? 'video' : node.data.type, prompt, url: result.data.url, thumbnail: result.data.thumbnail }) }).catch((error) => console.warn('保存生成历史失败:', error));
         } else {
           markGenerationFailed(nodeId, newNodeId, result.error || 'AI 生成失败', get, set);
         }
@@ -1169,7 +1169,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
             thumbnail: result.data.thumbnail,
             content: 'AI 生成完成 - 点击预览',
           });
-          await apiRequest('/api/generation-history', { method: 'POST', body: JSON.stringify({ projectId: latestProject.id, nodeId: newNodeId, type, prompt: settings.prompt, url: result.data.url, thumbnail: result.data.thumbnail }) }).catch(() => undefined);
+          await apiRequest('/api/generation-history', { method: 'POST', body: JSON.stringify({ projectId: latestProject.id, nodeId: newNodeId, type, prompt: settings.prompt, url: result.data.url, thumbnail: result.data.thumbnail }) }).catch((error) => console.warn('保存生成历史失败:', error));
         } else {
           markGenerationFailed(nodeId, newNodeId, result.error || 'AI 生成失败', get, set);
         }
