@@ -6,7 +6,6 @@ import { apiRequest } from '@/services/apiClient';
 export default function AuthScreen() {
   const { login, register } = useAuth();
   const [mode, setMode] = useState<'login' | 'register' | 'forgot'>('login');
-  const [name, setName] = useState('');
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -90,7 +89,7 @@ export default function AuthScreen() {
     setError('');
     setIsSubmitting(true);
     try {
-      if (mode === 'register') await register({ name, username, email, password, verificationCode });
+      if (mode === 'register') await register({ username, email, password, verificationCode });
       else if (mode === 'forgot') {
         await apiRequest('/api/auth/reset-password', { method: 'POST', body: JSON.stringify({ email, newPassword: password, confirmPassword, verificationCode }) });
         setNotice('密码已重置，请返回登录');
@@ -150,7 +149,6 @@ export default function AuthScreen() {
           {mode === 'login' && <button type="button" onClick={() => switchMode('forgot')} className="mb-4 text-sm text-primary-400 hover:text-primary-300">忘记密码？使用邮箱验证码重置</button>}
 
           <form onSubmit={handleSubmit} className="space-y-4">
-            {mode === 'register' && <label className="block"><span className="text-sm text-dark-300">昵称</span><input value={name} onChange={(e) => setName(e.target.value)} minLength={2} maxLength={40} required autoComplete="name" className="mt-2 w-full h-11 px-3 rounded-lg bg-dark-900 border border-dark-700 focus:border-primary-500 outline-none" /></label>}
             <label className="block"><span className="text-sm text-dark-300">{mode === 'login' ? '用户名或邮箱' : '用户名'}</span><div className="relative mt-2"><UserRound className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-500" /><input value={username} onChange={(e) => setUsername(e.target.value)} minLength={3} maxLength={mode === 'login' ? 320 : 30} required autoComplete="username" className="w-full h-11 pl-10 pr-3 rounded-lg bg-dark-900 border border-dark-700 focus:border-primary-500 outline-none" /></div></label>
             {mode === 'register' && <label className="block"><span className="text-sm text-dark-300">邮箱</span><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" className="mt-2 w-full h-11 px-3 rounded-lg bg-dark-900 border border-dark-700 focus:border-primary-500 outline-none" /></label>}
             <label className="block"><span className="text-sm text-dark-300">密码</span><div className="relative mt-2"><input type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} minLength={8} maxLength={128} required autoComplete={mode === 'login' ? 'current-password' : 'new-password'} className="w-full h-11 px-3 pr-11 rounded-lg bg-dark-900 border border-dark-700 focus:border-primary-500 outline-none" /><button type="button" onClick={() => setShowPassword((visible) => !visible)} className="absolute right-0 top-0 h-11 w-11 flex items-center justify-center text-dark-400 hover:text-white" title={showPassword ? '隐藏密码' : '显示密码'} aria-label={showPassword ? '隐藏密码' : '显示密码'}>{showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}</button></div></label>
