@@ -198,11 +198,11 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
     }))} />;
   };
 
-  const progress = nodeData.progress || 0;
-  const isGenerating = nodeData.status === 'generating';
-  const isCompleted = nodeData.status === 'completed';
-  const isError = nodeData.status === 'error';
   const isUploadedImage = isUploadedImageNode(nodeData);
+  const progress = nodeData.progress || 0;
+  const isGenerating = !isUploadedImage && nodeData.status === 'generating';
+  const isCompleted = !isUploadedImage && nodeData.status === 'completed';
+  const isError = !isUploadedImage && nodeData.status === 'error';
   const hasContent = nodeData.generatedContent || nodeData.content;
   const canGenerate = !isUploadedImage && Boolean(nodeData.generatedContent || String(nodeData.prompt || nodeData.content || '').trim());
 
