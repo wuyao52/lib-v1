@@ -5,6 +5,7 @@ import { useAuth, type AuthUser } from '@/auth/AuthContext';
 
 type Transaction = { id: string; amountCents: number; type: string; description: string; createdAt: string };
 type Recharge = { id: string; amountCents: number; status: string; note: string; createdAt: string; user?: AuthUser };
+type PaymentOrder = { id: string; provider: 'alipay' | 'wechat'; amountCents: number; status: string; payUrl: string; createdAt: string; paidAt?: string | null };
 type SystemApi = { id: string; name: string; provider: string; baseUrl: string; apiKey: string; enabled: boolean };
 type Pricing = { id: string; apiId: string; modelId: string; displayName: string; category: string; billingUnit: string; unitPriceCents: number; minDurationSec?: number | null; maxDurationSec?: number | null; allowedDurationsSec?: number[]; enabled: boolean };
 type DiscoveredModel = { id: string; name: string; type: string };
@@ -28,9 +29,10 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
   const [pricing, setPricing] = useState<Pricing[]>([]);
   const [users, setUsers] = useState<AuthUser[]>([]);
   const [amount, setAmount] = useState('');
-  const [note, setNote] = useState('');
   const [message, setMessage] = useState('');
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
+  const [revealedKeys, setRevealedKeys] = useState<Record<string, string>>({});
+  const [revealPasswords, setRevealPasswords] = useState<Record<string, string>>({});
   const [apiForm, setApiForm] = useState(emptyApi);
   const [priceForm, setPriceForm] = useState(emptyPrice);
   const [editingApiId, setEditingApiId] = useState<string | null>(null);
@@ -39,11 +41,19 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
   const [discoveredModels, setDiscoveredModels] = useState<DiscoveredModel[]>([]);
   const [isDiscovering, setIsDiscovering] = useState(false);
   const [queue, setQueue] = useState<QueueOverview | null>(null);
+  const [paymentProviders, setPaymentProviders] = useState<Record<'alipay' | 'wechat', boolean>>({ alipay: false, wechat: false });
+  const [paymentOrders, setPaymentOrders] = useState<PaymentOrder[]>([]);
+  const [paymentProvider, setPaymentProvider] = useState<'alipay' | 'wechat'>('alipay');
 
   const load = useCallback(async () => {
     if (mode === 'billing') {
-      const data = await apiRequest<{ balanceCents: number; transactions: Transaction[]; recharges: Recharge[] }>('/api/billing/me');
+      const [data, providerData, orderData] = await Promise.all([
+        apiRequest<{ balanceCents: number; transactions: Transaction[]; recharges: Recharge[] }>('/api/billing/me'),
+        apiRequest<{ providers: Record<'alipay' | 'wechat', boolean> }>('/api/payments/providers'),
+        apiRequest<{ orders: PaymentOrder[] }>('/api/payments/orders'),
+      ]);
       setBalance(data.balanceCents); setTransactions(data.transactions); setRecharges(data.recharges);
+      setPaymentProviders(providerData.providers); setPaymentOrders(orderData.orders);
       return;
     }
     const [apiData, priceData, userData, rechargeData, queueData] = await Promise.all([
@@ -69,6 +79,34 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
 
   const act = async (job: () => Promise<unknown>, success: string) => {
     try { await job(); await load(); await refresh(); setMessage(success); } catch (error: any) { setMessage(error.message); }
+  };
+
+  const startPayment = async () => {
+    try {
+      const { order } = await apiRequest<{ order: PaymentOrder }>('/api/payments/orders', { method: 'POST', body: JSON.stringify({ provider: paymentProvider, amountCents: Math.round(Number(amount) * 100) }) });
+      window.location.assign(order.payUrl);
+    } catch (error: any) { setMessage(error.message); }
+  };
+
+  const revealApiKey = async (apiId: string) => {
+    if (showKeys[apiId]) {
+      setShowKeys((current) => ({ ...current, [apiId]: false }));
+      setRevealedKeys((current) => ({ ...current, [apiId]: '' }));
+      return;
+    }
+    const password = revealPasswords[apiId] || '';
+    if (!password) return setMessage('查看系统 API Key 前请输入当前登录密码');
+    try {
+      const result = await apiRequest<{ apiKey: string }>(`/api/admin/system-apis/${apiId}/reveal`, { method: 'POST', body: JSON.stringify({ password }) });
+      setRevealedKeys((current) => ({ ...current, [apiId]: result.apiKey }));
+      setShowKeys((current) => ({ ...current, [apiId]: true }));
+      setRevealPasswords((current) => ({ ...current, [apiId]: '' }));
+      setMessage('密钥已解锁，将在 60 秒后自动隐藏；本次查看已记录审计日志。');
+      window.setTimeout(() => {
+        setShowKeys((current) => ({ ...current, [apiId]: false }));
+        setRevealedKeys((current) => ({ ...current, [apiId]: '' }));
+      }, 60000);
+    } catch (error: any) { setMessage(error.message); }
   };
 
   const discoverApi = async () => {
@@ -140,14 +178,14 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
     <section className="relative w-full max-w-6xl max-h-[90vh] bg-dark-800 border border-dark-600 rounded-lg shadow-2xl flex flex-col overflow-hidden">
       <header className="min-h-14 px-5 py-2 border-b border-dark-600 flex items-center justify-between">
         <div>
-          <h2 className="text-white font-semibold flex items-center gap-2">{mode === 'billing' ? <Wallet className="w-5 h-5 text-green-400" /> : <Shield className="w-5 h-5 text-primary-400" />}{mode === 'billing' ? '余额与人工充值' : '系统管理控制台'}</h2>
+          <h2 className="text-white font-semibold flex items-center gap-2">{mode === 'billing' ? <Wallet className="w-5 h-5 text-green-400" /> : <Shield className="w-5 h-5 text-primary-400" />}{mode === 'billing' ? '余额与在线充值' : '系统管理控制台'}</h2>
           <p className="text-[11px] text-dark-400 mt-0.5">当前身份：{user?.role === 'system' ? '系统用户（拥有管理权限）' : '普通用户'}</p>
         </div>
         <div className="flex gap-1"><button onClick={() => load()} className="p-2 text-dark-400 hover:text-white" title="刷新"><RefreshCw className="w-4 h-4" /></button><button onClick={onClose} className="p-2 text-dark-400 hover:text-white" title="关闭"><X className="w-4 h-4" /></button></div>
       </header>
       <div className="overflow-y-auto p-5 space-y-6">
         {message && <div className="px-3 py-2 bg-dark-900 border border-dark-600 rounded text-sm text-dark-200">{message}</div>}
-        {mode === 'billing' ? <BillingView balance={balance} transactions={transactions} recharges={recharges} amount={amount} note={note} setAmount={setAmount} setNote={setNote} act={act} /> : <>
+        {mode === 'billing' ? <BillingView balance={balance} transactions={transactions} recharges={recharges} amount={amount} setAmount={setAmount} providers={paymentProviders} provider={paymentProvider} setProvider={setPaymentProvider} orders={paymentOrders} startPayment={startPayment} /> : <>
           <div className="grid md:grid-cols-[1fr_auto] gap-4 items-center p-4 border border-primary-500/30 bg-primary-500/5 rounded">
             <div><div className="text-sm font-medium text-white">系统用户专属管理区</div><p className="text-xs text-dark-300 mt-1">只有系统用户能看到此页面。充值申请必须由系统用户明确点击“通过”后才会增加余额。</p></div>
             <div className="px-3 py-2 rounded bg-dark-900 text-sm text-amber-300">待审核 {recharges.filter((item) => item.status === 'pending').length} 笔</div>
@@ -166,8 +204,8 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
             </div>
             {discoveredModels.length > 0 && <p className="mt-2 text-xs text-green-400">已识别 {discoveredModels.length} 个模型，保存 API 后可在下方选择模型并定价。</p>}
             <div className="mt-3 divide-y divide-dark-700">{apis.map((api) => <div key={api.id} className="py-2 grid md:grid-cols-[1fr_1.2fr_2fr_auto] gap-3 items-center text-sm">
-              <span className="text-white">{api.name}<small className="block text-dark-500">{api.provider}</small></span><code className="text-dark-300 truncate">{showKeys[api.id] ? api.apiKey : '••••••••••••'}</code><span className="text-dark-400 truncate">{api.baseUrl}</span>
-              <div className="flex"><button title={showKeys[api.id] ? '隐藏' : '显示'} onClick={() => setShowKeys({ ...showKeys, [api.id]: !showKeys[api.id] })} className="p-2 text-dark-400">{showKeys[api.id] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}</button><button title="复制" onClick={() => navigator.clipboard.writeText(api.apiKey)} className="p-2 text-dark-400"><Copy className="w-4 h-4" /></button><button title="编辑" onClick={() => { setEditingApiId(api.id); setApiForm({ name: api.name, provider: api.provider, baseUrl: api.baseUrl, apiKey: '' }); setDiscoveredModels([]); }} className="p-2 text-primary-400"><Pencil className="w-4 h-4" /></button><button title="删除" onClick={() => act(() => apiRequest(`/api/admin/system-apis/${api.id}`, { method: 'DELETE' }), 'API 已删除')} className="p-2 text-red-400"><Trash2 className="w-4 h-4" /></button></div>
+              <span className="text-white">{api.name}<small className="block text-dark-500">{api.provider}</small></span><code className="text-dark-300 truncate">{showKeys[api.id] ? revealedKeys[api.id] : '••••••••••••'}</code><span className="text-dark-400 truncate">{api.baseUrl}</span>
+              <div className="flex items-center"><input aria-label="当前登录密码" className="h-8 w-28 border border-dark-600 bg-dark-900 px-2 text-xs text-white" type="password" value={revealPasswords[api.id] || ''} onChange={(event) => setRevealPasswords((current) => ({ ...current, [api.id]: event.target.value }))} placeholder="当前密码" /><button title={showKeys[api.id] ? '隐藏' : '验证并显示'} onClick={() => void revealApiKey(api.id)} className="p-2 text-dark-400">{showKeys[api.id] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}</button><button title="复制已解锁密钥" disabled={!revealedKeys[api.id]} onClick={() => void navigator.clipboard.writeText(revealedKeys[api.id] || '')} className="p-2 text-dark-400 disabled:text-dark-700"><Copy className="w-4 h-4" /></button><button title="编辑" onClick={() => { setEditingApiId(api.id); setApiForm({ name: api.name, provider: api.provider, baseUrl: api.baseUrl, apiKey: '' }); setDiscoveredModels([]); }} className="p-2 text-primary-400"><Pencil className="w-4 h-4" /></button><button title="删除" onClick={() => act(() => apiRequest(`/api/admin/system-apis/${api.id}`, { method: 'DELETE' }), 'API 已删除')} className="p-2 text-red-400"><Trash2 className="w-4 h-4" /></button></div>
             </div>)}</div>
           </section>
 
@@ -191,8 +229,8 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
   </div>;
 }
 
-function BillingView({ balance, transactions, recharges, amount, note, setAmount, setNote, act }: any) {
-  return <><div className="grid md:grid-cols-[1fr_2fr] gap-5"><div><div className="text-xs text-dark-400">当前余额</div><div className="text-3xl text-white font-semibold mt-1">{yuan(balance)}</div><div className="mt-5 p-3 rounded border border-amber-500/30 bg-amber-500/5 text-xs text-amber-200">微信支付和支付宝商户支付尚未接入。这里提交的是人工充值申请，不会自动到账。</div><div className="mt-4 space-y-2"><input className={field} type="number" min="1" max="100000" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="申请入账金额（元）" /><textarea className={field} value={note} onChange={(e) => setNote(e.target.value)} placeholder="付款方式、流水号或审核说明" /><button className="w-full py-2 bg-primary-600 hover:bg-primary-500 rounded text-white text-sm" onClick={() => act(() => apiRequest('/api/billing/recharges', { method: 'POST', body: JSON.stringify({ amountCents: Math.round(Number(amount) * 100), note }) }), '人工充值申请已提交，等待系统用户审核')}>提交人工充值申请</button><p className="text-xs text-dark-500">审核路径：系统用户登录 → 系统管理 → 充值审核 → 通过或拒绝。</p></div></div><div><h3 className="text-sm text-white mb-2">余额流水</h3><div className="divide-y divide-dark-700">{transactions.map((item: Transaction) => <div key={item.id} className="py-2 flex justify-between text-sm"><span className="text-dark-300">{item.description}<small className="block text-dark-500">{new Date(item.createdAt).toLocaleString()}</small></span><span className={item.amountCents >= 0 ? 'text-green-400' : 'text-red-400'}>{item.amountCents >= 0 ? '+' : ''}{yuan(item.amountCents)}</span></div>)}</div></div></div><div><h3 className="text-sm text-white mb-2">充值申请</h3><div className="divide-y divide-dark-700">{recharges.map((item: Recharge) => <div key={item.id} className="py-2 flex justify-between text-sm text-dark-300"><span>{yuan(item.amountCents)} · {item.note || '无备注'}</span><span>{item.status === 'pending' ? '待审核' : item.status === 'approved' ? '已通过' : '已拒绝'}</span></div>)}</div></div></>;
+function BillingView({ balance, transactions, recharges, amount, setAmount, providers, provider, setProvider, orders, startPayment }: any) {
+  return <><div className="grid md:grid-cols-[1fr_2fr] gap-5"><div><div className="text-xs text-dark-400">当前余额</div><div className="text-3xl text-white font-semibold mt-1">{yuan(balance)}</div><div className="mt-5 space-y-3"><div className="grid grid-cols-2 gap-2"><button disabled={!providers.alipay} onClick={() => setProvider('alipay')} className={`border px-3 py-2 text-sm ${provider === 'alipay' ? 'border-blue-500 bg-blue-500/10 text-blue-300' : 'border-dark-600 text-dark-300'} disabled:text-dark-600`}>支付宝</button><button disabled={!providers.wechat} onClick={() => setProvider('wechat')} className={`border px-3 py-2 text-sm ${provider === 'wechat' ? 'border-green-500 bg-green-500/10 text-green-300' : 'border-dark-600 text-dark-300'} disabled:text-dark-600`}>微信支付</button></div><input className={field} type="number" min="1" max="100000" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="充值金额（元）" /><button disabled={!providers[provider] || !Number(amount)} className="w-full bg-primary-600 py-2 text-sm text-white disabled:bg-dark-700 disabled:text-dark-500" onClick={startPayment}>前往安全支付</button>{!providers.alipay && !providers.wechat && <p className="text-xs text-amber-300">支付商户参数尚未在 Railway 配置，当前不能创建在线订单。</p>}</div></div><div><h3 className="text-sm text-white mb-2">余额流水</h3><div className="divide-y divide-dark-700">{transactions.map((item: Transaction) => <div key={item.id} className="py-2 flex justify-between text-sm"><span className="text-dark-300">{item.description}<small className="block text-dark-500">{new Date(item.createdAt).toLocaleString()}</small></span><span className={item.amountCents >= 0 ? 'text-green-400' : 'text-red-400'}>{item.amountCents >= 0 ? '+' : ''}{yuan(item.amountCents)}</span></div>)}</div></div></div><div><h3 className="text-sm text-white mb-2">在线支付订单</h3><div className="divide-y divide-dark-700">{orders.map((item: PaymentOrder) => <div key={item.id} className="py-2 flex justify-between text-sm text-dark-300"><span>{item.provider === 'alipay' ? '支付宝' : '微信支付'} · {yuan(item.amountCents)}<small className="block text-dark-500">{new Date(item.createdAt).toLocaleString()}</small></span><span>{item.status === 'paid' ? '已到账' : item.status === 'pending' ? '待支付' : item.status}</span></div>)}</div>{recharges.length > 0 && <p className="mt-3 text-xs text-dark-500">历史人工充值申请保留只读记录，共 {recharges.length} 条。</p>}</div></>;
 }
 
 function QueueView({ overview, users }: { overview: QueueOverview | null; users: AuthUser[] }) {
