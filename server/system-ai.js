@@ -142,7 +142,7 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
         try {
           await changeBalance(db, { userId: req.user.id, amountCents: -chargeCents, type: 'model_usage', description: `${pricing.displayName} 模型调用`, referenceId: transactionId });
         } catch (error) {
-          if (error.code === 'INSUFFICIENT_BALANCE') return res.status(402).json({ error: error.code, message: error.message, requiredCents: chargeCents });
+          if (error.code === 'INSUFFICIENT_BALANCE') return res.status(402).json({ error: error.code, message: '错误：100' });
           return next(error);
         }
       }
