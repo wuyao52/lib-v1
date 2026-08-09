@@ -1,6 +1,12 @@
 import { AIModelConfig, GenerationRequest, GenerationResponse } from '@/types';
 import { compressImageDataUrl, dataUrlByteLength } from '@/utils/imageCompression';
 
+const VIDEO_POLL_INTERVAL_MS = 5000;
+const VIDEO_POLL_MAX_ATTEMPTS = 240;
+const MANAGED_VIDEO_POLL_MAX_ATTEMPTS = 1440;
+const VIDEO_POLL_TIMEOUT_MESSAGE = '视频任务等待超时（约 20 分钟），服务商任务可能仍在处理中';
+const MANAGED_VIDEO_POLL_TIMEOUT_MESSAGE = '视频任务等待超时（约 2 小时），服务商任务可能仍在处理中';
+
 // 安全地解析 JSON 响应
 async function safeJsonParse(response: Response): Promise<any> {
   const text = await response.text();
@@ -321,6 +327,7 @@ export class SeedanceService extends AIService {
         resolution: resolveVideoResolution(modelId, settings.resolution),
         seconds: secondsValue,  // 使用 10 秒作为默认值
       };
+      if (this.config.managed && settings._client) requestBody._client = settings._client;
 
       // 可选参数：参考图片
       const preparedImages = await prepareReferenceImages(settings.images);
@@ -364,7 +371,9 @@ export class SeedanceService extends AIService {
         // 异步任务 - 轮询结果
         if (taskId && (!taskStatus || ['queued', 'pending', 'processing', 'running'].includes(String(taskStatus).toLowerCase()))) {
           console.log('任务已创建，taskId:', taskId);
-          return await this.pollVideoResult(String(taskId), signal);
+          const onProgress = typeof settings._onProgress === 'function' ? settings._onProgress : undefined;
+          onProgress?.({ status: String(taskStatus || 'queued').toLowerCase(), progress: Number(payload.progress || 0), queuePosition: Number(payload.queue_position || 0) || null });
+          return await this.pollVideoResult(String(taskId), signal, onProgress);
         }
 
         // 同步返回
@@ -380,7 +389,7 @@ export class SeedanceService extends AIService {
           if (signal?.aborted) throw userCancellationError();
           throw new Error('请求超时（60秒）');
         }
-        if (fetchError.name === 'ProviderError' || fetchError.name === 'ProviderTaskFailed') throw fetchError;
+        if (['ProviderError', 'ProviderTaskFailed', 'ProviderTaskTimeout'].includes(fetchError.name)) throw fetchError;
         throw new Error(analyzeFetchError(fetchError, url));
       } finally {
         signal?.removeEventListener('abort', abortFromCaller);
@@ -396,16 +405,15 @@ export class SeedanceService extends AIService {
   }
 
   // 轮询视频任务
-  private async pollVideoResult(taskId: string, signal?: AbortSignal): Promise<GenerationResponse> {
-    const maxAttempts = 90; // 增加到 90 次（约 4.5 分钟）
-    const pollInterval = 3000;
+  private async pollVideoResult(taskId: string, signal?: AbortSignal, onProgress?: (update: { status: string; progress: number; queuePosition: number | null }) => void): Promise<GenerationResponse> {
     const baseUrl = this.config.baseUrl.replace(/\/v1\/?$/, '');
+    const maxAttempts = this.config.managed ? MANAGED_VIDEO_POLL_MAX_ATTEMPTS : VIDEO_POLL_MAX_ATTEMPTS;
 
     console.log('开始轮询视频任务:', taskId);
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       if (signal?.aborted) throw new DOMException('用户取消生成', 'AbortError');
-      await new Promise(resolve => setTimeout(resolve, pollInterval));
+      await new Promise(resolve => setTimeout(resolve, VIDEO_POLL_INTERVAL_MS));
 
       const url = `${baseUrl}/v1/videos/${taskId}`;
       console.log(`轮询视频任务 (${attempt + 1}/${maxAttempts}):`, url);
@@ -433,6 +441,11 @@ export class SeedanceService extends AIService {
         // 检查任务状态
         const status = payload.status || payload.state || data.status || data.state;
         console.log('任务状态:', status);
+        onProgress?.({
+          status: String(status || 'processing').toLowerCase(),
+          progress: Number(payload.progress || payload.percent || data.progress || data.percent || 0),
+          queuePosition: Number(payload.queue_position || data.queue_position || 0) || null,
+        });
 
         if (status === 'completed' || status === 'success') {
           // 尝试所有可能的视频 URL 字段
@@ -475,7 +488,7 @@ export class SeedanceService extends AIService {
         }
       } catch (error: any) {
         if (isUserCancellation(error, signal)) throw userCancellationError();
-        if (error.name === 'ProviderError' || error.name === 'ProviderTaskFailed') throw error;
+        if (['ProviderError', 'ProviderTaskFailed', 'ProviderTaskTimeout'].includes(error.name)) throw error;
         if (error.message.includes('视频生成失败') || error.message.includes('未返回视频 URL')) {
           throw error;
         }
@@ -483,7 +496,11 @@ export class SeedanceService extends AIService {
       }
     }
 
-    throw new Error('视频生成超时（约 4.5 分钟）');
+    const timeoutError = new Error(this.config.managed
+      ? MANAGED_VIDEO_POLL_TIMEOUT_MESSAGE
+      : VIDEO_POLL_TIMEOUT_MESSAGE);
+    timeoutError.name = 'ProviderTaskTimeout';
+    throw timeoutError;
   }
 
   // 创建图片任务
