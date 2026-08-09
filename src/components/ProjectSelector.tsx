@@ -12,11 +12,13 @@ import {
   Wallet,
   Shield,
   KeyRound,
+  HardDrive,
 } from 'lucide-react';
 import useProjectStore from '@/store/useProjectStore';
 import { useAuth } from '@/auth/AuthContext';
 import AccountCenter from './AccountCenter';
 import SecurityPanel from './SecurityPanel';
+import AssetManager from './AssetManager';
 
 export default function ProjectSelector() {
   const { projects, createProject, openProject, deleteProject, refreshProjects } = useProjectStore();
@@ -24,7 +26,7 @@ export default function ProjectSelector() {
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newDescription, setNewDescription] = useState('');
-  const [accountMode, setAccountMode] = useState<'billing' | 'admin' | 'security' | null>(null);
+  const [accountMode, setAccountMode] = useState<'billing' | 'admin' | 'security' | 'assets' | null>(null);
 
   useEffect(() => {
     refreshProjects();
@@ -75,6 +77,7 @@ export default function ProjectSelector() {
         <div className="flex items-center gap-3">
           <span className={`hidden md:inline-flex px-2 py-1 rounded border text-xs ${user?.role === 'system' ? 'border-primary-500/40 bg-primary-500/10 text-primary-300' : 'border-dark-600 bg-dark-800 text-dark-400'}`}>{user?.role === 'system' ? '系统用户' : '普通用户'}</span>
           <button onClick={() => setAccountMode('billing')} className="px-3 py-2 rounded-lg text-sm text-dark-200 hover:text-white hover:bg-dark-700 flex items-center gap-2"><Wallet className="w-4 h-4 text-green-400" />余额 ¥{((user?.balanceCents || 0) / 100).toFixed(2)}</button>
+          <button onClick={() => setAccountMode('assets')} className="px-3 py-2 rounded-lg text-sm text-dark-200 hover:text-white hover:bg-dark-700 flex items-center gap-2" title="云端素材"><HardDrive className="w-4 h-4 text-cyan-400" /><span className="hidden lg:inline">云端素材</span></button>
           <button onClick={() => setAccountMode('security')} className="p-2 rounded-lg text-dark-400 hover:text-white hover:bg-dark-700" title="修改密码"><KeyRound className="w-4 h-4" /></button>
           {user?.role === 'system' && <button onClick={() => setAccountMode('admin')} className="px-3 py-2 rounded-lg text-sm text-primary-300 hover:text-white hover:bg-dark-700 flex items-center gap-2" title="管理 API、用户和充值审核"><Shield className="w-4 h-4" />系统管理</button>}
           <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500 to-primary-700
@@ -325,7 +328,7 @@ export default function ProjectSelector() {
           </motion.div>
         )}
       </AnimatePresence>
-      {accountMode === 'security' ? <SecurityPanel onClose={() => setAccountMode(null)} /> : accountMode && <AccountCenter mode={accountMode} onClose={() => setAccountMode(null)} />}
+      {accountMode === 'security' ? <SecurityPanel onClose={() => setAccountMode(null)} /> : accountMode === 'assets' ? <AssetManager onClose={() => setAccountMode(null)} /> : accountMode && <AccountCenter mode={accountMode} onClose={() => setAccountMode(null)} />}
     </div>
   );
 }
