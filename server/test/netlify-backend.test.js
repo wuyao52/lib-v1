@@ -127,6 +127,37 @@ test('Netlify backend proxy forwards authenticated project storage routes', asyn
   assert.equal(result.statusCode, 200);
 });
 
+test('Netlify backend proxy forwards generation history writes', async (t) => {
+  const previousOrigin = process.env.API_ORIGIN;
+  const previousFetch = globalThis.fetch;
+  process.env.API_ORIGIN = 'https://api.example.com';
+  globalThis.fetch = async (url, options) => {
+    assert.equal(String(url), 'https://api.example.com/api/generation-history');
+    assert.equal(options.method, 'POST');
+    assert.equal(options.headers.get('cookie'), 'ads_session=token');
+    assert.match(String(options.body), /video-1\.mp4/);
+    return new Response('{"item":{"id":"history-1"}}', {
+      status: 201,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  t.after(() => {
+    if (previousOrigin === undefined) delete process.env.API_ORIGIN;
+    else process.env.API_ORIGIN = previousOrigin;
+    globalThis.fetch = previousFetch;
+  });
+
+  const result = await handler(createEvent('', {
+    httpMethod: 'POST',
+    path: '/.netlify/functions/backend/generation-history',
+    queryStringParameters: {},
+    headers: { cookie: 'ads_session=token', 'content-type': 'application/json' },
+    body: '{"projectId":"project-1","type":"video","prompt":"test","url":"https://cdn.example/video-1.mp4"}',
+  }));
+  assert.equal(result.statusCode, 201);
+  assert.match(result.body, /history-1/);
+});
+
 test('Netlify backend proxy forwards image asset uploads', async (t) => {
   const previousOrigin = process.env.API_ORIGIN;
   const previousFetch = globalThis.fetch;
