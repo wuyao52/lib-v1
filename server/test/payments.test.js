@@ -1,19 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createCipheriv, generateKeyPairSync, randomBytes } from 'node:crypto';
+import { createCipheriv, generateKeyPairSync, randomBytes, sign as rsaSign } from 'node:crypto';
 import { mkdtemp } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createApp } from '../app.js';
 import { decryptWechatResource, signAlipayParams } from '../payments.js';
 
-test('signed Alipay callback credits once and rejects forged or amount-mismatched callbacks', async (t) => {
+test('signed Alipay payment and refund execute once while forged callbacks are rejected', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'ads-payments-'));
   const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } });
   const codes = new Map();
+  const fetchImpl = async (_url, options) => {
+    assert.equal(options.method, 'POST');
+    const refundResponse = { code: '10000', msg: 'Success', refund_fee: '5.00', trade_no: 'ali-trade-100' };
+    const signedContent = JSON.stringify(refundResponse);
+    return new Response(JSON.stringify({ alipay_trade_refund_response: refundResponse, sign: rsaSign('RSA-SHA256', Buffer.from(signedContent), privateKey).toString('base64') }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
   const { app, db } = await createApp({
     databasePath: join(directory, 'database.json'), secureCookies: false, videoQueue: false,
     sendEmailCode: async ({ email, code }) => codes.set(email, code),
+    fetchImpl,
     paymentConfig: {
       alipay: { appId: 'test-app-id', privateKey, publicKey, sellerId: 'seller-1', notifyUrl: 'https://backend.example/api/payments/callback/alipay', returnUrl: 'https://frontend.example/payment-return', gateway: 'https://openapi.alipay.test/gateway.do' },
       wechat: {},
@@ -58,6 +65,12 @@ test('signed Alipay callback credits once and rejects forged or amount-mismatche
   const reconciliation = await (await fetch(`${baseUrl}/api/admin/payment-reconciliation`, { headers: { cookie } })).json();
   assert.equal(reconciliation.ok, true);
   assert.deepEqual(reconciliation.paidWithoutCredit, []);
+  const refund = await fetch(`${baseUrl}/api/payments/admin/orders/${storedOrder.id}/refund`, { method: 'POST', headers: { cookie } });
+  assert.equal(refund.status, 200);
+  assert.equal((await refund.json()).order.status, 'refunded');
+  assert.equal(db.read('users').find((item) => item.id === user.id).balanceCents, 0);
+  assert.equal(db.read('balanceTransactions').filter((item) => item.type === 'payment_refund' && item.referenceId === storedOrder.id).length, 1);
+  assert.equal((await fetch(`${baseUrl}/api/payments/admin/orders/${storedOrder.id}/refund`, { method: 'POST', headers: { cookie } })).status, 409);
 });
 
 test('WeChat API v3 resource decryption authenticates ciphertext', () => {
