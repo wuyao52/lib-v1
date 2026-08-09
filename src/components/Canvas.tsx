@@ -8,7 +8,7 @@ import {
   SelectionMode,
   useReactFlow,
 } from '@xyflow/react';
-import type { NodeTypes, OnConnectEnd, Connection } from '@xyflow/react';
+import type { NodeTypes, OnConnectStart, OnConnectEnd, Connection } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import useProjectStore from '@/store/useProjectStore';
 import SceneNodeComponent from './SceneNode';
@@ -48,7 +48,8 @@ export default function Canvas() {
   } = useProjectStore();
 
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
-  const generationSourceNodeRef = useRef<string | null>(null);
+  const generationSourceNodeIdsRef = useRef<string[]>([]);
+  const connectionSourceNodeIdsRef = useRef<string[]>([]);
   const generationPositionRef = useRef({ x: 0, y: 0 });
 
   const [isSelectionMode, setIsSelectionMode] = useState(false);
@@ -187,8 +188,20 @@ export default function Canvas() {
   };
 
   // 连接结束处理
+  const onConnectStart: OnConnectStart = (_event, params) => {
+    const sourceNodeId = params.nodeId;
+    if (!sourceNodeId) return;
+    const selectedNodeIds = project?.nodes.filter((node) => node.selected).map((node) => node.id) || [];
+    connectionSourceNodeIdsRef.current = selectedNodeIds.length > 1 && selectedNodeIds.includes(sourceNodeId)
+      ? [sourceNodeId, ...selectedNodeIds.filter((id) => id !== sourceNodeId)]
+      : [sourceNodeId];
+  };
+
   const onConnectEnd: OnConnectEnd = (event, connectionState) => {
-    if (connectionState.isValid) return;
+    if (connectionState.isValid) {
+      connectionSourceNodeIdsRef.current = [];
+      return;
+    }
     const sourceNodeId = connectionState.fromNode?.id;
     if (!sourceNodeId) return;
 
@@ -199,7 +212,10 @@ export default function Canvas() {
     const wrapper = reactFlowWrapper.current;
     if (!wrapper) return;
 
-    generationSourceNodeRef.current = sourceNodeId;
+    generationSourceNodeIdsRef.current = connectionSourceNodeIdsRef.current.includes(sourceNodeId)
+      ? connectionSourceNodeIdsRef.current
+      : [sourceNodeId];
+    connectionSourceNodeIdsRef.current = [];
     generationPositionRef.current = screenToFlowPosition({ x: clientX, y: clientY });
     setShowGenerationModal(true);
   };
@@ -207,18 +223,25 @@ export default function Canvas() {
   const handleConnect = (connection: Connection) => onConnect(connection);
 
   const handleGenerationSelect = (type: 'video' | 'image' | 'img2img', settings: GenerationSettings) => {
-    const sourceNode = generationSourceNodeRef.current;
+    const sourceNode = generationSourceNodeIdsRef.current[0];
     if (!sourceNode || !project) return;
-    startGenerationWithType(sourceNode, type, settings, generationPositionRef.current);
+    startGenerationWithType(sourceNode, type, {
+      ...settings,
+      referenceNodeIds: generationSourceNodeIdsRef.current,
+    }, generationPositionRef.current);
     setShowGenerationModal(false);
-    generationSourceNodeRef.current = null;
+    generationSourceNodeIdsRef.current = [];
   };
 
   const onPaneClick = () => setSelectedNode(null);
 
   if (!project) return null;
 
-  const sourceNode = project.nodes.find(n => n.id === generationSourceNodeRef.current);
+  const generationSourceNodes = generationSourceNodeIdsRef.current
+    .map((id) => project.nodes.find((node) => node.id === id))
+    .filter((node): node is NonNullable<typeof node> => Boolean(node));
+  const sourceNode = generationSourceNodes[0];
+  const sourceImageNode = generationSourceNodes.find((node) => node.data.type === 'image' && node.data.generatedContent);
   const configuredVideoModel = project.settings.multiModel?.videoModel || project.settings.aiModel;
   const selectedNodes = project.nodes.filter((node) => node.selected);
   const createBatchNode = () => {
@@ -247,7 +270,7 @@ export default function Canvas() {
         <Wallet className="h-4 w-4 text-green-400" />
         <span>{user?.role === 'system' ? '系统账户' : `余额 ¥${(balanceCents / 100).toFixed(2)}`}</span>
       </div>
-      <div className="absolute top-20 right-4 z-50 flex flex-col gap-2">
+      <div className="absolute top-36 right-4 z-50 flex flex-col gap-2">
         <button
           onClick={() => setIsSelectionMode(prev => !prev)}
           className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-all ${
@@ -326,6 +349,7 @@ export default function Canvas() {
         onNodeDragStop={pushToHistory}
         onEdgesChange={onEdgesChange}
         onConnect={handleConnect}
+        onConnectStart={onConnectStart}
         onConnectEnd={onConnectEnd}
         onPaneClick={onPaneClick}
         onDragOver={onDragOver}
@@ -370,12 +394,13 @@ export default function Canvas() {
         isOpen={showGenerationModal}
         onClose={() => {
           setShowGenerationModal(false);
-          generationSourceNodeRef.current = null;
+          generationSourceNodeIdsRef.current = [];
         }}
         onSelect={handleGenerationSelect}
-        sourceImageUrl={sourceNode?.data?.generatedContent}
+        sourceImageUrl={sourceImageNode?.data?.generatedContent}
         sourceNodeType={sourceNode?.data?.type}
-        mentionableNodes={project.nodes.filter((node) => node.id !== generationSourceNodeRef.current).map((node) => ({ id: node.id, label: node.data.label, type: node.data.type }))}
+        initialReferences={generationSourceNodes.map((node) => ({ id: node.id, label: node.data.label, type: node.data.type, imageUrl: node.data.type === 'image' ? node.data.generatedContent : undefined }))}
+        mentionableNodes={project.nodes.filter((node) => !generationSourceNodeIdsRef.current.includes(node.id)).map((node) => ({ id: node.id, label: node.data.label, type: node.data.type }))}
         durationRules={{ minDurationSec: configuredVideoModel.minDurationSec, maxDurationSec: configuredVideoModel.maxDurationSec, allowedDurationsSec: configuredVideoModel.allowedDurationsSec }}
       />
 
