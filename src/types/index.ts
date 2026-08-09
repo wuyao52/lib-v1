@@ -13,6 +13,8 @@ export interface AIModelConfig {
   modelId: string;
   parameters: Record<string, any>;
   managed?: boolean;
+  credentialManaged?: boolean;
+  credentialConfigId?: string;
   unitPriceCents?: number;
   billingUnit?: 'request' | 'image' | 'second';
   minDurationSec?: number | null;
@@ -70,6 +72,7 @@ export interface DramaProject {
   settings: ProjectSettings;
   thumbnail?: string;
   tags?: string[];
+  version?: number;
 }
 
 // 项目设置
@@ -119,4 +122,5 @@ export interface ProjectInfo {
   updatedAt: string;
   sceneCount: number;
   thumbnail?: string;
+  version?: number;
 }
