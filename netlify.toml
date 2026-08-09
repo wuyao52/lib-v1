@@ -38,6 +38,12 @@
   force = true
 
 [[redirects]]
+  from = "/api/generated-media/*"
+  to = "/.netlify/functions/backend/generated-media/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
   from = "/api/assets/*"
   to = "/.netlify/functions/backend/assets/:splat"
   status = 200
@@ -64,6 +70,30 @@
 [[redirects]]
   from = "/api/system-ai/*"
   to = "/.netlify/functions/backend/system-ai/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/user-api-configs/*"
+  to = "/.netlify/functions/backend/user-api-configs/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/user-ai/*"
+  to = "/.netlify/functions/backend/user-ai/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/payments/*"
+  to = "/.netlify/functions/backend/payments/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/health"
+  to = "/.netlify/functions/backend/health"
   status = 200
   force = true
 
