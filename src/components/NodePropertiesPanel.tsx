@@ -1,7 +1,9 @@
-import { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Type, Image, Video, Music, Wand2, Clock, Sparkles, AtSign } from 'lucide-react';
+import { X, Type, Image, Video, Music, Wand2, Clock, Sparkles } from 'lucide-react';
 import useProjectStore from '@/store/useProjectStore';
+import PromptMentionEditor from './PromptMentionEditor';
+import VideoDurationControl from './VideoDurationControl';
+import { videoDurationRules } from '@/services/modelDuration';
 
 const typeIcons: Record<string, React.ReactNode> = {
   text: <Type className="w-5 h-5" />,
@@ -11,24 +13,8 @@ const typeIcons: Record<string, React.ReactNode> = {
   transition: <Wand2 className="w-5 h-5" />,
 };
 
-// 为节点生成简短名称
-function getShortName(node: any, index: number): string {
-  const typeNames: Record<string, string> = {
-    text: '文本',
-    image: '图片',
-    video: '视频',
-    audio: '音频',
-    transition: '转场',
-  };
-  return `${typeNames[node.data.type] || '场景'}${index + 1}`;
-}
-
 export default function NodePropertiesPanel() {
   const { selectedNode, project, updateNodeData, setSelectedNode } = useProjectStore();
-  const [showMentionMenu, setShowMentionMenu] = useState(false);
-  const [mentionFilter, setMentionFilter] = useState('');
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const [cursorPosition, setCursorPosition] = useState(0);
 
   if (!project) return null;
 
@@ -36,102 +22,15 @@ export default function NodePropertiesPanel() {
   if (!node) return null;
 
   const data = node.data as any;
-
-  // 获取可引用的节点列表
-  const getMentionableNodes = () => {
-    if (!project) return [];
-
-    const connectedNodeIds = new Set<string>();
-    project.edges.forEach(edge => {
-      if (edge.target === selectedNode) connectedNodeIds.add(edge.source);
-      if (edge.source === selectedNode) connectedNodeIds.add(edge.target);
-    });
-
-    return project.nodes
-      .filter(n => n.id !== selectedNode)
-      .map((n, index) => ({
-        ...n,
-        shortName: getShortName(n, index),
-        isConnected: connectedNodeIds.has(n.id),
-      }))
-      .filter(n => {
-        if (!mentionFilter) return true;
-        return n.shortName.toLowerCase().includes(mentionFilter.toLowerCase()) ||
-               n.data.label?.toLowerCase().includes(mentionFilter.toLowerCase());
-      })
-      .sort((a, b) => (a.isConnected ? 0 : 1) - (b.isConnected ? 0 : 1));
-  };
-
-  // 处理文本变化
-  const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const value = e.target.value;
-    const cursorPos = e.target.selectionStart || 0;
-
-    updateNodeData(selectedNode, {
-      prompt: value,
-      content: value,
-    });
-
-    setCursorPosition(cursorPos);
-
-    // 检测@输入
-    const textBeforeCursor = value.substring(0, cursorPos);
-    const lastAtIndex = textBeforeCursor.lastIndexOf('@');
-
-    if (lastAtIndex !== -1) {
-      const textAfterAt = textBeforeCursor.substring(lastAtIndex + 1);
-      if (!textAfterAt.includes(' ') && !textAfterAt.includes('\n')) {
-        setShowMentionMenu(true);
-        setMentionFilter(textAfterAt);
-      } else {
-        setShowMentionMenu(false);
-      }
-    } else {
-      setShowMentionMenu(false);
-    }
-  };
-
-  // 插入引用
-  const handleMention = (nodeId: string, shortName: string) => {
-    const currentValue = data.prompt || data.content || '';
-    const textBeforeCursor = currentValue.substring(0, cursorPosition);
-    const lastAtIndex = textBeforeCursor.lastIndexOf('@');
-
-    if (lastAtIndex !== -1) {
-      const before = currentValue.substring(0, lastAtIndex);
-      const after = currentValue.substring(cursorPosition);
-      const mention = `@[${shortName}](${nodeId})`;
-      const newValue = before + mention + ' ' + after;
-
-      updateNodeData(selectedNode, {
-        prompt: newValue,
-        content: newValue,
-      });
-      const nextCursor = before.length + mention.length + 1;
-      setTimeout(() => {
-        if (textareaRef.current) {
-          textareaRef.current.focus();
-          textareaRef.current.setSelectionRange(nextCursor, nextCursor);
-        }
-      }, 0);
-    }
-
-    setShowMentionMenu(false);
-    setMentionFilter('');
-
-    setTimeout(() => {
-      if (textareaRef.current) {
-        textareaRef.current.focus();
-      }
-    }, 100);
-  };
-
-  // 处理键盘事件
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      setShowMentionMenu(false);
-    }
-  };
+  const mentionableNodes = project.nodes
+    .filter((candidate) => candidate.id !== selectedNode)
+    .map((candidate) => ({
+      id: candidate.id,
+      label: candidate.data.label,
+      type: candidate.data.type,
+      imageUrl: candidate.data.type === 'image' ? candidate.data.generatedContent : undefined,
+    }));
+  const configuredVideoModel = project.settings.multiModel?.videoModel || project.settings.aiModel;
 
   return (
     <AnimatePresence>
@@ -185,118 +84,17 @@ export default function NodePropertiesPanel() {
                   </label>
                   <span className="text-[10px] text-dark-500">输入 @ 引用其他节点</span>
                 </div>
-                <div className="relative">
-                  <textarea
-                    ref={textareaRef}
-                    value={data.prompt || data.content || ''}
-                    onChange={handleTextChange}
-                    onKeyDown={handleKeyDown}
-                    rows={5}
-                    className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg
-                      text-white text-sm focus:outline-none focus:border-primary-500 resize-none"
-                    placeholder="输入提示词... 输入 @ 引用其他节点"
-                  />
-
-                  {/* @引用菜单 */}
-                  <AnimatePresence>
-                    {showMentionMenu && (
-                      <motion.div
-                        initial={{ opacity: 0, y: -10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -10 }}
-                        className="absolute left-0 right-0 bottom-full mb-2 bg-dark-700 border border-dark-600
-                          rounded-lg shadow-xl z-50 overflow-hidden"
-                      >
-                        <div className="p-2 border-b border-dark-600">
-                          <input
-                            type="text"
-                            value={mentionFilter}
-                            onChange={(e) => setMentionFilter(e.target.value)}
-                            placeholder="搜索节点..."
-                            className="w-full px-2 py-1 bg-dark-600 border border-dark-500 rounded text-xs
-                              text-white placeholder:text-dark-400 focus:outline-none focus:border-primary-500"
-                            autoFocus
-                          />
-                        </div>
-                        <div className="max-h-48 overflow-y-auto">
-                          {getMentionableNodes().length > 0 ? (
-                            <>
-                              {getMentionableNodes().filter(n => n.isConnected).length > 0 && (
-                                <div className="px-3 py-1.5 text-[10px] text-primary-400 bg-primary-500/10 border-b border-dark-600">
-                                  🔗 已连接的节点
-                                </div>
-                              )}
-                              {getMentionableNodes().map((n) => (
-                                <button
-                                  key={n.id}
-                                  onClick={() => handleMention(n.id, n.shortName)}
-                                  className={`w-full px-3 py-2 text-xs text-left transition-colors flex items-center gap-2
-                                    ${n.isConnected
-                                      ? 'text-white hover:bg-primary-500/20 bg-primary-500/5'
-                                      : 'text-dark-300 hover:bg-dark-600'
-                                    }`}
-                                >
-                                  <span className="font-bold text-primary-400">@</span>
-                                  <span className="flex-1 font-medium">{n.shortName}</span>
-                                  <span className="text-[10px] text-dark-500 truncate max-w-[100px]">
-                                    {n.data.label}
-                                  </span>
-                                  {n.isConnected && (
-                                    <span className="text-[10px] text-primary-400">🔗</span>
-                                  )}
-                                </button>
-                              ))}
-                            </>
-                          ) : (
-                            <div className="px-3 py-3 text-xs text-dark-500 text-center">
-                              暂无其他节点
-                            </div>
-                          )}
-                        </div>
-                        <div className="p-2 border-t border-dark-600 flex justify-between items-center">
-                          <span className="text-[10px] text-dark-500">
-                            共 {getMentionableNodes().length} 个节点
-                          </span>
-                          <button
-                            onClick={() => setShowMentionMenu(false)}
-                            className="px-2 py-0.5 text-[10px] text-dark-400 hover:text-white bg-dark-600 rounded"
-                          >
-                            ESC 关闭
-                          </button>
-                        </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
+                <PromptMentionEditor
+                  value={data.prompt || data.content || ''}
+                  onChange={(value) => updateNodeData(selectedNode, { prompt: value, content: value })}
+                  nodes={mentionableNodes}
+                  placeholder="输入提示词，输入 @ 引用其他画布目标"
+                  minHeightClass="min-h-32"
+                />
                 <div className="text-[10px] text-dark-500">
-                  💡 输入 @ 自动弹出引用菜单，选择节点插入引用
+                  输入 @ 后选择目标，图片引用将在当前位置显示为缩略图
                 </div>
               </div>
-
-              {/* 引用列表 */}
-              {data.prompt && data.prompt.includes('@[') && (
-                <div className="space-y-2">
-                  <label className="text-xs font-medium text-dark-300">已引用的节点</label>
-                  <div className="flex flex-wrap gap-1">
-                    {project.nodes.map((n, index) => {
-                      const shortName = getShortName(n, index);
-                      const isReferenced = data.prompt.includes(`@[${shortName}](${n.id})`);
-                      if (!isReferenced) return null;
-                      return (
-                        <span
-                          key={n.id}
-                          className="inline-flex items-center gap-1 px-2 py-1 bg-primary-500/20 text-primary-300
-                            rounded-md text-[10px] cursor-pointer hover:bg-primary-500/30"
-                          onClick={() => setSelectedNode(n.id)}
-                        >
-                          {n.data.generatedContent && n.data.type === 'image' ? <img src={n.data.generatedContent} alt="" className="h-5 w-7 rounded object-cover" /> : <AtSign className="w-2.5 h-2.5" />}
-                          {shortName}
-                        </span>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
 
               {/* 时长设置 */}
               <div className="space-y-2">
@@ -304,19 +102,14 @@ export default function NodePropertiesPanel() {
                   <Clock className="w-3 h-3 text-primary-400" />
                   时长（秒）
                 </label>
-                <input
-                  type="range"
-                  min={1}
-                  max={30}
+                <VideoDurationControl
                   value={data.duration}
-                  onChange={(e) => updateNodeData(selectedNode, { duration: Number(e.target.value) })}
-                  className="w-full accent-primary-500"
+                  onChange={(duration) => updateNodeData(selectedNode, { duration })}
+                  rules={videoDurationRules(configuredVideoModel)}
+                  fallbackMin={1}
+                  fallbackMax={30}
+                  ariaLabel="组件时长"
                 />
-                <div className="flex justify-between text-xs text-dark-400">
-                  <span>1秒</span>
-                  <span className="text-primary-400 font-medium">{data.duration}秒</span>
-                  <span>30秒</span>
-                </div>
               </div>
 
               {/* 风格设置 */}
