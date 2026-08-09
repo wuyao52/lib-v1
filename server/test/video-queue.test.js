@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createVideoQueue } from '../video-queue.js';
+import { createVideoQueue, selectFairQueuedJobs } from '../video-queue.js';
 
 const waitFor = async (predicate, timeoutMs = 1000) => {
   const startedAt = Date.now();
@@ -141,4 +141,55 @@ test('video queue reserves balance atomically and never charges a rejected enque
   assert.equal(db.data.users[0].balanceCents, 10);
   assert.equal(db.data.generationJobs.length, 0);
   assert.equal(db.data.balanceTransactions.length, 0);
+});
+
+test('video queue cancellation stops queued and provider tasks and refunds exactly once', async () => {
+  await withQueueEnv({ VIDEO_QUEUE_GLOBAL_CONCURRENCY: '1' }, async () => {
+    const now = new Date().toISOString();
+    const db = fakeDb({
+      users: [{ id: 'user-a', balanceCents: 100 }],
+      systemApis: [{ id: 'api-1', enabled: true, baseUrl: 'https://upstream.example', encryptedApiKey: 'secret' }],
+      generationJobs: [{
+        id: 'blocker', userId: 'other-user', apiId: 'api-1', modelId: 'video', requestBody: {},
+        status: 'processing', providerTaskId: 'provider-blocker', progress: 10, resultUrl: null, thumbnail: null,
+        errorCode: null, errorMessage: null, chargeCents: 0, billingReference: null, projectId: null, nodeId: null,
+        prompt: '', attemptCount: 0, nextPollAt: Date.now() + 60000, createdAt: now, updatedAt: now, completedAt: null,
+      }],
+    });
+    const deleted = [];
+    const fetchImpl = async (url, options) => {
+      if (options.method === 'DELETE') {
+        deleted.push(String(url));
+        return new Response('{"status":"cancelled"}', { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (options.method === 'POST') return new Response('{"id":"provider-running","status":"queued"}', { status: 200, headers: { 'content-type': 'application/json' } });
+      return new Response('{"status":"processing"}', { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+    const queue = await createVideoQueue({ db, vault: { decrypt: (value) => value }, fetchImpl, autoStart: false });
+
+    await queue.enqueue({ id: 'queued-cancel', userId: 'user-a', apiId: 'api-1', modelId: 'video', requestBody: { prompt: 'cancel me' }, chargeCents: 40, billingReference: 'queued-cancel' });
+    assert.equal(db.data.users[0].balanceCents, 60);
+    assert.equal((await queue.cancel('queued-cancel', 'user-a')).status, 'cancelled');
+    assert.equal(db.data.users[0].balanceCents, 100);
+    await queue.cancel('queued-cancel', 'user-a');
+    assert.equal(db.data.balanceTransactions.filter((item) => item.type === 'model_refund').length, 1);
+
+    db.data.generationJobs.find((job) => job.id === 'blocker').status = 'completed';
+    await queue.enqueue({ id: 'running-cancel', userId: 'user-a', apiId: 'api-1', modelId: 'video', requestBody: { prompt: 'running' } });
+    await waitFor(() => db.data.generationJobs.find((job) => job.id === 'running-cancel')?.status === 'processing');
+    assert.equal((await queue.cancel('running-cancel', 'user-a')).status, 'cancelled');
+    assert.equal(deleted.some((url) => url.endsWith('/v1/videos/provider-running')), true);
+  });
+});
+
+test('fair queue selection alternates users even when one user submitted first', () => {
+  const jobs = [
+    ['a-1', 'user-a', '2026-01-01T00:00:00.000Z'],
+    ['a-2', 'user-a', '2026-01-01T00:00:01.000Z'],
+    ['a-3', 'user-a', '2026-01-01T00:00:02.000Z'],
+    ['b-1', 'user-b', '2026-01-01T00:00:03.000Z'],
+    ['b-2', 'user-b', '2026-01-01T00:00:04.000Z'],
+  ].map(([id, userId, createdAt]) => ({ id, userId, apiId: 'api-1', status: 'queued', nextPollAt: 0, createdAt }));
+  const selected = selectFairQueuedJobs(jobs, [], { globalConcurrency: 4, userConcurrency: 20, apiConcurrency: 20 }, Date.now());
+  assert.deepEqual(selected.map((job) => job.userId), ['user-a', 'user-b', 'user-a', 'user-b']);
 });
