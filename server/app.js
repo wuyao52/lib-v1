@@ -45,6 +45,21 @@ function createOriginGuard(allowedOrigins) {
   };
 }
 
+function collectionsForRequest(pathname) {
+  const scope = String(pathname || '').split('/').filter(Boolean)[1] || '';
+  const common = ['users', 'sessions'];
+  const byScope = {
+    auth: ['emailVerifications', 'imageCaptchas'], director: [], skills: ['skills'], projects: ['projects'],
+    assets: ['assets', 'projects'], 'generated-media': ['generatedMedia'], 'generation-history': ['generationHistory'],
+    billing: ['balanceTransactions', 'rechargeRequests'], catalog: ['systemApis', 'modelPricing'],
+    admin: ['systemApis', 'modelPricing', 'balanceTransactions', 'rechargeRequests', 'generationJobs', 'generatedMedia', 'auditLogs', 'paymentOrders', 'paymentEvents'],
+    'system-ai': ['systemApis', 'modelPricing', 'balanceTransactions', 'generationJobs'],
+    'user-api-configs': ['userApiConfigs'], 'user-ai': ['userApiConfigs'],
+    payments: ['paymentOrders', 'paymentEvents', 'balanceTransactions'],
+  };
+  return [...common, ...(byScope[scope] || [])];
+}
+
 function createRateLimiter({ db, limit = 10, windowMs = 60_000 } = {}) {
   return async (req, res, next) => {
     const identity = req.body?.email || req.body?.identifier || req.body?.username || '';
@@ -124,6 +139,10 @@ export async function createApp(options = {}) {
   app.use(express.urlencoded({ extended: false, limit: '1mb', verify: preserveRawBody }));
   app.use(cookieParser());
   app.use(createOriginGuard(allowedOrigins));
+  app.use(async (req, _res, next) => {
+    try { if (db.refreshCollections && req.path.startsWith('/api/')) await db.refreshCollections(collectionsForRequest(req.path)); next(); }
+    catch (error) { next(error); }
+  });
   app.use(auth.authenticate);
   const requestLogger = options.logger === undefined ? (process.env.NODE_ENV === 'production' ? console : null) : options.logger;
   app.use((req, res, next) => {
