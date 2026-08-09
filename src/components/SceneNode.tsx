@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import type { SceneNodeData } from '@/types';
 import useProjectStore from '@/store/useProjectStore';
+import { PromptMentionContent } from './PromptMentionEditor';
 
 const typeIcons: Record<string, React.ReactNode> = {
   text: <Type className="w-4 h-4" />,
@@ -187,48 +188,13 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
 
   // 解析内容中的@引用
   const renderContentWithMentions = (content: string) => {
-    if (!content) return null;
-
-    const mentionRegex = /@\[([^\]]+)\]\(([^)]+)\)/g;
-    const parts: React.ReactNode[] = [];
-    let lastIndex = 0;
-    let match;
-
-    while ((match = mentionRegex.exec(content)) !== null) {
-      // 添加@前面的文本
-      if (match.index > lastIndex) {
-        parts.push(content.slice(lastIndex, match.index));
-      }
-
-      // 添加@引用
-      const nodeLabel = match[1];
-      const nodeId = match[2];
-      const referencedNode = project?.nodes.find(n => n.id === nodeId);
-
-      parts.push(
-        <span
-          key={nodeId}
-          className="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-primary-500/20 text-primary-300
-            rounded-md text-xs font-medium cursor-pointer hover:bg-primary-500/30 transition-colors"
-          onClick={(e) => {
-            e.stopPropagation();
-            setSelectedNode(nodeId);
-          }}
-        >
-          <AtSign className="w-2.5 h-2.5" />
-          {nodeLabel}
-        </span>
-      );
-
-      lastIndex = match.index + match[0].length;
-    }
-
-    // 添加剩余的文本
-    if (lastIndex < content.length) {
-      parts.push(content.slice(lastIndex));
-    }
-
-    return parts;
+    if (!content || !project) return null;
+    return <PromptMentionContent value={content} nodes={project.nodes.map((candidate) => ({
+      id: candidate.id,
+      label: candidate.data.label,
+      type: candidate.data.type,
+      imageUrl: candidate.data.type === 'image' ? candidate.data.generatedContent : undefined,
+    }))} />;
   };
 
   const progress = nodeData.progress || 0;
@@ -750,7 +716,7 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
               <div className="mt-4 text-center">
                 <h3 className="text-white font-medium">{nodeData.label}</h3>
                 {nodeData.prompt && (
-                  <p className="text-dark-300 text-sm mt-1">{nodeData.prompt}</p>
+                  <p className="text-dark-300 text-sm mt-1">{renderContentWithMentions(nodeData.prompt)}</p>
                 )}
               </div>
             </motion.div>
