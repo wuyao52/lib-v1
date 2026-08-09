@@ -15,7 +15,7 @@ function isPrivateIp(address) {
   return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || a >= 224;
 }
 
-async function assertPublicHost(hostname, resolveHost) {
+export async function assertPublicHost(hostname, resolveHost = lookup) {
   if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) throw new Error('不允许访问本地或内网地址');
   const addresses = isIP(hostname) ? [{ address: hostname }] : await resolveHost(hostname, { all: true, verbatim: true });
   if (!addresses.length || addresses.some(({ address }) => isPrivateIp(address))) throw new Error('不允许访问本地或内网地址');
