@@ -101,6 +101,9 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
     if (!priceForm.apiId) return setMessage('请先选择一个已保存的系统 API');
     if (!priceForm.modelId || !priceForm.displayName) return setMessage('请选择模型并填写显示名称');
     if (!Number.isFinite(unitPriceCents) || unitPriceCents < 0) return setMessage('请输入有效的模型单价');
+    if (priceForm.category === 'video' && !fixedDurations.length && (!priceForm.minDurationSec || !priceForm.maxDurationSec)) {
+      return setMessage('视频模型必须填写固定时长，或同时填写最短和最长时长');
+    }
     try {
       await apiRequest(editingPriceId ? `/api/admin/pricing/${editingPriceId}` : '/api/admin/pricing', {
         method: editingPriceId ? 'PUT' : 'POST',
