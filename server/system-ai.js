@@ -99,11 +99,19 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
       const upstream = await fetchImpl(target, { method: req.method, headers, body: ['GET', 'HEAD'].includes(req.method) ? undefined : JSON.stringify(requestBody), redirect: 'manual' });
       const responseBody = Buffer.from(await upstream.arrayBuffer());
       const contentType = upstream.headers.get('content-type') || 'application/json; charset=utf-8';
-      let businessFailure = false;
+      let businessFailure = false; let parsedResponseBody;
       if (contentType.includes('json') && responseBody.length) {
-        try { businessFailure = isBusinessFailure(JSON.parse(responseBody.toString('utf8'))); } catch { businessFailure = false; }
+        try { parsedResponseBody = JSON.parse(responseBody.toString('utf8')); businessFailure = isBusinessFailure(parsedResponseBody); } catch { businessFailure = false; }
       }
       if (!upstream.ok || businessFailure) await refund();
+      const upstreamMessage = String(parsedResponseBody?.message || parsedResponseBody?.msg || parsedResponseBody?.error?.message || '');
+      if (!upstream.ok && pricing?.category === 'video' && /(?:seconds?|duration|时长).*(?:不支持|unsupported|invalid)|(?:不支持|unsupported).*(?:seconds?|duration|时长)/i.test(upstreamMessage)) {
+        const receivedSeconds = requestBody?.seconds ?? requestBody?.duration ?? requestBody?.settings?.duration;
+        return res.status(409).json({
+          error: 'UPSTREAM_DURATION_MISMATCH',
+          message: `系统模型 ${pricing.displayName} 的后台时长规则与供应商不一致：供应商拒绝了 ${receivedSeconds} 秒。请系统用户修改该模型的固定时长设置`,
+        });
+      }
       res.status(businessFailure && upstream.ok ? 502 : upstream.status);
       res.setHeader('content-type', contentType);
       res.setHeader('cache-control', 'no-store');
