@@ -1,0 +1,63 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { createApp } from '../app.js';
+import { JsonDatabase } from '../store.js';
+import { createEncryptedBackup, decodeEncryptedBackup, restoreEncryptedBackup } from '../backup.js';
+
+const backupKey = 'independent-backup-encryption-key-for-tests';
+
+test('encrypted backup restores real database rows and rejects tampering', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ads-backup-'));
+  const source = await new JsonDatabase(join(directory, 'source.json')).init();
+  await source.mutate((data) => data.users.push({ id: 'user-1', username: 'backup-user', email: 'backup@example.com', name: 'Backup', passwordHash: 'hash', role: 'user', balanceCents: 1234, createdAt: new Date().toISOString() }));
+  const document = createEncryptedBackup(source, backupKey, '2026-08-09T00:00:00.000Z');
+  assert.equal(JSON.stringify(document).includes('backup@example.com'), false);
+  const target = await new JsonDatabase(join(directory, 'target.json')).init();
+  const restored = await restoreEncryptedBackup(target, document, backupKey);
+  assert.equal(restored.backupCreatedAt, '2026-08-09T00:00:00.000Z');
+  assert.equal(target.read('users')[0].email, 'backup@example.com');
+  assert.throws(() => decodeEncryptedBackup({ ...document, checksum: '0'.repeat(64) }, backupKey), /完整性校验失败/);
+  assert.throws(() => decodeEncryptedBackup(document, 'different-backup-key-that-is-long-enough'), /authenticate|加密|密钥|Unsupported state/i);
+});
+
+test('health checks report object-storage failure and admin metrics stay role protected', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'ads-operations-'));
+  const codes = new Map();
+  const { app, db } = await createApp({
+    databasePath: join(directory, 'database.json'), secureCookies: false, videoQueue: false,
+    assetStorage: { provider: 'test-r2', health: async () => { throw new Error('storage unavailable'); } },
+    sendEmailCode: async ({ email, code }) => codes.set(email, code),
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  t.after(() => server.close());
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const health = await fetch(`${baseUrl}/api/health`);
+  assert.equal(health.status, 503);
+  assert.deepEqual((await health.json()).checks, { database: 'ok', objectStorage: 'error', queue: 'disabled' });
+
+  const register = async (username) => {
+    const email = `${username}@example.com`;
+    await fetch(`${baseUrl}/api/auth/email-code`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, purpose: 'register' }) });
+    const response = await fetch(`${baseUrl}/api/auth/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username, email, name: username, password: 'strong-password', verificationCode: codes.get(email) }) });
+    return { cookie: response.headers.get('set-cookie').split(';')[0], user: (await response.json()).user };
+  };
+  const normal = await register('metrics-normal');
+  const admin = await register('metrics-admin');
+  await db.mutate((data) => {
+    data.users.find((user) => user.id === admin.user.id).role = 'system';
+    data.generationJobs.push({ id: 'job-complete', userId: normal.user.id, apiId: 'api', modelId: 'video', status: 'completed', progress: 100, resultUrl: 'https://provider.example/video.mp4', createdAt: new Date(Date.now() - 2000).toISOString(), updatedAt: new Date().toISOString(), completedAt: new Date().toISOString() });
+    data.balanceTransactions.push({ id: 'refund-1', userId: normal.user.id, amountCents: 250, type: 'model_refund', description: 'refund', createdAt: new Date().toISOString() });
+  });
+  assert.equal((await fetch(`${baseUrl}/api/admin/metrics`, { headers: { cookie: normal.cookie } })).status, 403);
+  const metricsResponse = await fetch(`${baseUrl}/api/admin/metrics`, { headers: { cookie: admin.cookie } });
+  assert.equal(metricsResponse.status, 200);
+  const metrics = await metricsResponse.json();
+  assert.equal(metrics.recent.completed, 1);
+  assert.equal(metrics.recent.refundedCents, 250);
+  assert.equal(metrics.recent.archiveFallbacks, 1);
+  assert.ok(metrics.recent.averageCompletionMs >= 0);
+});
