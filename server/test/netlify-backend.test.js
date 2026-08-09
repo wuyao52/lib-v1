@@ -208,3 +208,29 @@ test('Netlify backend proxy preserves public image asset bytes', async (t) => {
   assert.equal(result.isBase64Encoded, true);
   assert.deepEqual(Buffer.from(result.body, 'base64'), imageBytes);
 });
+
+test('Netlify backend proxy forwards private API and payment routes', async (t) => {
+  const previousOrigin = process.env.API_ORIGIN;
+  const previousFetch = globalThis.fetch;
+  const targets = [];
+  process.env.API_ORIGIN = 'https://api.example.com';
+  globalThis.fetch = async (url) => {
+    targets.push(String(url));
+    return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  t.after(() => {
+    if (previousOrigin === undefined) delete process.env.API_ORIGIN;
+    else process.env.API_ORIGIN = previousOrigin;
+    globalThis.fetch = previousFetch;
+  });
+  assert.equal((await handler(createEvent('/api/user-api-configs'))).statusCode, 200);
+  assert.equal((await handler(createEvent('/api/user-ai/config-1/v1/models'))).statusCode, 200);
+  assert.equal((await handler(createEvent('/api/payments/providers'))).statusCode, 200);
+  assert.equal((await handler(createEvent('/api/health'))).statusCode, 200);
+  assert.deepEqual(targets, [
+    'https://api.example.com/api/user-api-configs',
+    'https://api.example.com/api/user-ai/config-1/v1/models',
+    'https://api.example.com/api/payments/providers',
+    'https://api.example.com/api/health',
+  ]);
+});
