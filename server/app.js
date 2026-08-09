@@ -15,6 +15,7 @@ import { registerAdminRoutes, registerBillingRoutes, registerCatalogRoutes } fro
 import { registerSystemAiRoutes } from './system-ai.js';
 import { registerAssetRoutes } from './assets.js';
 import { createObjectStorageFromEnv } from './object-storage.js';
+import { createVideoQueue } from './video-queue.js';
 
 const currentDir = fileURLToPath(new URL('.', import.meta.url));
 
@@ -93,6 +94,9 @@ export async function createApp(options = {}) {
       try { vault.decrypt(api.baseUrl); } catch { api.baseUrl = vault.encrypt(String(api.baseUrl || '')); }
     });
   });
+  const videoQueue = options.videoQueue === false ? null : await createVideoQueue({
+    db, vault, fetchImpl: options.fetchImpl, autoStart: options.videoQueueAutoStart !== false,
+  });
 
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
@@ -146,10 +150,10 @@ export async function createApp(options = {}) {
   registerCatalogRoutes(catalogRouter, { db, requireAuth: auth.requireAuth });
   app.use('/api/catalog', catalogRouter);
   const adminRouter = express.Router();
-  registerAdminRoutes(adminRouter, { db, requireSystem: auth.requireSystem, vault, fetchImpl: options.fetchImpl, resolveHost: options.resolveHost });
+  registerAdminRoutes(adminRouter, { db, requireSystem: auth.requireSystem, vault, fetchImpl: options.fetchImpl, resolveHost: options.resolveHost, videoQueue });
   app.use('/api/admin', adminRouter);
   const systemAiRouter = express.Router();
-  registerSystemAiRoutes(systemAiRouter, { db, requireAuth: auth.requireAuth, vault, fetchImpl: options.fetchImpl });
+  registerSystemAiRoutes(systemAiRouter, { db, requireAuth: auth.requireAuth, vault, fetchImpl: options.fetchImpl, videoQueue });
   app.use('/api/system-ai', systemAiRouter);
 
   if (options.serveFrontend) {
@@ -175,5 +179,5 @@ export async function createApp(options = {}) {
     res.status(500).json({ error: 'INTERNAL_ERROR', message: '服务器内部错误' });
   });
 
-  return { app, db, auth };
+  return { app, db, auth, videoQueue };
 }
