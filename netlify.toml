@@ -32,6 +32,12 @@
   force = true
 
 [[redirects]]
+  from = "/api/generation-history/*"
+  to = "/.netlify/functions/backend/generation-history/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
   from = "/api/assets/*"
   to = "/.netlify/functions/backend/assets/:splat"
   status = 200
