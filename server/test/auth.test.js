@@ -154,3 +154,26 @@ test('users can change passwords and reset them by email, invalidating old sessi
   const login = await fetch(`${context.baseUrl}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ identifier: email, password: 'reset-password', captchaId: captcha.captchaId, captchaCode: '24682' }) });
   assert.equal(login.status, 200);
 });
+
+test('registration needs no nickname and usernames are unique case-insensitively', async (t) => {
+  const context = await startServer();
+  t.after(() => context.server.close());
+  const firstEmail = 'unique-first@example.com';
+  const secondEmail = 'unique-second@example.com';
+  const firstCode = await requestCode(context, firstEmail, 'register');
+  const secondCode = await requestCode(context, secondEmail, 'register');
+  const register = (username, email, verificationCode) => fetch(`${context.baseUrl}/api/auth/register`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username, email, password: 'strong-password', verificationCode }),
+  });
+  const [first, second] = await Promise.all([
+    register('UniqueUser', firstEmail, firstCode),
+    register('uniqueuser', secondEmail, secondCode),
+  ]);
+  assert.deepEqual([first.status, second.status].sort(), [201, 409]);
+  const successful = first.status === 201 ? await first.json() : await second.json();
+  const conflict = first.status === 409 ? await first.json() : await second.json();
+  assert.equal(successful.user.name, successful.user.username);
+  assert.equal(conflict.error, 'USERNAME_EXISTS');
+  assert.equal(context.db.read('users').filter((user) => user.username.toLowerCase() === 'uniqueuser').length, 1);
+});
