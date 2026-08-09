@@ -13,6 +13,7 @@ import { registerGenerationHistoryRoutes } from './generation-history.js';
 import { createSecretVault } from './secrets.js';
 import { registerAdminRoutes, registerBillingRoutes, registerCatalogRoutes } from './billing.js';
 import { registerSystemAiRoutes } from './system-ai.js';
+import { registerAssetRoutes } from './assets.js';
 
 const currentDir = fileURLToPath(new URL('.', import.meta.url));
 
@@ -125,6 +126,9 @@ export async function createApp(options = {}) {
   const projectRouter = express.Router();
   registerProjectRoutes(projectRouter, { db, requireAuth: auth.requireAuth });
   app.use('/api/projects', projectRouter);
+  const assetRouter = express.Router();
+  registerAssetRoutes(assetRouter, { db, requireAuth: auth.requireAuth });
+  app.use('/api/assets', assetRouter);
   const generationHistoryRouter = express.Router();
   registerGenerationHistoryRoutes(generationHistoryRouter, { db, requireAuth: auth.requireAuth });
   app.use('/api/generation-history', generationHistoryRouter);
