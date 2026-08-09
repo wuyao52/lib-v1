@@ -59,6 +59,48 @@ function userCancellationError(): DOMException {
   return new DOMException('用户取消生成', 'AbortError');
 }
 
+function dataUrlBytes(value: string): number {
+  const payload = value.slice(value.indexOf(',') + 1);
+  return Math.ceil(payload.length * 0.75);
+}
+
+async function compressReferenceImage(value: string): Promise<string> {
+  if (!value.startsWith('data:image/') || dataUrlBytes(value) <= 350 * 1024) return value;
+  const image = new window.Image();
+  image.src = value;
+  await new Promise<void>((resolve, reject) => { image.onload = () => resolve(); image.onerror = () => reject(new Error('参考图读取失败')); });
+  const scale = Math.min(1, 960 / Math.max(image.naturalWidth, image.naturalHeight));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('浏览器无法压缩参考图');
+  context.fillStyle = '#ffffff';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  let compressed = canvas.toDataURL('image/jpeg', 0.78);
+  for (let quality = 0.65; dataUrlBytes(compressed) > 350 * 1024 && quality >= 0.35; quality -= 0.15) compressed = canvas.toDataURL('image/jpeg', quality);
+  if (dataUrlBytes(compressed) > 600 * 1024) throw new Error('参考图压缩后仍然过大，请使用尺寸更小的图片');
+  return compressed;
+}
+
+async function prepareReferenceImages(images: unknown): Promise<string[]> {
+  if (!Array.isArray(images)) return [];
+  const prepared: string[] = [];
+  for (const value of images.slice(0, 4)) {
+    if (typeof value === 'string' && value.trim()) prepared.push(await compressReferenceImage(value.trim()));
+  }
+  return prepared;
+}
+
+function providerErrorMessage(data: any): string | null {
+  if (data?.success === false) return String(data.message || data.msg || data.error?.message || data.error || '服务商返回失败');
+  if (data?.code !== undefined && !['0', '200', '20000', 'SUCCESS'].includes(String(data.code).toUpperCase())) {
+    return String(data.message || data.msg || data.error?.message || data.error || `服务商错误码 ${data.code}`);
+  }
+  return null;
+}
+
 // AI 服务基类
 export class AIService {
   protected config: AIModelConfig;
@@ -257,12 +299,11 @@ export class SeedanceService extends AIService {
       };
 
       // 可选参数：参考图片
-      if (settings.images && settings.images.length > 0) {
-        requestBody.images = settings.images;
-      }
+      const preparedImages = await prepareReferenceImages(settings.images);
+      if (preparedImages.length > 0) requestBody.images = preparedImages;
 
       console.log('调用视频生成 API:', url);
-      console.log('请求参数:', requestBody);
+      console.log('请求参数摘要:', { ...requestBody, images: preparedImages.map((image) => ({ kind: image.startsWith('data:') ? 'data-url' : 'url', bytes: image.startsWith('data:') ? dataUrlBytes(image) : undefined })) });
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 60000);
@@ -285,21 +326,25 @@ export class SeedanceService extends AIService {
         const data = await safeJsonParse(response);
         console.log('API 响应:', data);
 
-        if (!response.ok) {
-          throw new Error(data.message || data.error?.message || `请求失败: ${response.status}`);
-        }
+        const businessError = providerErrorMessage(data);
+        if (!response.ok || businessError) throw new Error(businessError || data.message || data.msg || data.error?.message || `请求失败: ${response.status}`);
+
+        const payload = data.data && typeof data.data === 'object' ? data.data : data;
+        const taskId = payload.id || payload.task_id || payload.taskId || data.id;
+        const taskStatus = payload.status || payload.state || data.status;
 
         // 异步任务 - 轮询结果
-        if (data.id && (data.status === 'queued' || data.status === 'processing')) {
-          console.log('任务已创建，taskId:', data.id);
-          return await this.pollVideoResult(data.id, signal);
+        if (taskId && (!taskStatus || ['queued', 'pending', 'processing', 'running'].includes(String(taskStatus).toLowerCase()))) {
+          console.log('任务已创建，taskId:', taskId);
+          return await this.pollVideoResult(String(taskId), signal);
         }
 
         // 同步返回
-        const videoUrl = data.video_url || data.result?.video_url || data.url;
+        const videoUrl = payload.video_url || payload.url || data.video_url || data.result?.video_url || data.url;
+        if (!videoUrl) throw new Error('服务商未返回视频地址或可轮询的任务 ID');
         return {
           success: true,
-          data: { url: videoUrl, thumbnail: data.thumbnail_url, metadata: data },
+          data: { url: videoUrl, thumbnail: payload.thumbnail_url || data.thumbnail_url, metadata: data },
         };
       } catch (fetchError: any) {
         clearTimeout(timeoutId);
