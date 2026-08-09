@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
 import { createApp } from '../app.js';
 
 const PNG_BYTES = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
@@ -100,3 +101,54 @@ test('image assets require auth, persist exact bytes, deduplicate per user and v
   assert.equal((await oversizedResponse.json()).error, 'ASSET_TOO_LARGE');
 });
 
+test('R2 asset storage keeps bytes out of the database and migrates legacy assets', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'ads-r2-assets-'));
+  const sentCodes = [];
+  const objects = new Map();
+  const puts = [];
+  const assetStorage = {
+    provider: 'r2',
+    async put({ key, bytes, mimeType }) {
+      puts.push(key);
+      objects.set(key, { bytes: Buffer.from(bytes), mimeType });
+    },
+    async get(key) {
+      const object = objects.get(key);
+      if (!object) throw new Error('missing object');
+      return object.bytes;
+    },
+  };
+  const { app, db } = await createApp({
+    databasePath: join(directory, 'database.json'),
+    secureCookies: false,
+    assetStorage,
+    sendEmailCode: async (message) => sentCodes.push(message),
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  t.after(() => server.close());
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const cookie = await register(baseUrl, 'r2-user', sentCodes);
+  const sha256 = createHash('sha256').update(PNG_BYTES).digest('hex');
+
+  await db.mutate((data) => data.assets.push({
+    id: 'legacy-asset', userId: data.users[0].id, sha256, mimeType: 'image/png',
+    dataBase64: PNG_BYTES.toString('base64'), byteSize: PNG_BYTES.length, createdAt: new Date().toISOString(),
+  }));
+
+  const migratedResponse = await upload(baseUrl, cookie, PNG_DATA_URL);
+  assert.equal(migratedResponse.status, 200);
+  const migrated = db.read('assets')[0];
+  assert.equal(migrated.storageProvider, 'r2');
+  assert.equal(migrated.dataBase64, null);
+  assert.match(migrated.objectKey, /^assets\/[^/]+\/[a-f0-9]{64}\.png$/);
+  assert.equal(puts.length, 1);
+
+  const publicResponse = await fetch(`${baseUrl}/api/assets/public/${migrated.id}`);
+  assert.equal(publicResponse.status, 200);
+  assert.deepEqual(Buffer.from(await publicResponse.arrayBuffer()), PNG_BYTES);
+
+  const duplicateResponse = await upload(baseUrl, cookie, PNG_DATA_URL);
+  assert.equal(duplicateResponse.status, 200);
+  assert.equal(puts.length, 1);
+});
