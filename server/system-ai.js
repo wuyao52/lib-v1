@@ -2,6 +2,12 @@ import { randomUUID } from 'node:crypto';
 
 const nowIso = () => new Date().toISOString();
 
+function isBusinessFailure(body) {
+  if (!body || typeof body !== 'object') return false;
+  if (body.success === false) return true;
+  return body.code !== undefined && !['0', '200', '20000', 'SUCCESS'].includes(String(body.code).toUpperCase());
+}
+
 function computeCharge(pricing, body) {
   const requiresDuration = pricing.category === 'video' || pricing.billingUnit === 'second';
   if (!requiresDuration) return Number(pricing.unitPriceCents);
@@ -92,9 +98,14 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
       if (req.method !== 'GET' && req.method !== 'HEAD') headers.set('content-type', 'application/json');
       const upstream = await fetchImpl(target, { method: req.method, headers, body: ['GET', 'HEAD'].includes(req.method) ? undefined : JSON.stringify(requestBody), redirect: 'manual' });
       const responseBody = Buffer.from(await upstream.arrayBuffer());
-      if (!upstream.ok) await refund();
-      res.status(upstream.status);
-      res.setHeader('content-type', upstream.headers.get('content-type') || 'application/json; charset=utf-8');
+      const contentType = upstream.headers.get('content-type') || 'application/json; charset=utf-8';
+      let businessFailure = false;
+      if (contentType.includes('json') && responseBody.length) {
+        try { businessFailure = isBusinessFailure(JSON.parse(responseBody.toString('utf8'))); } catch { businessFailure = false; }
+      }
+      if (!upstream.ok || businessFailure) await refund();
+      res.status(businessFailure && upstream.ok ? 502 : upstream.status);
+      res.setHeader('content-type', contentType);
       res.setHeader('cache-control', 'no-store');
       return res.send(responseBody);
     } catch (error) {
