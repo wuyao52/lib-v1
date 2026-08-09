@@ -4,6 +4,7 @@ import useProjectStore from '@/store/useProjectStore';
 import PromptMentionEditor from './PromptMentionEditor';
 import VideoDurationControl from './VideoDurationControl';
 import { videoDurationRules } from '@/services/modelDuration';
+import { isUploadedImageNode } from '@/services/nodeMediaSource';
 
 const typeIcons: Record<string, React.ReactNode> = {
   text: <Type className="w-5 h-5" />,
@@ -22,6 +23,7 @@ export default function NodePropertiesPanel() {
   if (!node) return null;
 
   const data = node.data as any;
+  const isUploadedImage = isUploadedImageNode(node.data);
   const mentionableNodes = project.nodes
     .filter((candidate) => candidate.id !== selectedNode)
     .map((candidate) => ({
@@ -75,6 +77,7 @@ export default function NodePropertiesPanel() {
                 />
               </div>
 
+              {!isUploadedImage && <>
               {/* AI 提示词 */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
@@ -138,6 +141,7 @@ export default function NodePropertiesPanel() {
                   ))}
                 </div>
               </div>
+              </>}
             </div>
           </div>
         </motion.div>
