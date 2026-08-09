@@ -19,6 +19,8 @@ Use production merchant-platform keys and certificates only in Railway Variables
 
 The site enables a payment button only when that channel has a complete server-side configuration. Balance is credited only after a verified successful callback whose application, merchant, order number, and amount match. Repeated callbacks are idempotent.
 
+System users can start a full original-channel refund from the online order list. The server first freezes the matching wallet credit. If the user has already spent any of that credit, the refund is rejected. A failed merchant refund request automatically releases the frozen balance. Alipay completes from its signed synchronous response; WeChat remains `refunding` until a signed API v3 refund notification is received.
+
 System users can inspect `/api/admin/payment-reconciliation`. Any non-empty difference list requires investigation before manual balance adjustment.
 
 ## Encrypted backups
