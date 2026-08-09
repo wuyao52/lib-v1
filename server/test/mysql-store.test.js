@@ -93,3 +93,44 @@ test('MySQL rate limits are shared by separate application instances', async () 
   assert.equal((await second.consumeRateLimit('shared-key', 3, 60000, 1003)).allowed, false);
   assert.equal(row.count, 4);
 });
+
+test('MySQL instances refresh route data instead of keeping startup snapshots', async () => {
+  const sharedUsers = [];
+  const pool = { async query(sql) {
+    if (/^SELECT id, username, email/i.test(sql)) return [sharedUsers.map((user) => ({ ...user }))];
+    throw new Error(`Unexpected SQL: ${sql}`);
+  } };
+  const first = new MySqlDatabase('mysql://user:pass@127.0.0.1/test');
+  const second = new MySqlDatabase('mysql://user:pass@127.0.0.1/test');
+  first.pool = pool; second.pool = pool;
+  assert.equal(second.read('users').length, 0);
+  sharedUsers.push({ id: 'shared-user', username: 'shared', email: 'shared@example.com', name: 'shared', passwordHash: 'salt:hash', role: 'user', balanceCents: 0, createdAt: new Date().toISOString() });
+  await Promise.all([first.refreshCollections(['users']), second.refreshCollections(['users'])]);
+  assert.equal(first.read('users')[0].id, 'shared-user');
+  assert.equal(second.read('users')[0].id, 'shared-user');
+});
+
+test('MySQL unique index resolves concurrent case-insensitive usernames to one account', async () => {
+  const users = [];
+  const pool = { async query(sql, params) {
+    if (/^INSERT INTO users/i.test(sql)) {
+      const row = params[0][0];
+      if (users.some((user) => user.username.toLowerCase() === String(row[1]).toLowerCase())) {
+        const error = new Error('duplicate'); error.code = 'ER_DUP_ENTRY'; throw error;
+      }
+      users.push({ email: row[2], username: row[1] }); return [{ affectedRows: 1 }];
+    }
+    if (/^SELECT email, username FROM users/i.test(sql)) return [users.filter((user) => user.email === params[0] || user.username.toLowerCase() === String(params[1]).toLowerCase())];
+    throw new Error(`Unexpected SQL: ${sql}`);
+  } };
+  const first = new MySqlDatabase('mysql://user:pass@127.0.0.1/test'); const second = new MySqlDatabase('mysql://user:pass@127.0.0.1/test');
+  first.pool = pool; second.pool = pool;
+  const base = { name: 'same', passwordHash: 'salt:hash', role: 'user', balanceCents: 0, createdAt: new Date().toISOString() };
+  const results = await Promise.all([
+    first.createUser({ ...base, id: 'user-a', username: 'SameUser', email: 'a@example.com' }),
+    second.createUser({ ...base, id: 'user-b', username: 'sameuser', email: 'b@example.com' }),
+  ]);
+  assert.equal(results.filter((result) => result.created).length, 1);
+  assert.equal(results.find((result) => !result.created).error, 'USERNAME_EXISTS');
+  assert.equal(users.length, 1);
+});
