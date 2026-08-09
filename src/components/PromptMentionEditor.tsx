@@ -1,0 +1,181 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { AtSign, Image as ImageIcon } from 'lucide-react';
+
+export interface PromptMentionNode {
+  id: string;
+  label: string;
+  type: string;
+  imageUrl?: string;
+}
+
+const MENTION_PATTERN = /@\[([^\]]+)\]\(([^)]+)\)/g;
+
+function createMentionToken(node: PromptMentionNode) {
+  const token = document.createElement('span');
+  token.contentEditable = 'false';
+  token.dataset.mentionId = node.id;
+  token.dataset.mentionLabel = node.label;
+  token.setAttribute('aria-label', node.type === 'image' ? '图片引用' : '组件引用');
+  token.className = 'mx-0.5 inline-flex h-7 w-9 select-none items-center justify-center overflow-hidden rounded border border-primary-500/50 bg-primary-500/15 align-middle';
+  if (node.type === 'image' && node.imageUrl) {
+    const image = document.createElement('img');
+    image.src = node.imageUrl;
+    image.alt = '';
+    image.className = 'h-full w-full object-cover';
+    token.appendChild(image);
+  } else {
+    token.innerHTML = '<span aria-hidden="true" class="text-primary-300">@</span>';
+  }
+  return token;
+}
+
+function serializeEditor(root: HTMLElement): string {
+  const serializeNode = (node: Node): string => {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent || '';
+    if (!(node instanceof HTMLElement)) return '';
+    if (node.dataset.mentionId) {
+      return `@[${node.dataset.mentionLabel || ''}](${node.dataset.mentionId})`;
+    }
+    if (node.tagName === 'BR') return '\n';
+    const content = [...node.childNodes].map(serializeNode).join('');
+    return node !== root && node.tagName === 'DIV' ? `${content}\n` : content;
+  };
+  return [...root.childNodes].map(serializeNode).join('').replace(/\n$/, '');
+}
+
+function renderEditorValue(root: HTMLElement, value: string, nodes: PromptMentionNode[]) {
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  root.replaceChildren();
+  let lastIndex = 0;
+  for (const match of value.matchAll(MENTION_PATTERN)) {
+    if (match.index! > lastIndex) root.appendChild(document.createTextNode(value.slice(lastIndex, match.index)));
+    const referenced = nodeById.get(match[2]) || { id: match[2], label: match[1], type: 'unknown' };
+    root.appendChild(createMentionToken(referenced));
+    lastIndex = match.index! + match[0].length;
+  }
+  if (lastIndex < value.length) root.appendChild(document.createTextNode(value.slice(lastIndex)));
+}
+
+export function PromptMentionContent({ value, nodes, className = '' }: { value: string; nodes: PromptMentionNode[]; className?: string }) {
+  const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  for (const match of value.matchAll(MENTION_PATTERN)) {
+    if (match.index! > lastIndex) parts.push(value.slice(lastIndex, match.index));
+    const node = nodeById.get(match[2]);
+    parts.push(
+      <span key={`${match.index}-${match[2]}`} aria-label={node?.type === 'image' ? '图片引用' : '组件引用'} className="mx-0.5 inline-flex h-7 w-9 items-center justify-center overflow-hidden rounded border border-primary-500/50 bg-primary-500/15 align-middle">
+        {node?.type === 'image' && node.imageUrl
+          ? <img src={node.imageUrl} alt="" className="h-full w-full object-cover" />
+          : <AtSign className="h-3.5 w-3.5 text-primary-300" />}
+      </span>,
+    );
+    lastIndex = match.index! + match[0].length;
+  }
+  if (lastIndex < value.length) parts.push(value.slice(lastIndex));
+  return <span className={`whitespace-pre-wrap ${className}`}>{parts}</span>;
+}
+
+interface PromptMentionEditorProps {
+  value: string;
+  onChange: (value: string) => void;
+  nodes: PromptMentionNode[];
+  placeholder?: string;
+  minHeightClass?: string;
+}
+
+export default function PromptMentionEditor({ value, onChange, nodes, placeholder = '输入提示词，输入 @ 引用图片', minHeightClass = 'min-h-24' }: PromptMentionEditorProps) {
+  const editorRef = useRef<HTMLDivElement>(null);
+  const rangeRef = useRef<Range | null>(null);
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor || (document.activeElement === editor && serializeEditor(editor) === value)) return;
+    renderEditorValue(editor, value, nodes);
+  }, [value, nodes]);
+
+  const saveRangeAndQuery = () => {
+    const editor = editorRef.current;
+    const selection = window.getSelection();
+    if (!editor || !selection?.rangeCount) return setMentionQuery(null);
+    const range = selection.getRangeAt(0);
+    if (!editor.contains(range.startContainer)) return setMentionQuery(null);
+    rangeRef.current = range.cloneRange();
+    const beforeRange = range.cloneRange();
+    beforeRange.selectNodeContents(editor);
+    beforeRange.setEnd(range.startContainer, range.startOffset);
+    const before = beforeRange.toString();
+    const lastAt = before.lastIndexOf('@');
+    const query = lastAt >= 0 ? before.slice(lastAt + 1) : '';
+    setMentionQuery(lastAt >= 0 && !/[\s\n]/.test(query) ? query : null);
+  };
+
+  const handleInput = () => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    onChange(serializeEditor(editor));
+    saveRangeAndQuery();
+  };
+
+  const insertMention = (node: PromptMentionNode) => {
+    const editor = editorRef.current;
+    const range = rangeRef.current;
+    if (!editor || !range) return;
+    if (range.startContainer.nodeType === Node.TEXT_NODE) {
+      const textNode = range.startContainer as Text;
+      const before = textNode.data.slice(0, range.startOffset);
+      const lastAt = before.lastIndexOf('@');
+      if (lastAt >= 0) {
+        textNode.deleteData(lastAt, range.startOffset - lastAt);
+        range.setStart(textNode, lastAt);
+        range.collapse(true);
+      }
+    }
+    const token = createMentionToken(node);
+    const spacer = document.createTextNode(' ');
+    range.insertNode(spacer);
+    range.insertNode(token);
+    range.setStartAfter(spacer);
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    editor.focus();
+    setMentionQuery(null);
+    onChange(serializeEditor(editor));
+  };
+
+  const filteredNodes = nodes.filter((node) => !mentionQuery || node.label.toLowerCase().includes(mentionQuery.toLowerCase()));
+
+  return (
+    <div className="relative">
+      {!value && <span className="pointer-events-none absolute left-3 top-2.5 text-sm text-dark-500">{placeholder}</span>}
+      <div
+        ref={editorRef}
+        role="textbox"
+        aria-label="提示词"
+        aria-multiline="true"
+        contentEditable
+        suppressContentEditableWarning
+        onInput={handleInput}
+        onKeyUp={saveRangeAndQuery}
+        onMouseUp={saveRangeAndQuery}
+        onKeyDown={(event) => { if (event.key === 'Escape') setMentionQuery(null); }}
+        className={`${minHeightClass} w-full overflow-y-auto whitespace-pre-wrap rounded-lg border border-dark-600 bg-dark-700 px-3 py-2 text-sm text-white outline-none focus:border-primary-500`}
+      />
+      {mentionQuery !== null && (
+        <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-44 overflow-y-auto rounded-lg border border-dark-600 bg-dark-900 p-1 shadow-xl">
+          {filteredNodes.length ? filteredNodes.map((node) => (
+            <button key={node.id} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => insertMention(node)} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-dark-200 hover:bg-primary-600/20 hover:text-white">
+              <span className="flex h-8 w-10 shrink-0 items-center justify-center overflow-hidden rounded border border-dark-600 bg-dark-800">
+                {node.type === 'image' && node.imageUrl ? <img src={node.imageUrl} alt="" className="h-full w-full object-cover" /> : <ImageIcon className="h-4 w-4 text-dark-400" />}
+              </span>
+              <span className="truncate">{node.label}</span>
+            </button>
+          )) : <div className="px-2 py-3 text-center text-xs text-dark-500">没有匹配的画布目标</div>}
+        </div>
+      )}
+    </div>
+  );
+}
