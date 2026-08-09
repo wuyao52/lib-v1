@@ -24,6 +24,7 @@ import { materializeReferenceImages } from '@/services/assetService';
 import { planGenerationTarget } from './generationPolicy';
 import { normalizeModelDuration, videoDurationRules } from '@/services/modelDuration';
 import { refreshManagedModel } from '@/services/managedModelCatalog';
+import { isUploadedImageNode } from '@/services/nodeMediaSource';
 
 // 默认AI模型配置
 const defaultModel: AIModelConfig = {
@@ -637,6 +638,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
 
     const node = project.nodes.find((n) => n.id === nodeId);
     if (!node) return;
+    if (isUploadedImageNode(node.data)) return;
     if (node.data.status === 'generating') return;
     const nodePrompt = String(node.data.prompt || node.data.content || '').trim();
     if (!nodePrompt && !node.data.generatedContent) return;
@@ -849,6 +851,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
             progress: 100,
             error: undefined,
             generatedContent: result.data.url,
+            mediaSource: node.data.type === 'image' ? 'generated' : node.data.mediaSource,
             thumbnail: result.data.thumbnail,
             ...(generateInPlace ? { prompt: nodePrompt, content: node.data.content } : { content: 'AI 生成完成 - 点击预览' }),
           });
@@ -1121,6 +1124,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
             progress: 100,
             error: undefined,
             generatedContent: result.data.url,
+            mediaSource: type === 'image' || type === 'img2img' ? 'generated' : undefined,
             thumbnail: result.data.thumbnail,
             content: 'AI 生成完成 - 点击预览',
           });
