@@ -14,6 +14,7 @@ import { createSecretVault } from './secrets.js';
 import { registerAdminRoutes, registerBillingRoutes, registerCatalogRoutes } from './billing.js';
 import { registerSystemAiRoutes } from './system-ai.js';
 import { registerAssetRoutes } from './assets.js';
+import { createObjectStorageFromEnv } from './object-storage.js';
 
 const currentDir = fileURLToPath(new URL('.', import.meta.url));
 
@@ -65,6 +66,7 @@ export async function createApp(options = {}) {
       ? new MySqlDatabase(databaseUrl).init()
       : new JsonDatabase(databasePath).init()
   );
+  const assetStorage = options.assetStorage === undefined ? createObjectStorageFromEnv() : options.assetStorage;
   const systemUserEmails = new Set(String(process.env.SYSTEM_USER_EMAILS || '')
     .split(',').map((value) => value.trim().toLowerCase()).filter(Boolean));
   if (systemUserEmails.size) {
@@ -103,7 +105,12 @@ export async function createApp(options = {}) {
   app.get('/api/health', async (_req, res, next) => {
     try {
       if (db.ping) await db.ping();
-      return res.json({ ok: true, service: 'ai-drama-studio', database: db.kind || 'json' });
+      return res.json({
+        ok: true,
+        service: 'ai-drama-studio',
+        database: db.kind || 'json',
+        assetStorage: assetStorage?.provider || 'database',
+      });
     } catch (error) {
       return next(error);
     }
@@ -127,7 +134,7 @@ export async function createApp(options = {}) {
   registerProjectRoutes(projectRouter, { db, requireAuth: auth.requireAuth });
   app.use('/api/projects', projectRouter);
   const assetRouter = express.Router();
-  registerAssetRoutes(assetRouter, { db, requireAuth: auth.requireAuth });
+  registerAssetRoutes(assetRouter, { db, requireAuth: auth.requireAuth, assetStorage });
   app.use('/api/assets', assetRouter);
   const generationHistoryRouter = express.Router();
   registerGenerationHistoryRoutes(generationHistoryRouter, { db, requireAuth: auth.requireAuth });
