@@ -51,6 +51,7 @@ R2_SECRET_ACCESS_KEY=your_r2_secret_access_key
 R2_BUCKET=ai-drama-assets
 ASSET_USER_QUOTA_BYTES=2147483648
 ASSET_RETENTION_DAYS=30
+GENERATED_VIDEO_MAX_BYTES=1073741824
 VIDEO_QUEUE_GLOBAL_CONCURRENCY=20
 VIDEO_QUEUE_USER_CONCURRENCY=20
 VIDEO_QUEUE_API_CONCURRENCY=20
@@ -58,6 +59,7 @@ VIDEO_QUEUE_POLL_CONCURRENCY=20
 VIDEO_QUEUE_MAX_PENDING_PER_USER=50
 VIDEO_QUEUE_TASK_TIMEOUT_MINUTES=60
 VIDEO_QUEUE_HISTORY_DAYS=7
+VIDEO_QUEUE_LEASE_SECONDS=120
 ```
 
 Netlify 会将 `/api/auth/*`、`/api/director/*`、`/api/skills/*` 与 `/api/projects/*` 转发到该后端，因此验证码和 HttpOnly 会话 Cookie 仍使用 Netlify 的同源地址。后端部署命令为 `npm ci && npm run build`，启动命令为 `npm start`。不要只部署 `dist/`，也不要把密钥写入 `.env.example` 或 `VITE_*` 浏览器变量。
@@ -83,7 +85,7 @@ ASSET_RETENTION_DAYS=30
 
 系统视频模型请求会先写入 MySQL `generation_jobs` 表，再由 Railway 后端按全站、用户和 API 三层并发限制公平提交。浏览器关闭后任务仍会继续，成功结果由后端写入三天生成历史，失败任务只退款一次。临时 `429` 和 `5xx` 会延迟重试；终态队列记录默认保留 7 天。
 
-默认限制为全站同时生成 20 条、单用户 20 条、单 API 20 条，每个用户最多保留 50 条待处理任务。可通过上方 `VIDEO_QUEUE_*` 环境变量调整。当前调度器面向 Railway 单应用副本；不要将应用服务横向扩展为多个 Replica，否则需要先接入 Redis/BullMQ 或数据库分布式锁。系统用户可在“系统管理控制台 → 视频任务队列”查看实时状态和当前限制。
+默认限制为全站同时生成 20 条、单用户最多突发 20 条、单 API 20 条，每个用户最多保留 50 条待处理任务。同一调度批次按用户轮转，MySQL 部署通过 worker 租约避免多个 Replica 重复认领同一任务；上游提交同时携带任务 ID 作为幂等键。可通过上方 `VIDEO_QUEUE_*` 环境变量调整。系统用户可在“系统管理控制台 → 视频任务队列”查看实时状态和当前限制。
 
 ## 认证、导演模式与 Skill
 
