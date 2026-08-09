@@ -3,6 +3,7 @@ import type { AIModelConfig, DramaProject } from '@/types';
 import type { DirectorShot, StoryboardPlan } from '@/types/director';
 import type { DirectorAsset } from '@/types/directorAsset';
 import { compileDirectorAssetContext, getDirectorAssetReferenceImages, validateDirectorAssets } from '@/services/directorAssetService';
+import { normalizeModelDuration, videoDurationRules } from '@/services/modelDuration';
 
 export type DirectorClipStatus = 'queued' | 'generating' | 'completed' | 'error';
 
@@ -31,11 +32,12 @@ export function resolveDirectorVideoModel(project: DramaProject): AIModelConfig 
 
 function generationSettings(project: DramaProject, model: AIModelConfig, shot: DirectorShot, assets: DirectorAsset[]) {
   const images = getDirectorAssetReferenceImages(assets);
+  const duration = normalizeModelDuration(shot.targetDurationSec, videoDurationRules(model), 5, 15);
   return {
     aspect_ratio: project.settings.aspectRatio,
     resolution: model.parameters?.resolution || '720p',
-    duration: clampDirectorClipDuration(shot.targetDurationSec),
-    seconds: clampDirectorClipDuration(shot.targetDurationSec),
+    duration,
+    seconds: duration,
     style: project.settings.defaultStyle,
     ...(images.length ? { images } : {}),
   };
