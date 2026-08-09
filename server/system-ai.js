@@ -142,7 +142,7 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
         try {
           await changeBalance(db, { userId: req.user.id, amountCents: -chargeCents, type: 'model_usage', description: `${pricing.displayName} 模型调用`, referenceId: transactionId });
         } catch (error) {
-          if (error.code === 'INSUFFICIENT_BALANCE') return res.status(402).json({ error: error.code, message: '错误：100' });
+          if (error.code === 'INSUFFICIENT_BALANCE') return res.status(402).json({ error: error.code, message: '错误：余额不足' });
           return next(error);
         }
       }
@@ -189,7 +189,13 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
           responseBody = Buffer.from(JSON.stringify(parsedResponseBody));
         }
       }
-      const upstreamMessage = String(parsedResponseBody?.message || parsedResponseBody?.msg || parsedResponseBody?.error?.message || '');
+      const upstreamMessage = String(parsedResponseBody?.message || parsedResponseBody?.msg || parsedResponseBody?.error?.message || parsedResponseBody?.error || '');
+      if (/余额不足|insufficient[_ -]?(?:balance|credit)|当前余额.*(?:需要|需支付)|需要\s*[¥￥]/i.test(upstreamMessage)) {
+        return res.status(upstream.status >= 400 ? upstream.status : 502).json({
+          error: 'UPSTREAM_BALANCE_INSUFFICIENT',
+          message: '错误：99',
+        });
+      }
       if (!upstream.ok && pricing?.category === 'video' && /(?:seconds?|duration|时长).*(?:不支持|unsupported|invalid)|(?:不支持|unsupported).*(?:seconds?|duration|时长)/i.test(upstreamMessage)) {
         const receivedSeconds = requestBody?.seconds ?? requestBody?.duration ?? requestBody?.settings?.duration;
         return res.status(409).json({
