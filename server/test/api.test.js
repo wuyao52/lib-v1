@@ -76,10 +76,27 @@ test('skill and director APIs require auth and isolate user data', async (t) => 
     method: 'PUT', headers: { cookie: firstCookie, 'content-type': 'application/json' }, body: JSON.stringify({ project: cloudProject }),
   });
   assert.equal(saveProject.status, 201);
+  const initialProjectInfo = (await saveProject.json()).project;
+  assert.equal(initialProjectInfo.version, 1);
+  const firstTabSave = await fetch(`${baseUrl}/api/projects/${cloudProject.id}`, {
+    method: 'PUT', headers: { cookie: firstCookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ project: { ...cloudProject, title: 'First tab edit', version: 1 }, expectedVersion: 1 }),
+  });
+  assert.equal(firstTabSave.status, 200);
+  assert.equal((await firstTabSave.json()).project.version, 2);
+  const staleTabSave = await fetch(`${baseUrl}/api/projects/${cloudProject.id}`, {
+    method: 'PUT', headers: { cookie: firstCookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ project: { ...cloudProject, title: 'Stale tab edit', version: 1 }, expectedVersion: 1 }),
+  });
+  assert.equal(staleTabSave.status, 409);
+  assert.equal((await staleTabSave.json()).error, 'PROJECT_VERSION_CONFLICT');
   const firstProjects = await fetch(`${baseUrl}/api/projects`, { headers: { cookie: firstCookie } });
-  assert.equal((await firstProjects.json()).projects[0].title, 'Cloud project');
+  assert.equal((await firstProjects.json()).projects[0].title, 'First tab edit');
   const loadedProject = await fetch(`${baseUrl}/api/projects/${cloudProject.id}`, { headers: { cookie: firstCookie } });
-  assert.equal((await loadedProject.json()).project.settings.aiModel.apiKey, '');
+  const loadedProjectBody = await loadedProject.json();
+  assert.equal(loadedProjectBody.project.settings.aiModel.apiKey, '');
+  assert.equal(loadedProjectBody.project.title, 'First tab edit');
+  assert.equal(loadedProjectBody.project.version, 2);
   const isolatedProject = await fetch(`${baseUrl}/api/projects/${cloudProject.id}`, { headers: { cookie: secondCookie } });
   assert.equal(isolatedProject.status, 404);
   const docxForm = new FormData();
