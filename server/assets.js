@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 
 const MAX_ASSET_BYTES = 8 * 1024 * 1024;
 const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
@@ -7,6 +7,7 @@ const DEFAULT_USER_QUOTA_BYTES = 2 * 1024 * 1024 * 1024;
 const DEFAULT_ASSET_RETENTION_DAYS = 30;
 const ASSET_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const SIGNED_URL_TTL_MS = 15 * 60 * 1000;
 
 function parseImageDataUrl(value) {
   const match = DATA_URL_PATTERN.exec(String(value || '').trim());
@@ -32,6 +33,18 @@ function getPublicAssetUrl(req, id) {
   const configuredOrigin = String(process.env.PUBLIC_BACKEND_URL || '').trim().replace(/\/+$/, '');
   const requestOrigin = `${req.protocol}://${req.get('host')}`;
   return `${configuredOrigin || requestOrigin}/api/assets/public/${id}`;
+}
+
+function signAssetAccess(id, expires, secret) {
+  return createHmac('sha256', secret).update(`${id}:${expires}`).digest('base64url');
+}
+
+function validAssetSignature(id, expiresValue, signature, secret) {
+  const expires = Number(expiresValue);
+  if (!Number.isSafeInteger(expires) || expires <= Date.now() || expires > Date.now() + SIGNED_URL_TTL_MS + 60_000) return false;
+  const expected = Buffer.from(signAssetAccess(id, expires, secret));
+  const actual = Buffer.from(String(signature || ''));
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
 const extensionForMimeType = (mimeType) => ({
@@ -110,7 +123,9 @@ export async function cleanupExpiredAssets({
   return { deleted: deletedIds.length, failed: failedAssets.length, deletedIds, failedAssets };
 }
 
-export function registerAssetRoutes(router, { db, requireAuth, assetStorage = null }) {
+export function registerAssetRoutes(router, { db, requireAuth, assetStorage = null, assetSigningKey }) {
+  const signingKey = String(assetSigningKey || '');
+  if (signingKey.length < 24) throw new Error('素材签名密钥必须至少包含 24 个字符');
   const retentionDays = parseRetentionDays(process.env.ASSET_RETENTION_DAYS);
   let cleanupPromise = null;
   const runCleanup = () => {
@@ -128,6 +143,9 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
   router.get('/public/:id', async (req, res) => {
     const asset = db.read('assets').find((entry) => entry.id === req.params.id);
     if (!asset) return res.status(404).json({ error: 'ASSET_NOT_FOUND', message: '图片不存在' });
+    const ownedBySession = req.user?.id === asset.userId;
+    const signedAccess = validAssetSignature(asset.id, req.query.expires, req.query.signature, signingKey);
+    if (!ownedBySession && !signedAccess) return res.status(401).json({ error: 'ASSET_ACCESS_DENIED', message: '素材访问链接无效或已过期' });
 
     let bytes;
     try {
@@ -144,7 +162,7 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
     if (!bytes.length) return res.status(404).json({ error: 'ASSET_NOT_FOUND', message: '图片内容不存在' });
     res.setHeader('Content-Type', asset.mimeType);
     res.setHeader('Content-Length', String(bytes.length));
-    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    res.setHeader('Cache-Control', ownedBySession ? 'private, max-age=300' : 'public, max-age=300');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     return res.send(bytes);
   });
@@ -178,6 +196,16 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
       storageProvider: assetStorage?.provider || 'database',
       retentionDays,
     });
+  });
+
+  router.get('/:id/signed-url', requireAuth, (req, res) => {
+    const asset = db.read('assets').find((entry) => entry.id === req.params.id && entry.userId === req.user.id);
+    if (!asset) return res.status(404).json({ error: 'ASSET_NOT_FOUND', message: '素材不存在' });
+    const expires = Date.now() + SIGNED_URL_TTL_MS;
+    const url = new URL(getPublicAssetUrl(req, asset.id));
+    url.searchParams.set('expires', String(expires));
+    url.searchParams.set('signature', signAssetAccess(asset.id, expires, signingKey));
+    return res.json({ url: url.toString(), expiresAt: new Date(expires).toISOString() });
   });
 
   router.delete('/:id', requireAuth, async (req, res) => {
