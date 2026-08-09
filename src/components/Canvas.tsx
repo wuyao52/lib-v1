@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ReactFlow,
   Background,
@@ -15,7 +15,9 @@ import SceneNodeComponent from './SceneNode';
 import GenerationModal, { GenerationSettings } from './GenerationModal';
 import RemoveWatermarkModal from './RemoveWatermarkModal';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Upload, Image, Video, Droplets, Wand2, Plus } from 'lucide-react';
+import { Upload, Image, Video, Droplets, Wand2, Plus, Wallet } from 'lucide-react';
+import { useAuth } from '@/auth/AuthContext';
+import { apiRequest } from '@/services/apiClient';
 
 // 自定义节点类型
 const nodeTypes: NodeTypes = {
@@ -32,6 +34,7 @@ const minimapStyle = {
 };
 
 export default function Canvas() {
+  const { user } = useAuth();
   const { screenToFlowPosition } = useReactFlow();
   const {
     project,
@@ -54,6 +57,26 @@ export default function Canvas() {
   const [showWatermarkModal, setShowWatermarkModal] = useState(false);
   const [watermarkSourceUrl, setWatermarkSourceUrl] = useState('');
   const [watermarkSourceType, setWatermarkSourceType] = useState<'image' | 'video'>('image');
+  const [balanceCents, setBalanceCents] = useState(user?.balanceCents || 0);
+
+  useEffect(() => {
+    let active = true;
+    const refreshBalance = () => {
+      if (user?.role === 'system') return;
+      void apiRequest<{ balanceCents: number }>('/api/billing/me').then((result) => { if (active) setBalanceCents(result.balanceCents); }).catch(() => undefined);
+    };
+    setBalanceCents(user?.balanceCents || 0);
+    refreshBalance();
+    const timer = window.setInterval(refreshBalance, 10_000);
+    window.addEventListener('focus', refreshBalance);
+    window.addEventListener('billing:changed', refreshBalance);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refreshBalance);
+      window.removeEventListener('billing:changed', refreshBalance);
+    };
+  }, [user?.id, user?.role]);
 
   // 检查是否有弹窗打开
   const hasModalOpen = showGenerationModal || showWatermarkModal;
@@ -220,6 +243,10 @@ export default function Canvas() {
       onDragLeave={onDragLeave}
     >
       {/* 工具按钮 */}
+      <div className="absolute bottom-16 right-52 z-50 flex items-center gap-2 rounded-lg border border-green-500/30 bg-dark-800/95 px-3 py-2 text-xs text-dark-200 shadow-xl backdrop-blur" title="余额每 10 秒及生成结束后自动刷新">
+        <Wallet className="h-4 w-4 text-green-400" />
+        <span>{user?.role === 'system' ? '系统账户' : `余额 ¥${(balanceCents / 100).toFixed(2)}`}</span>
+      </div>
       <div className="absolute top-20 right-4 z-50 flex flex-col gap-2">
         <button
           onClick={() => setIsSelectionMode(prev => !prev)}
