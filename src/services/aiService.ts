@@ -65,7 +65,7 @@ function dataUrlBytes(value: string): number {
 }
 
 async function compressReferenceImage(value: string): Promise<string> {
-  if (!value.startsWith('data:image/') || dataUrlBytes(value) <= 350 * 1024) return value;
+  if (!/^data:image\//i.test(value) || dataUrlBytes(value) <= 350 * 1024) return value;
   const image = new window.Image();
   image.src = value;
   await new Promise<void>((resolve, reject) => { image.onload = () => resolve(); image.onerror = () => reject(new Error('参考图读取失败')); });
@@ -84,14 +84,14 @@ async function compressReferenceImage(value: string): Promise<string> {
   return compressed;
 }
 
-async function prepareReferenceImages(images: unknown): Promise<string[]> {
+export async function prepareReferenceImages(images: unknown): Promise<string[]> {
   if (!Array.isArray(images)) return [];
   const prepared: string[] = [];
   let embeddedBytes = 0;
   for (const value of images.slice(0, 4)) {
     if (typeof value !== 'string' || !value.trim()) continue;
     const image = await compressReferenceImage(value.trim());
-    if (image.startsWith('data:')) {
+    if (/^data:/i.test(image)) {
       const bytes = dataUrlBytes(image);
       if (prepared.length && embeddedBytes + bytes > 700 * 1024) continue;
       embeddedBytes += bytes;
