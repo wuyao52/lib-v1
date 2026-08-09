@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { createApp } from '../app.js';
+import { cleanupExpiredAssets } from '../assets.js';
 
 const PNG_BYTES = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
 const PNG_DATA_URL = `data:image/png;base64,${PNG_BYTES.toString('base64')}`;
@@ -106,6 +107,8 @@ test('R2 asset storage keeps bytes out of the database and migrates legacy asset
   const sentCodes = [];
   const objects = new Map();
   const puts = [];
+  const previousRetentionDays = process.env.ASSET_RETENTION_DAYS;
+  process.env.ASSET_RETENTION_DAYS = '30';
   const assetStorage = {
     provider: 'r2',
     async put({ key, bytes, mimeType }) {
@@ -117,6 +120,9 @@ test('R2 asset storage keeps bytes out of the database and migrates legacy asset
       if (!object) throw new Error('missing object');
       return object.bytes;
     },
+    async delete(key) {
+      objects.delete(key);
+    },
   };
   const { app, db } = await createApp({
     databasePath: join(directory, 'database.json'),
@@ -126,7 +132,11 @@ test('R2 asset storage keeps bytes out of the database and migrates legacy asset
   });
   const server = app.listen(0, '127.0.0.1');
   await new Promise((resolve) => server.once('listening', resolve));
-  t.after(() => server.close());
+  t.after(() => {
+    server.close();
+    if (previousRetentionDays === undefined) delete process.env.ASSET_RETENTION_DAYS;
+    else process.env.ASSET_RETENTION_DAYS = previousRetentionDays;
+  });
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
   const cookie = await register(baseUrl, 'r2-user', sentCodes);
   const sha256 = createHash('sha256').update(PNG_BYTES).digest('hex');
@@ -151,4 +161,82 @@ test('R2 asset storage keeps bytes out of the database and migrates legacy asset
   const duplicateResponse = await upload(baseUrl, cookie, PNG_DATA_URL);
   assert.equal(duplicateResponse.status, 200);
   assert.equal(puts.length, 1);
+
+  const assetList = await (await fetch(`${baseUrl}/api/assets`, { headers: { cookie } })).json();
+  assert.equal(assetList.assets.length, 1);
+  assert.equal(assetList.assets[0].referenced, false);
+  assert.equal(assetList.retentionDays, 30);
+  assert.match(assetList.assets[0].expiresAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(assetList.usedBytes, PNG_BYTES.length);
+  assert.equal(assetList.storageProvider, 'r2');
+
+  await db.mutate((data) => data.projects.push({
+    id: 'asset-project', userId: data.users[0].id, title: 'asset project', description: '',
+    projectData: { nodes: [{ data: { generatedContent: `${baseUrl}/api/assets/public/${migrated.id}` } }] },
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+  }));
+  const referencedDelete = await fetch(`${baseUrl}/api/assets/${migrated.id}`, { method: 'DELETE', headers: { cookie } });
+  assert.equal(referencedDelete.status, 409);
+
+  await db.mutate((data) => { data.projects = []; });
+  const deleted = await fetch(`${baseUrl}/api/assets/${migrated.id}`, { method: 'DELETE', headers: { cookie } });
+  assert.equal(deleted.status, 204);
+  assert.equal(db.read('assets').length, 0);
+  assert.equal(objects.size, 0);
+});
+
+test('expired unreferenced assets are cleaned while active, referenced and failed objects remain', async () => {
+  const now = Date.parse('2026-08-09T12:00:00.000Z');
+  const oldCreatedAt = new Date(now - 31 * 24 * 60 * 60 * 1000).toISOString();
+  const freshCreatedAt = new Date(now - 29 * 24 * 60 * 60 * 1000).toISOString();
+  const userId = 'cleanup-user';
+  const data = {
+    assets: [
+      { id: 'expired', userId, objectKey: 'expired-key', createdAt: oldCreatedAt },
+      { id: 'referenced', userId, objectKey: 'referenced-key', createdAt: oldCreatedAt },
+      { id: 'fresh', userId, objectKey: 'fresh-key', createdAt: freshCreatedAt },
+      { id: 'delete-fails', userId, objectKey: 'failed-key', createdAt: oldCreatedAt },
+      { id: 'active-history', userId, objectKey: 'active-history-key', createdAt: oldCreatedAt },
+      { id: 'expired-history', userId, objectKey: 'expired-history-key', createdAt: oldCreatedAt },
+      { id: 'legacy-expired', userId, dataBase64: 'AA==', createdAt: oldCreatedAt },
+    ],
+    projects: [{
+      id: 'cleanup-project', userId,
+      projectData: { image: '/api/assets/public/referenced' },
+    }],
+    generationHistory: [
+      {
+        id: 'active-history-item', userId,
+        url: '/api/assets/public/active-history',
+        expiresAt: new Date(now + 24 * 60 * 60 * 1000).toISOString(),
+      },
+      {
+        id: 'expired-history-item', userId,
+        thumbnail: '/api/assets/public/expired-history',
+        expiresAt: new Date(now - 24 * 60 * 60 * 1000).toISOString(),
+      },
+    ],
+  };
+  const db = {
+    read(table) { return data[table]; },
+    async mutate(mutator) { return mutator(data); },
+  };
+  const deletedKeys = [];
+  const assetStorage = {
+    async delete(key) {
+      if (key === 'failed-key') throw new Error('simulated R2 failure');
+      deletedKeys.push(key);
+    },
+  };
+
+  const result = await cleanupExpiredAssets({
+    db, assetStorage, retentionDays: 30, now, onError: () => {},
+  });
+
+  assert.equal(result.deleted, 3);
+  assert.equal(result.failed, 1);
+  assert.deepEqual(deletedKeys, ['expired-key', 'expired-history-key']);
+  assert.deepEqual(data.assets.map((asset) => asset.id), [
+    'referenced', 'fresh', 'delete-fails', 'active-history',
+  ]);
 });
