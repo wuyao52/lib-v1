@@ -129,6 +129,18 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
       const localJob = localJobId ? videoQueue.get(localJobId, req.user.id) : null;
       if (localJob) return res.json(localJob);
     }
+    if (req.method === 'DELETE' && videoQueue) {
+      const localJobId = decodeURIComponent(pathname.match(/^\/v1\/videos\/([^/]+)$/)?.[1] || '');
+      if (localJobId) {
+        try {
+          return res.json(await videoQueue.cancel(localJobId, req.user.id));
+        } catch (error) {
+          if (error.code === 'VIDEO_JOB_NOT_FOUND') return res.status(404).json({ error: error.code, message: error.message });
+          if (error.code === 'PROVIDER_CANCELLATION_UNCONFIRMED') return res.status(409).json({ error: error.code, message: error.message });
+          return next(error);
+        }
+      }
+    }
     if (req.method === 'GET' && pathname === '/v1/models') {
       const data = db.read('modelPricing').filter((item) => item.apiId === api.id && item.enabled)
         .map((item) => ({ id: item.modelId, object: 'model', name: item.displayName, category: item.category, billingUnit: item.billingUnit, unitPriceCents: item.unitPriceCents }));
