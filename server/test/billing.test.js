@@ -11,6 +11,7 @@ async function setup({ videoQueue = false, videoQueueAutoStart = true } = {}) {
   const upstreamCalls = [];
   const fetchImpl = async (url, options) => {
     upstreamCalls.push({ url: String(url), authorization: options.headers.get('authorization'), apiKey: options.headers.get('x-api-key'), body: options.body });
+    if (options.method === 'DELETE') return new Response(JSON.stringify({ status: 'cancelled' }), { status: 200, headers: { 'content-type': 'application/json' } });
     if (String(url).endsWith('/v1/models')) return new Response(JSON.stringify({ data: [{ id: 'video-model', name: 'Video Model', type: 'video_generation', owned_by: 'Detected Provider' }] }), { status: 200, headers: { 'content-type': 'application/json' } });
     if (String(url).endsWith('/v1/videos/moderation-task')) return new Response(JSON.stringify({ status: 'failed', progress: 100, error: 'PROVIDER_MODERATION_ERROR' }), { status: 200, headers: { 'content-type': 'application/json' } });
     const body = JSON.parse(options.body || '{}');
@@ -63,11 +64,21 @@ test('system APIs, pricing, balances and managed gateway enforce roles and billi
   const createdApiResponse = await context.request('/api/admin/system-apis', admin.cookie, { method: 'POST', body: JSON.stringify({ name: 'Managed', provider: 'Compatible', baseUrl: 'https://upstream.example', apiKey: 'secret-system-key' }) });
   assert.equal(createdApiResponse.status, 201);
   const createdApi = (await createdApiResponse.json()).api;
-  assert.equal(createdApi.apiKey, 'secret-system-key');
+  assert.equal(createdApi.apiKey, '');
   assert.equal('encryptedApiKey' in createdApi, false);
   const storedApi = context.db.read('systemApis')[0];
   assert.notEqual(storedApi.baseUrl, 'https://upstream.example');
   assert.equal(storedApi.encryptedApiKey.includes('secret-system-key'), false);
+  const maskedApis = await (await context.request('/api/admin/system-apis', admin.cookie)).json();
+  assert.equal(maskedApis.apis[0].apiKey, '');
+  const deniedReveal = await context.request(`/api/admin/system-apis/${createdApi.id}/reveal`, admin.cookie, { method: 'POST', body: JSON.stringify({ password: 'wrong-password' }) });
+  assert.equal(deniedReveal.status, 401);
+  const revealed = await context.request(`/api/admin/system-apis/${createdApi.id}/reveal`, admin.cookie, { method: 'POST', body: JSON.stringify({ password: 'correct-horse' }) });
+  assert.equal(revealed.status, 200);
+  assert.equal((await revealed.json()).apiKey, 'secret-system-key');
+  const auditLogs = await (await context.request('/api/admin/audit-logs', admin.cookie)).json();
+  assert.equal(auditLogs.logs.some((item) => item.action === 'system_api_revealed' && item.targetId === createdApi.id), true);
+  assert.equal(JSON.stringify(auditLogs).includes('secret-system-key'), false);
   const savedApiModelsResponse = await context.request('/api/admin/system-apis/discover', admin.cookie, { method: 'POST', body: JSON.stringify({ apiId: createdApi.id }) });
   assert.equal(savedApiModelsResponse.status, 200);
   assert.equal((await savedApiModelsResponse.json()).models[0].id, 'video-model');
@@ -223,7 +234,12 @@ test('managed video requests use the persistent queue protocol and expose an adm
   const polledResponse = await context.request(`/api/system-ai/${api.id}/v1/videos/${queued.id}`, normal.cookie);
   assert.equal(polledResponse.status, 200);
   assert.equal((await polledResponse.json()).status, 'processing');
+  const cancelledResponse = await context.request(`/api/system-ai/${api.id}/v1/videos/${queued.id}`, normal.cookie, { method: 'DELETE' });
+  assert.equal(cancelledResponse.status, 200);
+  assert.equal((await cancelledResponse.json()).status, 'cancelled');
+  assert.equal(context.db.read('users').find((item) => item.id === normal.user.id).balanceCents, 100);
+  assert.equal(context.db.read('balanceTransactions').filter((item) => item.type === 'model_refund' && item.referenceId === queued.id).length, 1);
   const overview = await (await context.request('/api/admin/video-queue', admin.cookie)).json();
-  assert.equal(overview.counts.processing, 1);
+  assert.equal(overview.counts.processing, 0);
   assert.equal(overview.config.userConcurrency, 20);
 });
