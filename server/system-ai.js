@@ -12,8 +12,11 @@ function computeCharge(pricing, body) {
     throw error;
   }
   const allowed = Array.isArray(pricing.allowedDurationsSec) ? pricing.allowedDurationsSec.map(Number).filter(Number.isFinite) : [];
-  if ((pricing.minDurationSec && seconds < Number(pricing.minDurationSec)) || (pricing.maxDurationSec && seconds > Number(pricing.maxDurationSec)) || (allowed.length > 0 && !allowed.includes(seconds))) {
-    const error = new Error(allowed.length ? `该模型仅支持 ${allowed.join('、')} 秒` : `该模型支持 ${pricing.minDurationSec || 1}-${pricing.maxDurationSec || 3600} 秒`);
+  const durationInvalid = allowed.length > 0
+    ? !allowed.some((duration) => Math.abs(duration - seconds) < Number.EPSILON)
+    : (pricing.minDurationSec && seconds < Number(pricing.minDurationSec)) || (pricing.maxDurationSec && seconds > Number(pricing.maxDurationSec));
+  if (durationInvalid) {
+    const error = new Error(allowed.length ? `该模型仅支持 ${allowed.join('、')} 秒，本次收到 ${seconds} 秒` : `该模型支持 ${pricing.minDurationSec || 1}-${pricing.maxDurationSec || 3600} 秒，本次收到 ${seconds} 秒`);
     error.code = 'INVALID_DURATION';
     throw error;
   }
