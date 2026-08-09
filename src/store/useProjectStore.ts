@@ -19,7 +19,7 @@ import {
   GenerationProgress,
 } from '@/types';
 import { createAIService, prepareReferenceImages, SeedanceService } from '@/services/aiService';
-import { apiRequest } from '@/services/apiClient';
+import { ApiError, apiRequest } from '@/services/apiClient';
 import { materializeReferenceImages } from '@/services/assetService';
 import { planGenerationTarget } from './generationPolicy';
 import { normalizeModelDuration, videoDurationRules } from '@/services/modelDuration';
@@ -89,18 +89,6 @@ const saveProjectsToStorage = (projects: ProjectInfo[]) => {
   localStorage.setItem(getProjectListKey(), JSON.stringify(projects));
 };
 
-const getSecretStorageKey = (projectId: string) => `ai-drama-project-secrets:${storageScope}:${projectId}`;
-
-const storeProjectSecrets = (project: DramaProject) => {
-  const { aiModel, multiModel } = project.settings;
-  sessionStorage.setItem(getSecretStorageKey(project.id), JSON.stringify({
-    aiModel: aiModel.apiKey,
-    textModel: multiModel?.textModel.apiKey || '',
-    videoModel: multiModel?.videoModel.apiKey || '',
-    imageModel: multiModel?.imageModel.apiKey || '',
-  }));
-};
-
 const createPersistableProject = (project: DramaProject): DramaProject => ({
   ...project,
   settings: {
@@ -123,30 +111,11 @@ const createPersistableProject = (project: DramaProject): DramaProject => ({
   })),
 });
 
-const restoreProjectSecrets = (project: DramaProject): DramaProject => {
-  try {
-    const secrets = JSON.parse(sessionStorage.getItem(getSecretStorageKey(project.id)) || '{}');
-    return {
-      ...project,
-      settings: {
-        ...project.settings,
-        aiModel: { ...project.settings.aiModel, apiKey: secrets.aiModel || '' },
-        multiModel: project.settings.multiModel ? {
-          textModel: { ...project.settings.multiModel.textModel, apiKey: secrets.textModel || '' },
-          videoModel: { ...project.settings.multiModel.videoModel, apiKey: secrets.videoModel || '' },
-          imageModel: { ...project.settings.multiModel.imageModel, apiKey: secrets.imageModel || '' },
-        } : undefined,
-      },
-    };
-  } catch {
-    return project;
-  }
-};
+const restoreProjectSecrets = (project: DramaProject): DramaProject => project;
 
 // 保存项目数据到本地存储。失败时绝不删除其他项目。
 const saveProjectDataToStorage = (project: DramaProject): boolean => {
   try {
-    storeProjectSecrets(project);
     const dataStr = JSON.stringify(createPersistableProject(project));
     localStorage.setItem(getProjectDataKey(project.id), dataStr);
     return true;
@@ -171,12 +140,13 @@ const loadProjectDataFromStorage = (projectId: string): DramaProject | null => {
   }
 };
 
-const saveProjectToCloud = async (project: DramaProject) => {
+const saveProjectToCloud = async (project: DramaProject): Promise<ProjectInfo> => {
   const persistable = createPersistableProject(project);
-  await apiRequest(`/api/projects/${encodeURIComponent(project.id)}`, {
+  const result = await apiRequest<{ project: ProjectInfo }>(`/api/projects/${encodeURIComponent(project.id)}`, {
     method: 'PUT',
-    body: JSON.stringify({ project: persistable }),
+    body: JSON.stringify({ project: persistable, expectedVersion: Number(project.version || 0) }),
   });
+  return result.project;
 };
 
 const loadProjectFromCloud = async (projectId: string): Promise<DramaProject> => {
@@ -223,6 +193,7 @@ const createNewProject = (title: string, description: string): DramaProject => {
     nodes: [],
     edges: [],
     settings: { ...defaultSettings },
+    version: 0,
   };
 };
 
@@ -258,7 +229,7 @@ async function generateVideoWithFallback(
 ) {
   const firstAttempt = await videoService.generateVideo(prompt, settings, signal);
   if (!requiresReferenceImage(firstAttempt) || settings.images?.length) return firstAttempt;
-  if ((!imageModel.apiKey && !imageModel.managed) || !imageModel.modelId) {
+  if ((!imageModel.apiKey && !imageModel.managed && !imageModel.credentialManaged) || !imageModel.modelId) {
     return { success: false, error: '当前视频模型要求参考图，请先配置图片模型，系统将自动生成首帧后重试' };
   }
   onFallback();
@@ -399,7 +370,10 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     saveProjectDataToStorage(newProject);
     const updatedProjects = [...get().projects, projectInfo];
     saveProjectsToStorage(updatedProjects);
-    void saveProjectToCloud(newProject).catch((error) => console.error('云端创建项目失败，本地副本已保留', error));
+    void saveProjectToCloud(newProject).then((saved) => set((state) => ({
+      project: state.project?.id === newProject.id ? { ...state.project, version: saved.version } : state.project,
+      projects: state.projects.map((item) => item.id === newProject.id ? { ...item, version: saved.version } : item),
+    }))).catch((error) => console.error('云端创建项目失败，本地副本已保留', error));
 
     set({
       projects: updatedProjects,
@@ -413,9 +387,15 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
   openProject: async (projectId) => {
     let projectData: DramaProject | null = null;
     try {
-      projectData = await materializeProjectImages(await loadProjectFromCloud(projectId));
+      const cloudProject = await loadProjectFromCloud(projectId);
+      projectData = await materializeProjectImages(cloudProject);
       saveProjectDataToStorage(projectData);
-      void saveProjectToCloud(projectData).catch((error) => console.error('旧图片云端迁移保存失败', error));
+      if (projectData !== cloudProject) {
+        const migrated = projectData;
+        void saveProjectToCloud(migrated).then((saved) => set((state) => ({
+          project: state.project?.id === migrated.id ? { ...state.project, version: saved.version } : state.project,
+        }))).catch((error) => console.error('旧图片云端迁移保存失败', error));
+      }
     } catch (error) {
       console.warn('云端项目读取失败，使用本地缓存', error);
       projectData = loadProjectDataFromStorage(projectId);
@@ -463,7 +443,6 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
 
   deleteProject: (projectId) => {
     localStorage.removeItem(getProjectDataKey(projectId));
-    sessionStorage.removeItem(getSecretStorageKey(projectId));
     const updatedProjects = get().projects.filter((p) => p.id !== projectId);
     saveProjectsToStorage(updatedProjects);
     set({ projects: updatedProjects });
@@ -485,6 +464,9 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
   setUserScope: async (userId) => {
     const nextScope = userId.replace(/[^a-zA-Z0-9-]/g, '');
     if (!nextScope || nextScope === storageScope) return;
+    Object.keys(sessionStorage)
+      .filter((key) => key.startsWith('ai-drama-project-secrets:'))
+      .forEach((key) => sessionStorage.removeItem(key));
     migrateLegacyProjects(nextScope);
     storageScope = nextScope;
     set({
@@ -723,187 +705,14 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     if (!generateInPlace) set({ project: { ...get().project!, edges: [...get().project!.edges, newEdge] }, isGenerating: true });
     else set({ isGenerating: true });
 
-    // 根据生成类型选择正确的模型
-    const latestProject = get().project!;
-    const nodeType = node.data.type;
-    let aiModel: AIModelConfig;
-
-    // 获取多模型配置，如果不存在则创建
-    let multiModel = latestProject.settings.multiModel;
-
-    console.log('当前项目配置:', {
-      hasMultiModel: !!multiModel,
-      multiModel: multiModel,
-      aiModel: latestProject.settings.aiModel,
-    });
-
-    if (!multiModel) {
-      console.log('多模型配置不存在，从 aiModel 创建...');
-      const baseModel = latestProject.settings.aiModel;
-      multiModel = {
-        textModel: { ...baseModel },
-        videoModel: { ...baseModel },
-        imageModel: { ...baseModel },
-      };
-      // 保存
-      get().updateProjectSettings({ multiModel });
-      console.log('已创建多模型配置:', multiModel);
-    }
-
-    // 选择正确的模型
-    if (nodeType === 'image') {
-      aiModel = multiModel.imageModel;
-    } else {
-      aiModel = multiModel.videoModel;
-    }
-
-    // 如果选中的模型 API Key 为空，尝试从其他模型同步
-    if (!aiModel.apiKey && !aiModel.managed) {
-      console.log('当前模型 API Key 为空，尝试同步...');
-      if (multiModel.videoModel.apiKey) {
-        aiModel = multiModel.videoModel;
-        console.log('从 videoModel 同步 API Key');
-      } else if (multiModel.imageModel.apiKey) {
-        aiModel = multiModel.imageModel;
-        console.log('从 imageModel 同步 API Key');
-      } else if (latestProject.settings.aiModel.apiKey) {
-        aiModel = latestProject.settings.aiModel;
-        console.log('从 aiModel 同步 API Key');
-      } else {
-        console.log('所有模型的 API Key 都为空');
-      }
-    }
-
-    // 调试日志
-    console.log('最终选择的 AI 模型:', {
-      nodeType,
-      modelId: aiModel.id,
-      modelName: aiModel.name,
-      provider: aiModel.provider,
-      hasApiKey: !!aiModel.apiKey,
-      apiKeyLength: aiModel.apiKey?.length || 0,
-      baseUrl: aiModel.baseUrl,
-    });
-
-    // 检查是否有 API Key
-    if (!aiModel.apiKey && !aiModel.managed) {
-      markGenerationFailed(nodeId, newNodeId, '请先配置 API Key', get, set);
-      return;
-    }
-
-    // 使用工厂函数创建 AI 服务实例（根据模型自动选择）
-    const controller = new AbortController();
-    const activeGenerations = new Map(get().activeGenerations);
-    activeGenerations.set(newNodeId, controller);
-    set({ activeGenerations });
-
-    // 异步执行生成
-    (async () => {
-      try {
-        const effectiveModel = await refreshManagedModel(aiModel);
-        const aiService = createAIService(effectiveModel);
-        const currentMultiModel = get().project?.settings.multiModel;
-        if (aiModel.managed && currentMultiModel) {
-          const currentSlot = nodeType === 'image' ? currentMultiModel.imageModel : currentMultiModel.videoModel;
-          if (currentSlot.id === aiModel.id) {
-            get().updateProjectSettings({
-              multiModel: nodeType === 'image'
-                ? { ...currentMultiModel, imageModel: effectiveModel }
-                : { ...currentMultiModel, videoModel: effectiveModel },
-            });
-          }
-        }
-        if (generateInPlace && node.data.generatedContent) {
-          await apiRequest('/api/generation-history', { method: 'POST', body: JSON.stringify({ projectId: project.id, nodeId, type: 'video', prompt: nodePrompt, url: node.data.generatedContent, thumbnail: node.data.thumbnail }) }).catch((error) => console.warn('保存生成历史失败:', error));
-        }
-        // 更新进度：准备中
-        get().updateNodeData(newNodeId, {
-          progress: 10,
-          ...(generateInPlace ? {} : { content: '正在调用 AI API...' }),
-        });
-
-        // 调用 AI 生成
-        const prompt = node.data.prompt || node.data.content;
-        const latestProject = get().project!;
-
-        // 根据节点类型使用正确的参数格式
-        const isImage = node.data.type === 'image';
-        console.log('节点类型:', node.data.type, '是否图片:', isImage);
-
-        // 只传递 API 支持的参数，不传 duration/seconds
-        const requestDuration = normalizeModelDuration(Number(node.data.duration) || 5, videoDurationRules(effectiveModel), 1, 15);
-        if (!isImage && requestDuration !== node.data.duration) {
-          get().updateNodeData(newNodeId, { duration: requestDuration });
-        }
-        const settings: any = {
-          style: node.data.settings?.style || latestProject.settings.defaultStyle,
-          resolution: '1080p',
-          aspect_ratio: isImage ? '1:1' : '16:9',
-          duration: requestDuration,
-          seconds: requestDuration,
-          _client: { projectId: latestProject.id, nodeId: newNodeId },
-          _onProgress: ({ status, progress, queuePosition }: { status: string; progress: number; queuePosition: number | null }) => get().updateNodeData(newNodeId, {
-            progress: progress > 0 ? progress : status === 'queued' ? 10 : 30,
-            generationMessage: status === 'queued'
-              ? `视频任务排队中${queuePosition ? `，当前第 ${queuePosition} 位` : ''}`
-              : status === 'submitting' ? '正在提交到视频服务...' : progress > 0 ? `视频生成中 ${progress}%` : '视频正在生成中...',
-          }),
-        };
-        const referenceImages = await materializeReferenceImages(
-          await prepareReferenceImages(collectReferenceImages(latestProject, node)),
-          controller.signal,
-        );
-        if (referenceImages.length) settings.images = referenceImages;
-
-        console.log('生成设置:', { type: node.data.type, settings });
-
-        // 更新进度：生成中
-        get().updateNodeData(newNodeId, {
-          progress: 30,
-          ...(generateInPlace ? {} : { content: '正在生成内容...' }),
-        });
-
-        let result;
-
-        // 根据类型调用不同的生成方法
-        if (node.data.type === 'video') {
-          result = await generateVideoWithFallback(aiService, multiModel!.imageModel, prompt, settings, controller.signal, () => get().updateNodeData(newNodeId, { progress: 35, content: '视频模型需要参考图，正在自动生成首帧...' }));
-        } else if (node.data.type === 'image') {
-          result = await aiService.generateImage(prompt, settings, controller.signal);
-        } else {
-          // 文本类型默认生成视频
-          result = await generateVideoWithFallback(aiService, multiModel!.imageModel, prompt, settings, controller.signal, () => get().updateNodeData(newNodeId, { progress: 35, content: '视频模型需要参考图，正在自动生成首帧...' }));
-        }
-
-        // 更新进度：处理结果
-        get().updateNodeData(newNodeId, {
-          progress: 80,
-          ...(generateInPlace ? {} : { content: '正在处理生成结果...' }),
-        });
-
-        if (result.success && result.data) {
-          get().updateNodeData(newNodeId, {
-            status: 'completed',
-            progress: 100,
-            error: undefined,
-            generationMessage: undefined,
-            generatedContent: result.data.url,
-            mediaSource: node.data.type === 'image' ? 'generated' : node.data.mediaSource,
-            thumbnail: result.data.thumbnail,
-            ...(generateInPlace ? { prompt: nodePrompt, content: node.data.content } : { content: 'AI 生成完成 - 点击预览' }),
-          });
-          await apiRequest('/api/generation-history', { method: 'POST', body: JSON.stringify({ projectId: latestProject.id, nodeId: newNodeId, type: node.data.type === 'text' ? 'video' : node.data.type, prompt, url: result.data.url, thumbnail: result.data.thumbnail }) }).catch((error) => console.warn('保存生成历史失败:', error));
-        } else {
-          markGenerationFailed(nodeId, newNodeId, result.error || 'AI 生成失败', get, set);
-        }
-      } catch (error: any) {
-        const message = controller.signal.aborted ? '用户取消生成' : error.message || 'AI 生成失败';
-        markGenerationFailed(nodeId, newNodeId, message, get, set);
-      } finally {
-        finishGenerationTask(newNodeId, get, set);
-        notifyBillingChanged();
-      }
-    })();
+    launchGenerationTask({
+      sourceNodeId: nodeId, targetNodeId: newNodeId, sourceNode: node,
+      requestType: node.data.type === 'image' ? 'image' : 'video',
+      prompt: nodePrompt,
+      style: node.data.settings?.style,
+      duration: node.data.duration,
+      generateInPlace,
+    }, get, set);
   },
 
   // 取消生成
@@ -1013,174 +822,17 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
       isGenerating: true,
     });
 
-    // 根据生成类型选择正确的模型
-    const latestProject = get().project!;
-    let aiModel: AIModelConfig;
-
-    // 获取多模型配置，如果不存在则创建
-    let multiModel = latestProject.settings.multiModel;
-
-    if (!multiModel) {
-      console.log('多模型配置不存在，从 aiModel 创建...');
-      const baseModel = latestProject.settings.aiModel;
-      multiModel = {
-        textModel: { ...baseModel },
-        videoModel: { ...baseModel },
-        imageModel: { ...baseModel },
-      };
-      get().updateProjectSettings({ multiModel });
-    }
-
-    // 选择正确的模型
-    if (type === 'image') {
-      aiModel = multiModel.imageModel;
-    } else {
-      aiModel = multiModel.videoModel;
-    }
-
-    // 如果选中的模型 API Key 为空，尝试从其他模型同步
-    if (!aiModel.apiKey && !aiModel.managed) {
-      console.log('当前模型 API Key 为空，尝试同步...');
-      if (multiModel.videoModel.apiKey) {
-        aiModel = multiModel.videoModel;
-        console.log('从 videoModel 同步 API Key');
-      } else if (multiModel.imageModel.apiKey) {
-        aiModel = multiModel.imageModel;
-        console.log('从 imageModel 同步 API Key');
-      } else if (latestProject.settings.aiModel.apiKey) {
-        aiModel = latestProject.settings.aiModel;
-        console.log('从 aiModel 同步 API Key');
-      }
-    }
-
-    // 调试日志
-    console.log('最终选择的 AI 模型 (startGenerationWithType):', {
-      type,
-      modelId: aiModel.id,
-      modelName: aiModel.name,
-      provider: aiModel.provider,
-      hasApiKey: !!aiModel.apiKey,
-      apiKeyLength: aiModel.apiKey?.length || 0,
-      baseUrl: aiModel.baseUrl,
-    });
-
-    // 检查是否有 API Key
-    if (!aiModel.apiKey && !aiModel.managed) {
-      markGenerationFailed(nodeId, newNodeId, '请先配置 API Key', get, set);
-      return;
-    }
-
-    // 使用工厂函数创建 AI 服务实例（根据模型自动选择）
-    const controller = new AbortController();
-    const activeGenerations = new Map(get().activeGenerations);
-    activeGenerations.set(newNodeId, controller);
-    set({ activeGenerations });
-
-    // 异步执行生成
-    (async () => {
-      try {
-        const effectiveModel = await refreshManagedModel(aiModel);
-        const aiService = createAIService(effectiveModel);
-        const currentMultiModel = get().project?.settings.multiModel;
-        if (aiModel.managed && currentMultiModel) {
-          const currentSlot = type === 'image' ? currentMultiModel.imageModel : currentMultiModel.videoModel;
-          if (currentSlot.id === aiModel.id) {
-            get().updateProjectSettings({
-              multiModel: type === 'image'
-                ? { ...currentMultiModel, imageModel: effectiveModel }
-                : { ...currentMultiModel, videoModel: effectiveModel },
-            });
-          }
-        }
-        // 更新进度：准备中
-        get().updateNodeData(newNodeId, {
-          progress: 10,
-          content: '正在调用 AI API...',
-        });
-
-        const latestProject = get().project!;
-
-        // 根据类型使用正确的参数格式（不传 duration/seconds）
-        const isImage = type === 'image' || type === 'img2img';
-        const requestDuration = normalizeModelDuration(Number(settings.duration) || 5, videoDurationRules(effectiveModel), 1, 15);
-        if (!isImage && requestDuration !== settings.duration) {
-          get().updateNodeData(newNodeId, { duration: requestDuration });
-        }
-        const genSettings: any = {
-          style: settings.style,
-          resolution: isImage ? undefined : '1080p',
-          aspect_ratio: isImage ? '1:1' : '16:9',
-          duration: requestDuration,
-          seconds: requestDuration,
-          _client: { projectId: latestProject.id, nodeId: newNodeId },
-          _onProgress: ({ status, progress, queuePosition }: { status: string; progress: number; queuePosition: number | null }) => get().updateNodeData(newNodeId, {
-            progress: progress > 0 ? progress : status === 'queued' ? 10 : 30,
-            generationMessage: status === 'queued'
-              ? `视频任务排队中${queuePosition ? `，当前第 ${queuePosition} 位` : ''}`
-              : status === 'submitting' ? '正在提交到视频服务...' : progress > 0 ? `视频生成中 ${progress}%` : '视频正在生成中...',
-          }),
-        };
-        const sourceImages = await materializeReferenceImages(
-          await prepareReferenceImages(collectReferenceImages(latestProject, node, settings.prompt, settings.referenceNodeIds)),
-          controller.signal,
-        );
-        if (sourceImages.length) genSettings.images = sourceImages;
-
-        console.log('生成设置 (startGenerationWithType):', { type, genSettings });
-
-        // 更新进度：生成中
-        get().updateNodeData(newNodeId, {
-          progress: 30,
-          content: '正在生成内容...',
-        });
-
-        let result;
-
-        // 根据类型调用不同的生成方法
-        if (type === 'video') {
-          result = await generateVideoWithFallback(aiService, multiModel!.imageModel, settings.prompt, genSettings, controller.signal, () => get().updateNodeData(newNodeId, { progress: 35, content: '视频模型需要参考图，正在自动生成首帧...' }));
-        } else if (type === 'img2img') {
-          // 图生图：获取源图片 URL
-          const sourceImageUrl = node.data.generatedContent;
-          result = await aiService.generateImage(settings.prompt, {
-            ...genSettings,
-            init_image: sourceImageUrl,
-            strength: settings.strength || 0.7,
-            negative_prompt: settings.negativePrompt,
-          }, controller.signal);
-        } else {
-          result = await aiService.generateImage(settings.prompt, genSettings, controller.signal);
-        }
-
-        // 更新进度：处理结果
-        get().updateNodeData(newNodeId, {
-          progress: 80,
-          content: '正在处理生成结果...',
-        });
-
-        if (result.success && result.data) {
-          get().updateNodeData(newNodeId, {
-            status: 'completed',
-            progress: 100,
-            error: undefined,
-            generationMessage: undefined,
-            generatedContent: result.data.url,
-            mediaSource: type === 'image' || type === 'img2img' ? 'generated' : undefined,
-            thumbnail: result.data.thumbnail,
-            content: 'AI 生成完成 - 点击预览',
-          });
-          await apiRequest('/api/generation-history', { method: 'POST', body: JSON.stringify({ projectId: latestProject.id, nodeId: newNodeId, type, prompt: settings.prompt, url: result.data.url, thumbnail: result.data.thumbnail }) }).catch((error) => console.warn('保存生成历史失败:', error));
-        } else {
-          markGenerationFailed(nodeId, newNodeId, result.error || 'AI 生成失败', get, set);
-        }
-      } catch (error: any) {
-        const message = controller.signal.aborted ? '用户取消生成' : error.message || 'AI 生成失败';
-        markGenerationFailed(nodeId, newNodeId, message, get, set);
-      } finally {
-        finishGenerationTask(newNodeId, get, set);
-        notifyBillingChanged();
-      }
-    })();
+    launchGenerationTask({
+      sourceNodeId: nodeId, targetNodeId: newNodeId, sourceNode: node,
+      requestType: type,
+      prompt: settings.prompt,
+      style: settings.style,
+      duration: settings.duration,
+      referenceNodeIds: settings.referenceNodeIds,
+      strength: settings.strength,
+      negativePrompt: settings.negativePrompt,
+      generateInPlace: false,
+    }, get, set);
   },
 
   updateGenerationProgress: (nodeId, progress) => {
@@ -1281,11 +933,21 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     );
     saveProjectsToStorage(updatedProjects);
     try {
-      await saveProjectToCloud(projectToSave);
-      set({ projects: updatedProjects, lastSaveTime: new Date().toISOString(), isSaving: false });
+      const saved = await saveProjectToCloud(projectToSave);
+      const versionedProjects = updatedProjects.map((item) => item.id === projectToSave.id ? { ...item, version: saved.version } : item);
+      set((state) => ({
+        project: state.project?.id === projectToSave.id ? { ...state.project, version: saved.version } : state.project,
+        projects: versionedProjects,
+        lastSaveTime: new Date().toISOString(),
+        isSaving: false,
+      }));
+      saveProjectsToStorage(versionedProjects);
     } catch (error) {
       console.error('云端保存失败，本地副本已保留', error);
-      set({ projects: updatedProjects, isSaving: false });
+      if (error instanceof ApiError && error.code === 'PROJECT_VERSION_CONFLICT') {
+        set({ projects: updatedProjects, isSaving: false, autoSaveEnabled: false });
+        alert('项目已在其他页面或设备更新。为避免覆盖，自动保存已暂停；请重新打开项目获取最新版本。');
+      } else set({ projects: updatedProjects, isSaving: false });
     }
   },
 
@@ -1410,6 +1072,143 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     set({ autoSaveTimer: newTimer });
   },
 }));
+
+type GenerationExecution = {
+  sourceNodeId: string;
+  targetNodeId: string;
+  sourceNode: Node<SceneNodeData>;
+  requestType: 'video' | 'image' | 'img2img';
+  prompt: string;
+  style?: string;
+  duration?: number;
+  referenceNodeIds?: string[];
+  strength?: number;
+  negativePrompt?: string;
+  generateInPlace: boolean;
+};
+
+function hasModelCredentials(model: AIModelConfig) {
+  return Boolean(model.apiKey || model.managed || model.credentialManaged);
+}
+
+function launchGenerationTask(
+  execution: GenerationExecution,
+  get: () => ProjectStore,
+  set: (partial: Partial<ProjectStore>) => void,
+) {
+  const project = get().project;
+  if (!project) return;
+  let multiModel = project.settings.multiModel;
+  if (!multiModel) {
+    const baseModel = project.settings.aiModel;
+    multiModel = { textModel: { ...baseModel }, videoModel: { ...baseModel }, imageModel: { ...baseModel } };
+    get().updateProjectSettings({ multiModel });
+  }
+  const isImage = execution.requestType === 'image' || execution.requestType === 'img2img';
+  let selectedModel = isImage ? multiModel.imageModel : multiModel.videoModel;
+  if (!hasModelCredentials(selectedModel)) {
+    selectedModel = [multiModel.videoModel, multiModel.imageModel, project.settings.aiModel].find(hasModelCredentials) || selectedModel;
+  }
+  if (!hasModelCredentials(selectedModel)) {
+    markGenerationFailed(execution.sourceNodeId, execution.targetNodeId, '请先配置 API Key', get, set);
+    return;
+  }
+
+  const controller = new AbortController();
+  const activeGenerations = new Map(get().activeGenerations);
+  activeGenerations.set(execution.targetNodeId, controller);
+  set({ activeGenerations });
+
+  void (async () => {
+    try {
+      const effectiveModel = await refreshManagedModel(selectedModel);
+      const aiService = createAIService(effectiveModel);
+      const currentMultiModel = get().project?.settings.multiModel;
+      if (selectedModel.managed && currentMultiModel) {
+        const currentSlot = isImage ? currentMultiModel.imageModel : currentMultiModel.videoModel;
+        if (currentSlot.id === selectedModel.id) {
+          get().updateProjectSettings({
+            multiModel: isImage
+              ? { ...currentMultiModel, imageModel: effectiveModel }
+              : { ...currentMultiModel, videoModel: effectiveModel },
+          });
+        }
+      }
+      const latestProject = get().project;
+      if (!latestProject) throw new Error('项目已关闭');
+      if (execution.generateInPlace && execution.sourceNode.data.generatedContent) {
+        await apiRequest('/api/generation-history', { method: 'POST', body: JSON.stringify({
+          projectId: latestProject.id, nodeId: execution.sourceNodeId,
+          type: execution.requestType, prompt: execution.prompt,
+          url: execution.sourceNode.data.generatedContent, thumbnail: execution.sourceNode.data.thumbnail,
+        }) }).catch((error) => console.warn('保存生成历史失败:', error));
+      }
+      get().updateNodeData(execution.targetNodeId, { progress: 10, ...(execution.generateInPlace ? {} : { content: '正在调用 AI API...' }) });
+
+      const requestDuration = normalizeModelDuration(Number(execution.duration) || 5, videoDurationRules(effectiveModel), 1, 15);
+      if (!isImage && requestDuration !== execution.duration) get().updateNodeData(execution.targetNodeId, { duration: requestDuration });
+      const generationSettings: any = {
+        style: execution.style || latestProject.settings.defaultStyle,
+        resolution: isImage ? undefined : '1080p',
+        aspect_ratio: isImage ? '1:1' : '16:9',
+        duration: requestDuration,
+        seconds: requestDuration,
+        _client: { projectId: latestProject.id, nodeId: execution.targetNodeId },
+        _onProgress: ({ status, progress, queuePosition }: { status: string; progress: number; queuePosition: number | null }) => get().updateNodeData(execution.targetNodeId, {
+          progress: progress > 0 ? progress : status === 'queued' ? 10 : 30,
+          generationMessage: status === 'queued'
+            ? `视频任务排队中${queuePosition ? `，当前第 ${queuePosition} 位` : ''}`
+            : status === 'submitting' ? '正在提交到视频服务...' : progress > 0 ? `视频生成中 ${progress}%` : '视频正在生成中...',
+        }),
+      };
+      const images = await materializeReferenceImages(
+        await prepareReferenceImages(collectReferenceImages(latestProject, execution.sourceNode, execution.prompt, execution.referenceNodeIds)),
+        controller.signal,
+      );
+      if (images.length) generationSettings.images = images;
+      get().updateNodeData(execution.targetNodeId, { progress: 30, ...(execution.generateInPlace ? {} : { content: '正在生成内容...' }) });
+
+      let result;
+      if (execution.requestType === 'video') {
+        result = await generateVideoWithFallback(aiService, multiModel.imageModel, execution.prompt, generationSettings, controller.signal, () => get().updateNodeData(execution.targetNodeId, { progress: 35, ...(execution.generateInPlace ? {} : { content: '视频模型需要参考图，正在自动生成首帧...' }) }));
+      } else if (execution.requestType === 'img2img') {
+        result = await aiService.generateImage(execution.prompt, {
+          ...generationSettings,
+          init_image: execution.sourceNode.data.generatedContent,
+          strength: execution.strength || 0.7,
+          negative_prompt: execution.negativePrompt,
+        }, controller.signal);
+      } else {
+        result = await aiService.generateImage(execution.prompt, generationSettings, controller.signal);
+      }
+      get().updateNodeData(execution.targetNodeId, { progress: 80, ...(execution.generateInPlace ? {} : { content: '正在处理生成结果...' }) });
+      if (!result.success || !result.data) {
+        markGenerationFailed(execution.sourceNodeId, execution.targetNodeId, result.error || 'AI 生成失败', get, set);
+        return;
+      }
+      get().updateNodeData(execution.targetNodeId, {
+        status: 'completed', progress: 100, error: undefined, generationMessage: undefined,
+        generatedContent: result.data.url,
+        mediaSource: isImage ? 'generated' : execution.sourceNode.data.mediaSource,
+        thumbnail: result.data.thumbnail,
+        ...(execution.generateInPlace
+          ? { prompt: execution.prompt, content: execution.sourceNode.data.content }
+          : { content: 'AI 生成完成 - 点击预览' }),
+      });
+      await apiRequest('/api/generation-history', { method: 'POST', body: JSON.stringify({
+        projectId: latestProject.id, nodeId: execution.targetNodeId,
+        type: execution.requestType, prompt: execution.prompt,
+        url: result.data.url, thumbnail: result.data.thumbnail,
+      }) }).catch((error) => console.warn('保存生成历史失败:', error));
+    } catch (error: any) {
+      const message = controller.signal.aborted ? '用户取消生成' : error.message || 'AI 生成失败';
+      markGenerationFailed(execution.sourceNodeId, execution.targetNodeId, message, get, set);
+    } finally {
+      finishGenerationTask(execution.targetNodeId, get, set);
+      notifyBillingChanged();
+    }
+  })();
+}
 
 function markGenerationFailed(
   sourceNodeId: string,
