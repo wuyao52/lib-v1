@@ -101,6 +101,10 @@ test('system APIs, pricing, balances and managed gateway enforce roles and billi
   const fixedPricing = (await fixedPricingResponse.json()).pricing;
   assert.equal(fixedPricing.minDurationSec, null);
   assert.equal(fixedPricing.maxDurationSec, null);
+  const refreshedCatalog = await (await context.request('/api/catalog/models', normal.cookie)).json();
+  assert.deepEqual(refreshedCatalog.models[0].allowedDurationsSec, [15]);
+  assert.equal(refreshedCatalog.models[0].minDurationSec, null);
+  assert.equal(refreshedCatalog.models[0].maxDurationSec, null);
   const fixedDurationSuccess = await context.request(`/api/system-ai/${createdApi.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'fixed-15', seconds: '15' }) });
   assert.equal(fixedDurationSuccess.status, 200);
   const invalidDuration = await context.request(`/api/system-ai/${createdApi.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'invalid-10', seconds: '10' }) });
