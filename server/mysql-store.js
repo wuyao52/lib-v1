@@ -12,6 +12,7 @@ const EMPTY_DATABASE = {
   balanceTransactions: [],
   rechargeRequests: [],
   generationHistory: [],
+  assets: [],
 };
 
 const TABLES = {
@@ -199,6 +200,21 @@ const TABLES = {
     select: 'SELECT id, user_id AS userId, project_id AS projectId, node_id AS nodeId, type, prompt, url, thumbnail, created_at AS createdAt, expires_at AS expiresAt FROM generation_history',
     insert: 'INSERT INTO generation_history (id, user_id, project_id, node_id, type, prompt, url, thumbnail, created_at, expires_at) VALUES ?',
     values: (row) => [row.id, row.userId, row.projectId, row.nodeId || null, row.type, row.prompt, row.url, row.thumbnail || null, row.createdAt, row.expiresAt],
+  },
+  assets: {
+    create: `CREATE TABLE IF NOT EXISTS assets (
+      id CHAR(36) PRIMARY KEY,
+      user_id CHAR(36) NOT NULL,
+      sha256 CHAR(64) NOT NULL,
+      mime_type VARCHAR(40) NOT NULL,
+      data_base64 MEDIUMTEXT NOT NULL,
+      byte_size INT NOT NULL,
+      created_at VARCHAR(35) NOT NULL,
+      UNIQUE KEY assets_user_hash_unique (user_id, sha256)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+    select: 'SELECT id, user_id AS userId, sha256, mime_type AS mimeType, data_base64 AS dataBase64, byte_size AS byteSize, created_at AS createdAt FROM assets',
+    insert: 'INSERT INTO assets (id, user_id, sha256, mime_type, data_base64, byte_size, created_at) VALUES ?',
+    values: (row) => [row.id, row.userId, row.sha256, row.mimeType, row.dataBase64, row.byteSize, row.createdAt],
   },
 };
 
