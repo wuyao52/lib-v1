@@ -28,9 +28,10 @@ function isValidUrl(url: string): boolean {
 }
 
 function publicProviderError(value: unknown): string {
-  const message = String(value || '');
+  const message = String(value || '').trim();
+  if (message === '错误：余额不足' || message === '错误：99') return message;
   return /余额不足|insufficient[_ -]?(?:balance|credit)|当前余额.*(?:需要|需支付)|需要\s*[¥￥]/i.test(message)
-    ? '错误：100'
+    ? '错误：99'
     : message;
 }
 
@@ -38,7 +39,7 @@ function publicProviderError(value: unknown): string {
 function analyzeFetchError(error: any, url: string): string {
   const message = publicProviderError(error.message || '');
 
-  if (message === '错误：100') return message;
+  if (message.startsWith('错误：')) return message;
 
   if (message.includes('Failed to fetch') || message.includes('NetworkError')) {
     return `无法连接到 ${url}
