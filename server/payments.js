@@ -93,7 +93,7 @@ export function decryptWechatResource(resource, apiV3Key) {
 
 function createWechatProvider(config, fetchImpl) {
   return {
-    enabled: Boolean(config.appId && config.mchId && config.serialNo && config.privateKey && config.platformCertificate && config.apiV3Key?.length === 32 && config.notifyUrl),
+    enabled: Boolean(config.appId && config.mchId && config.serialNo && config.privateKey && config.platformCertificate && config.apiV3Key?.length === 32 && config.notifyUrl && config.refundNotifyUrl),
     async create(order, clientIp) {
       const path = '/v3/pay/transactions/h5';
       const body = JSON.stringify({ appid: config.appId, mchid: config.mchId, description: 'AI Drama Studio 余额充值', out_trade_no: order.merchantOrderNo, notify_url: config.notifyUrl, amount: { total: order.amountCents, currency: 'CNY' }, scene_info: { payer_client_ip: clientIp || '127.0.0.1', h5_info: { type: 'Wap' } } });
