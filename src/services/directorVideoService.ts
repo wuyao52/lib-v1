@@ -4,6 +4,7 @@ import type { DirectorShot, StoryboardPlan } from '@/types/director';
 import type { DirectorAsset } from '@/types/directorAsset';
 import { compileDirectorAssetContext, getDirectorAssetReferenceImages, validateDirectorAssets } from '@/services/directorAssetService';
 import { normalizeModelDuration, videoDurationRules } from '@/services/modelDuration';
+import { refreshManagedModel } from '@/services/managedModelCatalog';
 
 export type DirectorClipStatus = 'queued' | 'generating' | 'completed' | 'error';
 
@@ -44,8 +45,9 @@ function generationSettings(project: DramaProject, model: AIModelConfig, shot: D
 }
 
 export async function generateDirectorVideos({ plan, project, signal, onUpdate, assets }: GenerateDirectorVideosOptions) {
-  const model = resolveDirectorVideoModel(project);
-  if (!model) throw new Error('请先在模型设置中配置可用的视频模型、API 地址和 API Key');
+  const configuredModel = resolveDirectorVideoModel(project);
+  if (!configuredModel) throw new Error('请先在模型设置中配置可用的视频模型、API 地址和 API Key');
+  const model = await refreshManagedModel(configuredModel);
   const service = createAIService(model);
   const validation = validateDirectorAssets(assets);
   if (!validation.valid) throw new Error(`资产准备未完成：${validation.errors.join('；')}`);
