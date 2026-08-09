@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { discoverSystemApi } from './api-discovery.js';
+import { verifyPassword } from './auth.js';
 
 const CATEGORIES = new Set(['text', 'image', 'video']);
 const BILLING_UNITS = new Set(['request', 'image', 'second']);
@@ -18,8 +19,8 @@ function safeUser(user) {
   };
 }
 
-function exposedApi(api, vault) {
-  return { ...api, baseUrl: vault.decrypt(api.baseUrl), apiKey: vault.decrypt(api.encryptedApiKey), encryptedApiKey: undefined };
+function exposedApi(api, vault, revealKey = false) {
+  return { ...api, baseUrl: vault.decrypt(api.baseUrl), apiKey: revealKey ? vault.decrypt(api.encryptedApiKey) : '', hasApiKey: Boolean(api.encryptedApiKey), encryptedApiKey: undefined };
 }
 
 function decryptStoredUrl(value, vault) {
@@ -126,10 +127,51 @@ export function registerBillingRoutes(router, { db, requireAuth }) {
 
 export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImpl, resolveHost, videoQueue = null }) {
   router.use(requireSystem);
+  const audit = async (req, action, targetType, targetId, metadata = {}) => {
+    const record = { id: randomUUID(), userId: req.user.id, action, targetType, targetId: targetId || null, ipAddress: String(req.ip || '').slice(0, 100), userAgent: String(req.get('user-agent') || '').slice(0, 300), metadata, createdAt: nowIso() };
+    await db.mutate((data) => data.auditLogs.push(record));
+    return record;
+  };
   router.get('/video-queue', (_req, res) => res.json(videoQueue ? videoQueue.overview() : {
     counts: { queued: 0, submitting: 0, processing: 0, completed: 0, failed: 0 },
     config: null, recent: [],
   }));
+  router.get('/metrics', (_req, res) => {
+    const jobs = db.read('generationJobs');
+    const now = Date.now();
+    const since = now - (24 * 60 * 60 * 1000);
+    const recent = jobs.filter((job) => Date.parse(job.createdAt) >= since);
+    const completed = recent.filter((job) => job.status === 'completed');
+    const durations = completed.map((job) => Date.parse(job.completedAt || job.updatedAt) - Date.parse(job.createdAt)).filter((value) => value >= 0);
+    const refundedCents = db.read('balanceTransactions').filter((item) => item.type === 'model_refund' && Date.parse(item.createdAt) >= since).reduce((sum, item) => sum + Number(item.amountCents || 0), 0);
+    const archivedJobIds = new Set(db.read('generatedMedia').map((item) => item.jobId));
+    return res.json({
+      generatedAt: nowIso(), windowHours: 24,
+      queue: videoQueue ? videoQueue.overview().counts : { queued: 0, submitting: 0, processing: 0, completed: 0, failed: 0 },
+      recent: {
+        total: recent.length, completed: completed.length,
+        failed: recent.filter((job) => job.status === 'failed').length,
+        cancelled: recent.filter((job) => job.status === 'cancelled').length,
+        activeUsers: new Set(recent.map((job) => job.userId)).size,
+        averageCompletionMs: durations.length ? Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length) : null,
+        refundedCents,
+        archiveFallbacks: completed.filter((job) => job.resultUrl && !archivedJobIds.has(job.id)).length,
+      },
+    });
+  });
+  router.get('/payment-reconciliation', (_req, res) => {
+    const orders = db.read('paymentOrders');
+    const transactions = db.read('balanceTransactions').filter((item) => item.type === 'payment_recharge');
+    const transactionReferences = new Set(transactions.map((item) => item.referenceId));
+    const orderIds = new Set(orders.map((item) => item.id));
+    const paidWithoutCredit = orders.filter((item) => item.status === 'paid' && !transactionReferences.has(item.id)).map((item) => ({ orderId: item.id, provider: item.provider, amountCents: item.amountCents, paidAt: item.paidAt }));
+    const creditWithoutOrder = transactions.filter((item) => !orderIds.has(item.referenceId)).map((item) => ({ transactionId: item.id, referenceId: item.referenceId, amountCents: item.amountCents, createdAt: item.createdAt }));
+    const amountMismatch = orders.filter((order) => order.status === 'paid').flatMap((order) => {
+      const transaction = transactions.find((item) => item.referenceId === order.id);
+      return transaction && Number(transaction.amountCents) !== Number(order.amountCents) ? [{ orderId: order.id, orderAmountCents: order.amountCents, creditedCents: transaction.amountCents }] : [];
+    });
+    return res.json({ checkedAt: nowIso(), ok: !paidWithoutCredit.length && !creditWithoutOrder.length && !amountMismatch.length, paidWithoutCredit, creditWithoutOrder, amountMismatch });
+  });
   router.get('/users', (_req, res) => res.json({ users: db.read('users').map(safeUser) }));
   router.patch('/users/:id/role', async (req, res) => {
     const role = String(req.body.role || '');
@@ -162,6 +204,18 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
   });
 
   router.get('/system-apis', (_req, res) => res.json({ apis: db.read('systemApis').map((api) => exposedApi(api, vault)) }));
+  router.post('/system-apis/:id/reveal', async (req, res) => {
+    const api = db.read('systemApis').find((item) => item.id === req.params.id);
+    if (!api) return res.status(404).json({ error: 'API_NOT_FOUND', message: '系统 API 不存在' });
+    const user = db.read('users').find((item) => item.id === req.user.id);
+    if (!user || !(await verifyPassword(String(req.body.password || ''), user.passwordHash))) {
+      await audit(req, 'system_api_reveal_denied', 'system_api', api.id);
+      return res.status(401).json({ error: 'PASSWORD_INVALID', message: '当前登录密码错误' });
+    }
+    await audit(req, 'system_api_revealed', 'system_api', api.id);
+    return res.json({ apiKey: vault.decrypt(api.encryptedApiKey) });
+  });
+  router.get('/audit-logs', (_req, res) => res.json({ logs: db.read('auditLogs').slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 200) }));
   router.post('/system-apis/discover', async (req, res) => {
     try {
       const existing = req.body.apiId ? db.read('systemApis').find((api) => api.id === req.body.apiId) : null;
@@ -181,6 +235,7 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
       const now = nowIso();
       const api = { id: randomUUID(), ...normalizeApiInput(req.body, null, vault), createdBy: req.user.id, createdAt: now, updatedAt: now };
       await db.mutate((data) => data.systemApis.push(api));
+      await audit(req, 'system_api_created', 'system_api', api.id, { name: api.name, provider: api.provider });
       return res.status(201).json({ api: exposedApi(api, vault) });
     } catch (error) { return res.status(400).json({ error: 'API_VALIDATION_ERROR', message: error.message }); }
   });
@@ -193,6 +248,7 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
         Object.assign(api, normalizeApiInput(req.body, api, vault), { updatedAt: nowIso() }); updated = exposedApi(api, vault);
       });
       if (!updated) return res.status(404).json({ error: 'API_NOT_FOUND', message: '系统 API 不存在' });
+      await audit(req, 'system_api_updated', 'system_api', req.params.id, { name: updated.name, provider: updated.provider });
       return res.json({ api: updated });
     } catch (error) { return res.status(400).json({ error: 'API_VALIDATION_ERROR', message: error.message }); }
   });
@@ -203,6 +259,7 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
       data.systemApis = data.systemApis.filter((item) => item.id !== req.params.id);
       data.modelPricing = data.modelPricing.filter((item) => item.apiId !== req.params.id);
     });
+    if (found) await audit(req, 'system_api_deleted', 'system_api', req.params.id);
     return found ? res.status(204).end() : res.status(404).json({ error: 'API_NOT_FOUND', message: '系统 API 不存在' });
   });
 
