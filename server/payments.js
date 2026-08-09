@@ -200,7 +200,7 @@ export function createPaymentService({ db, fetchImpl = fetch, env = process.env,
   const notifyBase = String(env.PAYMENT_NOTIFY_BASE_URL || '').replace(/\/+$/, '');
   const paymentConfig = config || {
     alipay: { appId: env.ALIPAY_APP_ID, privateKey: env.ALIPAY_PRIVATE_KEY, publicKey: env.ALIPAY_PUBLIC_KEY, sellerId: env.ALIPAY_SELLER_ID, notifyUrl: `${notifyBase}/api/payments/callback/alipay`, returnUrl: env.ALIPAY_RETURN_URL },
-    wechat: { appId: env.WECHAT_PAY_APP_ID, mchId: env.WECHAT_PAY_MCH_ID, serialNo: env.WECHAT_PAY_SERIAL_NO, privateKey: env.WECHAT_PAY_PRIVATE_KEY, platformCertificate: env.WECHAT_PAY_PLATFORM_CERT, apiV3Key: env.WECHAT_PAY_API_V3_KEY, notifyUrl: `${notifyBase}/api/payments/callback/wechat` },
+    wechat: { appId: env.WECHAT_PAY_APP_ID, mchId: env.WECHAT_PAY_MCH_ID, serialNo: env.WECHAT_PAY_SERIAL_NO, privateKey: env.WECHAT_PAY_PRIVATE_KEY, platformCertificate: env.WECHAT_PAY_PLATFORM_CERT, apiV3Key: env.WECHAT_PAY_API_V3_KEY, notifyUrl: `${notifyBase}/api/payments/callback/wechat`, refundNotifyUrl: `${notifyBase}/api/payments/callback/wechat-refund` },
   };
   const providers = { alipay: createAlipayProvider(paymentConfig.alipay || {}, fetchImpl), wechat: createWechatProvider(paymentConfig.wechat || {}, fetchImpl) };
   return { providers, settle: (provider, payment) => settlePaidOrder(db, provider, payment), reserveRefund: (orderId) => reserveRefund(db, orderId), finishRefund: (orderId, eventId) => finishRefund(db, orderId, eventId), rollbackRefund: (orderId) => rollbackRefund(db, orderId) };
