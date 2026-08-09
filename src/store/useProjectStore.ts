@@ -18,8 +18,9 @@ import {
   ProjectInfo,
   GenerationProgress,
 } from '@/types';
-import { createAIService, SeedanceService } from '@/services/aiService';
+import { createAIService, prepareReferenceImages, SeedanceService } from '@/services/aiService';
 import { apiRequest } from '@/services/apiClient';
+import { materializeReferenceImages } from '@/services/assetService';
 import { planGenerationTarget } from './generationPolicy';
 
 // 默认AI模型配置
@@ -780,7 +781,10 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
           duration: Number(node.data.duration) || 5,
           seconds: Number(node.data.duration) || 5,
         };
-        const referenceImages = collectReferenceImages(latestProject, node);
+        const referenceImages = await materializeReferenceImages(
+          await prepareReferenceImages(collectReferenceImages(latestProject, node)),
+          controller.signal,
+        );
         if (referenceImages.length) settings.images = referenceImages;
 
         console.log('生成设置:', { type: node.data.type, settings });
@@ -1025,7 +1029,10 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
           duration: settings.duration,
           seconds: settings.duration,
         };
-        const sourceImages = collectReferenceImages(latestProject, node);
+        const sourceImages = await materializeReferenceImages(
+          await prepareReferenceImages(collectReferenceImages(latestProject, node)),
+          controller.signal,
+        );
         if (sourceImages.length) genSettings.images = sourceImages;
 
         console.log('生成设置 (startGenerationWithType):', { type, genSettings });
