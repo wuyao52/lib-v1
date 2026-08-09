@@ -124,8 +124,12 @@ export function registerBillingRoutes(router, { db, requireAuth }) {
   });
 }
 
-export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImpl, resolveHost }) {
+export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImpl, resolveHost, videoQueue = null }) {
   router.use(requireSystem);
+  router.get('/video-queue', (_req, res) => res.json(videoQueue ? videoQueue.overview() : {
+    counts: { queued: 0, submitting: 0, processing: 0, completed: 0, failed: 0 },
+    config: null, recent: [],
+  }));
   router.get('/users', (_req, res) => res.json({ users: db.read('users').map(safeUser) }));
   router.patch('/users/:id/role', async (req, res) => {
     const role = String(req.body.role || '');
