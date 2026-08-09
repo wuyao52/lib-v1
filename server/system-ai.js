@@ -69,6 +69,11 @@ function buildTarget(api, requestUrl) {
 }
 
 async function changeBalance(db, { userId, amountCents, type, description, referenceId }) {
+  if (db.changeBalanceAtomic) {
+    const result = await db.changeBalanceAtomic({ userId, amountCents, type, description, referenceId });
+    if (result.failure) { const error = new Error(result.failure === 'INSUFFICIENT_BALANCE' ? '余额不足，请先充值' : '用户不存在'); error.code = result.failure; throw error; }
+    return result.balance;
+  }
   let balance; let failure;
   await db.mutate((data) => {
     const user = data.users.find((item) => item.id === userId);
