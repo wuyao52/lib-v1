@@ -1,4 +1,5 @@
 import { AIModelConfig, GenerationRequest, GenerationResponse } from '@/types';
+import { compressImageDataUrl, dataUrlByteLength } from '@/utils/imageCompression';
 
 // 安全地解析 JSON 响应
 async function safeJsonParse(response: Response): Promise<any> {
@@ -59,29 +60,14 @@ function userCancellationError(): DOMException {
   return new DOMException('用户取消生成', 'AbortError');
 }
 
-function dataUrlBytes(value: string): number {
-  const payload = value.slice(value.indexOf(',') + 1);
-  return Math.ceil(payload.length * 0.75);
-}
-
 async function compressReferenceImage(value: string): Promise<string> {
-  if (!/^data:image\//i.test(value) || dataUrlBytes(value) <= 350 * 1024) return value;
-  const image = new window.Image();
-  image.src = value;
-  await new Promise<void>((resolve, reject) => { image.onload = () => resolve(); image.onerror = () => reject(new Error('参考图读取失败')); });
-  const scale = Math.min(1, 960 / Math.max(image.naturalWidth, image.naturalHeight));
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
-  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
-  const context = canvas.getContext('2d');
-  if (!context) throw new Error('浏览器无法压缩参考图');
-  context.fillStyle = '#ffffff';
-  context.fillRect(0, 0, canvas.width, canvas.height);
-  context.drawImage(image, 0, 0, canvas.width, canvas.height);
-  let compressed = canvas.toDataURL('image/jpeg', 0.78);
-  for (let quality = 0.65; dataUrlBytes(compressed) > 350 * 1024 && quality >= 0.35; quality -= 0.15) compressed = canvas.toDataURL('image/jpeg', quality);
-  if (dataUrlBytes(compressed) > 600 * 1024) throw new Error('参考图压缩后仍然过大，请使用尺寸更小的图片');
-  return compressed;
+  return compressImageDataUrl(value, {
+    maxBytes: 350 * 1024,
+    maxDimension: 960,
+    outputMimeType: 'image/jpeg',
+    background: '#ffffff',
+    errorLabel: '参考图',
+  });
 }
 
 export async function prepareReferenceImages(images: unknown): Promise<string[]> {
@@ -92,7 +78,7 @@ export async function prepareReferenceImages(images: unknown): Promise<string[]>
     if (typeof value !== 'string' || !value.trim()) continue;
     const image = await compressReferenceImage(value.trim());
     if (/^data:/i.test(image)) {
-      const bytes = dataUrlBytes(image);
+      const bytes = dataUrlByteLength(image);
       if (prepared.length && embeddedBytes + bytes > 700 * 1024) continue;
       embeddedBytes += bytes;
     }
@@ -316,7 +302,7 @@ export class SeedanceService extends AIService {
       if (preparedImages.length > 0) requestBody.images = preparedImages;
 
       console.log('调用视频生成 API:', url);
-      console.log('请求参数摘要:', { ...requestBody, images: preparedImages.map((image) => ({ kind: image.startsWith('data:') ? 'data-url' : 'url', bytes: image.startsWith('data:') ? dataUrlBytes(image) : undefined })) });
+      console.log('请求参数摘要:', { ...requestBody, images: preparedImages.map((image) => ({ kind: image.startsWith('data:') ? 'data-url' : 'url', bytes: image.startsWith('data:') ? dataUrlByteLength(image) : undefined })) });
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 60000);
