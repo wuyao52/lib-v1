@@ -155,7 +155,7 @@ export async function createApp(options = {}) {
   auth.registerRoutes(authRouter);
   app.use('/api/auth', authRouter);
   const paymentRouter = express.Router();
-  registerPaymentRoutes(paymentRouter, { db, requireAuth: auth.requireAuth, paymentService });
+  registerPaymentRoutes(paymentRouter, { db, requireAuth: auth.requireAuth, requireSystem: auth.requireSystem, paymentService });
   app.use('/api/payments', paymentRouter);
   const directorRouter = express.Router();
   registerDirectorRoutes(directorRouter, { db, requireAuth: auth.requireAuth });
