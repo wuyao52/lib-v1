@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { X, History, ExternalLink } from 'lucide-react';
 import { apiRequest } from '@/services/apiClient';
 import useProjectStore from '@/store/useProjectStore';
@@ -8,7 +8,16 @@ type HistoryItem = { id: string; type: string; prompt: string; url: string; thum
 export default function GenerationHistoryPanel({ onClose }: { onClose: () => void }) {
   const project = useProjectStore((state) => state.project);
   const [items, setItems] = useState<HistoryItem[]>([]);
-  useEffect(() => { apiRequest<{ history: HistoryItem[] }>('/api/generation-history').then((result) => setItems(result.history)).catch(() => setItems([])); }, []);
+  const refresh = useCallback(() => {
+    void apiRequest<{ history: HistoryItem[] }>('/api/generation-history')
+      .then((result) => setItems(result.history))
+      .catch((error) => console.warn('读取生成历史失败:', error));
+  }, []);
+  useEffect(() => {
+    refresh();
+    const timer = window.setInterval(refresh, 5000);
+    return () => window.clearInterval(timer);
+  }, [refresh]);
   const mentionNodes = (project?.nodes || []).map((node) => ({ id: node.id, label: node.data.label, type: node.data.type, imageUrl: node.data.type === 'image' ? node.data.generatedContent : undefined }));
   return <div className="fixed inset-0 z-[200] flex items-center justify-center p-4"><button className="absolute inset-0 bg-black/70" onClick={onClose} aria-label="关闭" /><section className="relative w-full max-w-3xl max-h-[80vh] overflow-hidden rounded-xl border border-dark-600 bg-dark-800 shadow-2xl"><header className="flex items-center justify-between border-b border-dark-600 px-4 py-3"><h2 className="flex items-center gap-2 text-sm font-semibold text-white"><History className="h-4 w-4 text-primary-400" />最近 3 天生成历史</h2><button onClick={onClose} className="p-2 text-dark-400 hover:text-white"><X className="h-4 w-4" /></button></header><div className="grid max-h-[65vh] gap-3 overflow-y-auto p-4 sm:grid-cols-2">{items.map((item) => <a key={item.id} href={item.url} target="_blank" rel="noreferrer" className="overflow-hidden rounded-lg border border-dark-600 bg-dark-900 hover:border-primary-500">{item.thumbnail ? <img src={item.thumbnail} alt="" className="h-32 w-full object-cover" /> : <div className="flex h-32 items-center justify-center text-dark-500">{item.type}</div>}<div className="p-3"><p className="line-clamp-2 text-xs text-dark-200">{item.prompt ? <PromptMentionContent value={item.prompt} nodes={mentionNodes} /> : '无提示词'}</p><span className="mt-2 flex items-center gap-1 text-[10px] text-dark-500"><ExternalLink className="h-3 w-3" />{new Date(item.createdAt).toLocaleString()}</span></div></a>)}{items.length === 0 && <p className="col-span-2 py-12 text-center text-sm text-dark-500">最近 3 天没有成功生成记录</p>}</div></section></div>;
 }
