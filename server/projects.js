@@ -10,6 +10,7 @@ function projectInfo(record) {
     updatedAt: record.updatedAt,
     sceneCount: Array.isArray(project.nodes) ? project.nodes.length : 0,
     thumbnail: project.thumbnail,
+    version: Number(record.version || 1),
   };
 }
 
@@ -45,7 +46,7 @@ function normalizeProject(input, routeId) {
       } : undefined,
     },
   };
-  if (Buffer.byteLength(JSON.stringify(project), 'utf8') > MAX_PROJECT_BYTES) throw new Error('项目数据不能超过 2 MB');
+  if (Buffer.byteLength(JSON.stringify(project), 'utf8') > MAX_PROJECT_BYTES) throw new Error('项目数据不能超过 20 MB');
   return project;
 }
 
@@ -63,12 +64,14 @@ export function registerProjectRoutes(router, { db, requireAuth }) {
   router.get('/:id', (req, res) => {
     const record = db.read('projects').find((item) => item.id === req.params.id && item.userId === req.user.id);
     if (!record) return res.status(404).json({ error: 'PROJECT_NOT_FOUND', message: '项目不存在' });
-    return res.json({ project: record.projectData });
+    return res.json({ project: { ...record.projectData, version: Number(record.version || 1) } });
   });
 
   router.put('/:id', async (req, res) => {
     try {
       const project = normalizeProject(req.body.project, req.params.id);
+      const expectedVersion = Number(req.body.expectedVersion ?? project.version ?? 0);
+      if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0) return res.status(400).json({ error: 'INVALID_PROJECT_VERSION', message: '项目版本无效' });
       const existingIndex = db.read('projects').findIndex((item) => item.id === project.id);
       if (existingIndex >= 0 && db.read('projects')[existingIndex].userId !== req.user.id) {
         return res.status(409).json({ error: 'PROJECT_ID_CONFLICT', message: '项目 ID 已被占用' });
@@ -79,14 +82,25 @@ export function registerProjectRoutes(router, { db, requireAuth }) {
         title: project.title,
         description: project.description,
         projectData: project,
+        version: expectedVersion + 1,
         createdAt: project.createdAt,
         updatedAt: project.updatedAt,
       };
+      if (db.saveProject) {
+        const saved = await db.saveProject(record, expectedVersion);
+        if (saved.conflict) return res.status(409).json({ error: 'PROJECT_VERSION_CONFLICT', message: '项目已在其他页面或设备更新，请重新加载后再编辑' });
+        return res.status(expectedVersion > 0 ? 200 : 201).json({ project: projectInfo(saved.record) });
+      }
+      let conflict = false;
       await db.mutate((data) => {
-        if (existingIndex >= 0) data.projects[existingIndex] = record;
+        const index = data.projects.findIndex((item) => item.id === project.id);
+        const currentVersion = index >= 0 ? Number(data.projects[index].version || 1) : 0;
+        if (currentVersion !== expectedVersion) { conflict = true; return; }
+        if (index >= 0) data.projects[index] = record;
         else data.projects.push(record);
       });
-      return res.status(existingIndex >= 0 ? 200 : 201).json({ project: projectInfo(record) });
+      if (conflict) return res.status(409).json({ error: 'PROJECT_VERSION_CONFLICT', message: '项目已在其他页面或设备更新，请重新加载后再编辑' });
+      return res.status(expectedVersion > 0 ? 200 : 201).json({ project: projectInfo(record) });
     } catch (error) {
       return res.status(400).json({ error: 'PROJECT_VALIDATION_ERROR', message: error.message });
     }
