@@ -238,6 +238,7 @@ export function registerPaymentRoutes(router, { db, requireAuth, requireSystem, 
   });
   router.get('/providers', requireAuth, (_req, res) => res.json({ providers: Object.fromEntries(Object.entries(paymentService.providers).map(([name, provider]) => [name, provider.enabled])) }));
   router.get('/orders', requireAuth, (req, res) => res.json({ orders: db.read('paymentOrders').filter((item) => item.userId === req.user.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 100).map(publicOrder) }));
+  router.get('/admin/orders', requireSystem, (_req, res) => res.json({ orders: db.read('paymentOrders').slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 200).map((order) => ({ ...publicOrder(order), userId: order.userId })) }));
   router.post('/orders', requireAuth, async (req, res) => {
     const providerName = String(req.body?.provider || '');
     const provider = paymentService.providers[providerName];
