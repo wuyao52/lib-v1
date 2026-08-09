@@ -204,9 +204,14 @@ const createNewProject = (title: string, description: string): DramaProject => {
 const requiresReferenceImage = (result: { success: boolean; error?: string }) =>
   !result.success && /images?\s*(?:不能为空|cannot be empty|required)|参数\s*images/i.test(result.error || '');
 
-function collectReferenceImages(project: DramaProject, node: Node<SceneNodeData>): string[] {
-  const referencedIds = new Set<string>([node.id]);
-  const prompt = String(node.data.prompt || node.data.content || '');
+function collectReferenceImages(
+  project: DramaProject,
+  node: Node<SceneNodeData>,
+  promptOverride = '',
+  additionalNodeIds: string[] = [],
+): string[] {
+  const referencedIds = new Set<string>([node.id, ...additionalNodeIds]);
+  const prompt = `${String(node.data.prompt || node.data.content || '')} ${promptOverride}`;
   for (const match of prompt.matchAll(/@\[[^\]]+\]\(([^)]+)\)/g)) referencedIds.add(match[1]);
   for (const edge of project.edges) {
     if (edge.source === node.id) referencedIds.add(edge.target);
@@ -297,6 +302,7 @@ interface ProjectStore {
       duration?: number;
       strength?: number;
       negativePrompt?: string;
+      referenceNodeIds?: string[];
     },
     position?: { x: number; y: number }
   ) => void;
@@ -928,19 +934,21 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     get().addNode(newNode);
 
     // 添加连接边
-    const newEdge: Edge = {
-      id: `edge-${nodeId}-${newNodeId}`,
-      source: nodeId,
+    const sourceNodeIds = [...new Set([nodeId, ...(settings.referenceNodeIds || [])])]
+      .filter((sourceId) => project.nodes.some((candidate) => candidate.id === sourceId));
+    const newEdges: Edge[] = sourceNodeIds.map((sourceId) => ({
+      id: `edge-${sourceId}-${newNodeId}`,
+      source: sourceId,
       target: newNodeId,
       type: 'smoothstep',
       animated: true,
       style: { stroke: '#8b5cf6', strokeWidth: 2 },
-    };
+    }));
 
     set({
       project: {
         ...get().project!,
-        edges: [...get().project!.edges, newEdge],
+        edges: [...get().project!.edges, ...newEdges],
       },
       isGenerating: true,
     });
@@ -1030,7 +1038,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
           seconds: settings.duration,
         };
         const sourceImages = await materializeReferenceImages(
-          await prepareReferenceImages(collectReferenceImages(latestProject, node)),
+          await prepareReferenceImages(collectReferenceImages(latestProject, node, settings.prompt, settings.referenceNodeIds)),
           controller.signal,
         );
         if (sourceImages.length) genSettings.images = sourceImages;
