@@ -14,6 +14,7 @@ async function setup() {
     if (String(url).endsWith('/v1/models')) return new Response(JSON.stringify({ data: [{ id: 'video-model', name: 'Video Model', type: 'video_generation', owned_by: 'Detected Provider' }] }), { status: 200, headers: { 'content-type': 'application/json' } });
     const body = JSON.parse(options.body || '{}');
     if (body.prompt === 'fail') return new Response(JSON.stringify({ error: { message: 'upstream failed' } }), { status: 500, headers: { 'content-type': 'application/json' } });
+    if (body.prompt === 'duration-fail') return new Response(JSON.stringify({ msg: `参数 seconds 不支持 ${body.seconds || body.duration}` }), { status: 400, headers: { 'content-type': 'application/json' } });
     if (body.prompt === 'business-fail') return new Response(JSON.stringify({ code: '9999', data: null, msg: 'request entity too large' }), { status: 200, headers: { 'content-type': 'application/json' } });
     return new Response(JSON.stringify({ id: 'task-1', status: 'queued' }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
@@ -67,7 +68,10 @@ test('system APIs, pricing, balances and managed gateway enforce roles and billi
   assert.equal(savedApiModelsResponse.status, 200);
   assert.equal((await savedApiModelsResponse.json()).models[0].id, 'video-model');
 
-  const pricingResponse = await context.request('/api/admin/pricing', admin.cookie, { method: 'POST', body: JSON.stringify({ apiId: createdApi.id, modelId: 'video-model', displayName: '视频模型', category: 'video', billingUnit: 'second', unitPriceCents: 10 }) });
+  const missingDurationPricing = await context.request('/api/admin/pricing', admin.cookie, { method: 'POST', body: JSON.stringify({ apiId: createdApi.id, modelId: 'invalid-video-model', displayName: '未配置时长模型', category: 'video', billingUnit: 'second', unitPriceCents: 10 }) });
+  assert.equal(missingDurationPricing.status, 400);
+  assert.match((await missingDurationPricing.json()).message, /固定时长/);
+  const pricingResponse = await context.request('/api/admin/pricing', admin.cookie, { method: 'POST', body: JSON.stringify({ apiId: createdApi.id, modelId: 'video-model', displayName: '视频模型', category: 'video', billingUnit: 'second', unitPriceCents: 10, allowedDurationsSec: [5, 15] }) });
   assert.equal(pricingResponse.status, 201);
   const catalog = await (await context.request('/api/catalog/models', normal.cookie)).json();
   assert.equal(catalog.models[0].baseUrl, `/api/system-ai/${createdApi.id}`);
@@ -92,6 +96,12 @@ test('system APIs, pricing, balances and managed gateway enforce roles and billi
 
   const businessFailed = await context.request(`/api/system-ai/${createdApi.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'business-fail', duration: 5 }) });
   assert.equal(businessFailed.status, 502);
+  billing = await (await context.request('/api/billing/me', normal.cookie)).json();
+  assert.equal(billing.balanceCents, 950);
+
+  const durationMismatch = await context.request(`/api/system-ai/${createdApi.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'duration-fail', seconds: 5 }) });
+  assert.equal(durationMismatch.status, 409);
+  assert.equal((await durationMismatch.json()).error, 'UPSTREAM_DURATION_MISMATCH');
   billing = await (await context.request('/api/billing/me', normal.cookie)).json();
   assert.equal(billing.balanceCents, 950);
 
