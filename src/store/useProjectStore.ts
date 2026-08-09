@@ -23,6 +23,7 @@ import { apiRequest } from '@/services/apiClient';
 import { materializeReferenceImages } from '@/services/assetService';
 import { planGenerationTarget } from './generationPolicy';
 import { normalizeModelDuration, videoDurationRules } from '@/services/modelDuration';
+import { refreshManagedModel } from '@/services/managedModelCatalog';
 
 // 默认AI模型配置
 const defaultModel: AIModelConfig = {
@@ -754,7 +755,6 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     }
 
     // 使用工厂函数创建 AI 服务实例（根据模型自动选择）
-    const aiService = createAIService(aiModel);
     const controller = new AbortController();
     const activeGenerations = new Map(get().activeGenerations);
     activeGenerations.set(newNodeId, controller);
@@ -763,6 +763,19 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     // 异步执行生成
     (async () => {
       try {
+        const effectiveModel = await refreshManagedModel(aiModel);
+        const aiService = createAIService(effectiveModel);
+        const currentMultiModel = get().project?.settings.multiModel;
+        if (aiModel.managed && currentMultiModel) {
+          const currentSlot = nodeType === 'image' ? currentMultiModel.imageModel : currentMultiModel.videoModel;
+          if (currentSlot.id === aiModel.id) {
+            get().updateProjectSettings({
+              multiModel: nodeType === 'image'
+                ? { ...currentMultiModel, imageModel: effectiveModel }
+                : { ...currentMultiModel, videoModel: effectiveModel },
+            });
+          }
+        }
         if (generateInPlace && node.data.generatedContent) {
           await apiRequest('/api/generation-history', { method: 'POST', body: JSON.stringify({ projectId: project.id, nodeId, type: 'video', prompt: nodePrompt, url: node.data.generatedContent, thumbnail: node.data.thumbnail }) }).catch(() => undefined);
         }
@@ -781,7 +794,10 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
         console.log('节点类型:', node.data.type, '是否图片:', isImage);
 
         // 只传递 API 支持的参数，不传 duration/seconds
-        const requestDuration = normalizeModelDuration(Number(node.data.duration) || 5, videoDurationRules(aiModel), 1, 15);
+        const requestDuration = normalizeModelDuration(Number(node.data.duration) || 5, videoDurationRules(effectiveModel), 1, 15);
+        if (!isImage && requestDuration !== node.data.duration) {
+          get().updateNodeData(newNodeId, { duration: requestDuration });
+        }
         const settings: any = {
           style: node.data.settings?.style || latestProject.settings.defaultStyle,
           resolution: '1080p',
@@ -1013,7 +1029,6 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     }
 
     // 使用工厂函数创建 AI 服务实例（根据模型自动选择）
-    const aiService = createAIService(aiModel);
     const controller = new AbortController();
     const activeGenerations = new Map(get().activeGenerations);
     activeGenerations.set(newNodeId, controller);
@@ -1022,6 +1037,19 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     // 异步执行生成
     (async () => {
       try {
+        const effectiveModel = await refreshManagedModel(aiModel);
+        const aiService = createAIService(effectiveModel);
+        const currentMultiModel = get().project?.settings.multiModel;
+        if (aiModel.managed && currentMultiModel) {
+          const currentSlot = type === 'image' ? currentMultiModel.imageModel : currentMultiModel.videoModel;
+          if (currentSlot.id === aiModel.id) {
+            get().updateProjectSettings({
+              multiModel: type === 'image'
+                ? { ...currentMultiModel, imageModel: effectiveModel }
+                : { ...currentMultiModel, videoModel: effectiveModel },
+            });
+          }
+        }
         // 更新进度：准备中
         get().updateNodeData(newNodeId, {
           progress: 10,
@@ -1032,7 +1060,10 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
 
         // 根据类型使用正确的参数格式（不传 duration/seconds）
         const isImage = type === 'image' || type === 'img2img';
-        const requestDuration = normalizeModelDuration(Number(settings.duration) || 5, videoDurationRules(aiModel), 1, 15);
+        const requestDuration = normalizeModelDuration(Number(settings.duration) || 5, videoDurationRules(effectiveModel), 1, 15);
+        if (!isImage && requestDuration !== settings.duration) {
+          get().updateNodeData(newNodeId, { duration: requestDuration });
+        }
         const genSettings: any = {
           style: settings.style,
           resolution: isImage ? undefined : '1080p',
