@@ -20,6 +20,7 @@ import {
 } from '@/types';
 import { createAIService, SeedanceService } from '@/services/aiService';
 import { apiRequest } from '@/services/apiClient';
+import { planGenerationTarget } from './generationPolicy';
 
 // 默认AI模型配置
 const defaultModel: AIModelConfig = {
@@ -325,6 +326,7 @@ interface ProjectStore {
 
 // 自动保存延迟时间（毫秒）
 const AUTO_SAVE_DELAY = 2000;
+const notifyBillingChanged = () => window.dispatchEvent(new CustomEvent('billing:changed'));
 
 const useProjectStore = create<ProjectStore>((set, get) => ({
   // 初始状态
@@ -637,7 +639,9 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     });
 
     // 创建新的生成结果节点
-    const newNodeId = generateId();
+    const generationTarget = planGenerationTarget(nodeId, node.data.type, generateId);
+    const generateInPlace = generationTarget.inPlace;
+    const newNodeId = generationTarget.targetNodeId;
     const newNode: Node<SceneNodeData> = {
       id: newNodeId,
       type: 'sceneNode',
@@ -658,7 +662,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     };
 
     // 添加新节点
-    get().addNode(newNode);
+    if (!generateInPlace) get().addNode(newNode);
 
     // 添加连接边
     const newEdge: Edge = {
@@ -670,13 +674,8 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
       style: { stroke: '#8b5cf6', strokeWidth: 2 },
     };
 
-    set({
-      project: {
-        ...get().project!,
-        edges: [...get().project!.edges, newEdge],
-      },
-      isGenerating: true,
-    });
+    if (!generateInPlace) set({ project: { ...get().project!, edges: [...get().project!.edges, newEdge] }, isGenerating: true });
+    else set({ isGenerating: true });
 
     // 根据生成类型选择正确的模型
     const latestProject = get().project!;
@@ -756,10 +755,13 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     // 异步执行生成
     (async () => {
       try {
+        if (generateInPlace && node.data.generatedContent) {
+          await apiRequest('/api/generation-history', { method: 'POST', body: JSON.stringify({ projectId: project.id, nodeId, type: 'video', prompt: nodePrompt, url: node.data.generatedContent, thumbnail: node.data.thumbnail }) }).catch(() => undefined);
+        }
         // 更新进度：准备中
         get().updateNodeData(newNodeId, {
           progress: 10,
-          content: '正在调用 AI API...',
+          ...(generateInPlace ? {} : { content: '正在调用 AI API...' }),
         });
 
         // 调用 AI 生成
@@ -786,7 +788,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
         // 更新进度：生成中
         get().updateNodeData(newNodeId, {
           progress: 30,
-          content: '正在生成内容...',
+          ...(generateInPlace ? {} : { content: '正在生成内容...' }),
         });
 
         let result;
@@ -804,7 +806,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
         // 更新进度：处理结果
         get().updateNodeData(newNodeId, {
           progress: 80,
-          content: '正在处理生成结果...',
+          ...(generateInPlace ? {} : { content: '正在处理生成结果...' }),
         });
 
         if (result.success && result.data) {
@@ -817,10 +819,12 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
           get().updateNodeData(newNodeId, {
             status: 'completed',
             progress: 100,
+            error: undefined,
             generatedContent: result.data.url,
             thumbnail: result.data.thumbnail,
-            content: 'AI 生成完成 - 点击预览',
+            ...(generateInPlace ? { prompt: nodePrompt, content: node.data.content } : { content: 'AI 生成完成 - 点击预览' }),
           });
+          await apiRequest('/api/generation-history', { method: 'POST', body: JSON.stringify({ projectId: latestProject.id, nodeId: newNodeId, type: node.data.type === 'text' ? 'video' : node.data.type, prompt, url: result.data.url, thumbnail: result.data.thumbnail }) }).catch(() => undefined);
         } else {
           markGenerationFailed(nodeId, newNodeId, result.error || 'AI 生成失败', get, set);
         }
@@ -829,6 +833,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
         markGenerationFailed(nodeId, newNodeId, message, get, set);
       } finally {
         finishGenerationTask(newNodeId, get, set);
+        notifyBillingChanged();
       }
     })();
   },
@@ -1065,11 +1070,12 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
           get().updateNodeData(newNodeId, {
             status: 'completed',
             progress: 100,
+            error: undefined,
             generatedContent: result.data.url,
             thumbnail: result.data.thumbnail,
             content: 'AI 生成完成 - 点击预览',
           });
-          void apiRequest('/api/generation-history', { method: 'POST', body: JSON.stringify({ projectId: latestProject.id, nodeId: newNodeId, type, prompt: settings.prompt, url: result.data.url, thumbnail: result.data.thumbnail }) }).catch(() => undefined);
+          await apiRequest('/api/generation-history', { method: 'POST', body: JSON.stringify({ projectId: latestProject.id, nodeId: newNodeId, type, prompt: settings.prompt, url: result.data.url, thumbnail: result.data.thumbnail }) }).catch(() => undefined);
         } else {
           markGenerationFailed(nodeId, newNodeId, result.error || 'AI 生成失败', get, set);
         }
@@ -1078,6 +1084,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
         markGenerationFailed(nodeId, newNodeId, message, get, set);
       } finally {
         finishGenerationTask(newNodeId, get, set);
+        notifyBillingChanged();
       }
     })();
   },
@@ -1289,7 +1296,7 @@ function markGenerationFailed(
   set: (partial: Partial<ProjectStore>) => void
 ) {
   get().updateNodeData(sourceNodeId, { status: 'error', error: message, progress: 0 });
-  get().updateNodeData(newNodeId, { status: 'error', error: message, progress: 0, content: message });
+  if (newNodeId !== sourceNodeId) get().updateNodeData(newNodeId, { status: 'error', error: message, progress: 0, content: message });
   set({ isGenerating: false });
 }
 
