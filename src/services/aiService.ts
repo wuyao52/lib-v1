@@ -95,6 +95,21 @@ function providerErrorMessage(data: any): string | null {
   return null;
 }
 
+function terminalProviderError(data: any): Error {
+  const payload = data?.data && typeof data.data === 'object' ? data.data : data;
+  const values = [
+    payload?.error?.message, payload?.error?.code, payload?.error,
+    data?.error?.message, data?.error?.code, data?.message, data?.msg, data?.error,
+  ];
+  const rawMessage = String(values.find((value) => typeof value === 'string' && value.trim()) || '视频生成失败');
+  const message = /moderation|content[_ -]?policy|safety|sensitive|审核|敏感/i.test(rawMessage)
+    ? (rawMessage.includes('本次扣款') ? rawMessage : '内容审核未通过，请检查提示词、参考图片以及画面中的敏感内容后重试')
+    : rawMessage;
+  const error = new Error(message);
+  error.name = 'ProviderTaskFailed';
+  return error;
+}
+
 function resolveVideoResolution(modelId: string, requested: unknown): string {
   const modelResolution = modelId.match(/(?:^|[-_])(480|720|1080)p(?:$|[-_])/i)?.[1];
   return modelResolution ? `${modelResolution}p` : String(requested || '1080p');
@@ -351,6 +366,7 @@ export class SeedanceService extends AIService {
           if (signal?.aborted) throw userCancellationError();
           throw new Error('请求超时（60秒）');
         }
+        if (fetchError.name === 'ProviderError' || fetchError.name === 'ProviderTaskFailed') throw fetchError;
         throw new Error(analyzeFetchError(fetchError, url));
       } finally {
         signal?.removeEventListener('abort', abortFromCaller);
@@ -433,9 +449,8 @@ export class SeedanceService extends AIService {
           }
         }
 
-        if (status === 'failed' || status === 'error') {
-          const errorMsg = data.error?.message || data.message || data.error || '视频生成失败';
-          throw new Error(errorMsg);
+        if (['failed', 'error', 'rejected', 'cancelled', 'canceled'].includes(String(status).toLowerCase())) {
+          throw terminalProviderError(data);
         }
 
         // 更新进度
@@ -445,7 +460,7 @@ export class SeedanceService extends AIService {
         }
       } catch (error: any) {
         if (isUserCancellation(error, signal)) throw userCancellationError();
-        if (error.name === 'ProviderError') throw error;
+        if (error.name === 'ProviderError' || error.name === 'ProviderTaskFailed') throw error;
         if (error.message.includes('视频生成失败') || error.message.includes('未返回视频 URL')) {
           throw error;
         }
