@@ -51,6 +51,13 @@ R2_SECRET_ACCESS_KEY=your_r2_secret_access_key
 R2_BUCKET=ai-drama-assets
 ASSET_USER_QUOTA_BYTES=2147483648
 ASSET_RETENTION_DAYS=30
+VIDEO_QUEUE_GLOBAL_CONCURRENCY=20
+VIDEO_QUEUE_USER_CONCURRENCY=20
+VIDEO_QUEUE_API_CONCURRENCY=20
+VIDEO_QUEUE_POLL_CONCURRENCY=20
+VIDEO_QUEUE_MAX_PENDING_PER_USER=50
+VIDEO_QUEUE_TASK_TIMEOUT_MINUTES=60
+VIDEO_QUEUE_HISTORY_DAYS=7
 ```
 
 Netlify 会将 `/api/auth/*`、`/api/director/*`、`/api/skills/*` 与 `/api/projects/*` 转发到该后端，因此验证码和 HttpOnly 会话 Cookie 仍使用 Netlify 的同源地址。后端部署命令为 `npm ci && npm run build`，启动命令为 `npm start`。不要只部署 `dist/`，也不要把密钥写入 `.env.example` 或 `VITE_*` 浏览器变量。
@@ -71,6 +78,12 @@ ASSET_RETENTION_DAYS=30
 ```
 
 四个 `R2_*` 变量必须同时配置。重新部署 Railway 后，新图片写入 R2，MySQL 的 `assets` 表只保存对象 Key、哈希、类型、大小和用户归属；旧 Base64 素材仍可读取，并在再次上传相同素材时迁移到 R2。未配置 R2 时保留数据库存储兼容模式。`ASSET_USER_QUOTA_BYTES` 可选，默认每个用户 2 GiB。`ASSET_RETENTION_DAYS` 默认是 30，仅自动删除超过保留期且未被项目或有效生成历史引用的素材；服务端每 6 小时检查一次，打开云端素材管理时也会立即检查。
+
+### 持久化视频任务队列
+
+系统视频模型请求会先写入 MySQL `generation_jobs` 表，再由 Railway 后端按全站、用户和 API 三层并发限制公平提交。浏览器关闭后任务仍会继续，成功结果由后端写入三天生成历史，失败任务只退款一次。临时 `429` 和 `5xx` 会延迟重试；终态队列记录默认保留 7 天。
+
+默认限制为全站同时生成 20 条、单用户 20 条、单 API 20 条，每个用户最多保留 50 条待处理任务。可通过上方 `VIDEO_QUEUE_*` 环境变量调整。当前调度器面向 Railway 单应用副本；不要将应用服务横向扩展为多个 Replica，否则需要先接入 Redis/BullMQ 或数据库分布式锁。系统用户可在“系统管理控制台 → 视频任务队列”查看实时状态和当前限制。
 
 ## 认证、导演模式与 Skill
 
