@@ -4,6 +4,9 @@ const MAX_ASSET_BYTES = 8 * 1024 * 1024;
 const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 const DATA_URL_PATTERN = /^data:([^;,]+);base64,([A-Za-z0-9+/]+={0,2})$/;
 const DEFAULT_USER_QUOTA_BYTES = 2 * 1024 * 1024 * 1024;
+const DEFAULT_ASSET_RETENTION_DAYS = 30;
+const ASSET_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 function parseImageDataUrl(value) {
   const match = DATA_URL_PATTERN.exec(String(value || '').trim());
@@ -44,7 +47,84 @@ function storageError(res) {
   return res.status(502).json({ error: 'ASSET_STORAGE_UNAVAILABLE', message: '云端素材存储暂时不可用，请稍后重试' });
 }
 
+function assetIsReferenced(db, userId, assetId, now = Date.now()) {
+  const marker = `/api/assets/public/${assetId}`;
+  const projectReference = db.read('projects').some((project) => (
+    project.userId === userId && JSON.stringify(project.projectData || {}).includes(marker)
+  ));
+  if (projectReference) return true;
+  return db.read('generationHistory').some((item) => (
+    item.userId === userId
+    && (!item.expiresAt || Date.parse(item.expiresAt) > now)
+    && (`${item.url || ''} ${item.thumbnail || ''}`).includes(marker)
+  ));
+}
+
+function parseRetentionDays(value) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 && parsed <= 36500 ? parsed : DEFAULT_ASSET_RETENTION_DAYS;
+}
+
+function getAssetExpiration(createdAt, retentionDays) {
+  const timestamp = Date.parse(createdAt);
+  return Number.isFinite(timestamp) ? new Date(timestamp + retentionDays * DAY_MS).toISOString() : null;
+}
+
+export async function cleanupExpiredAssets({
+  db,
+  assetStorage = null,
+  retentionDays = DEFAULT_ASSET_RETENTION_DAYS,
+  now = Date.now(),
+  onError = console.error,
+} = {}) {
+  const normalizedRetentionDays = parseRetentionDays(retentionDays);
+  const cutoff = now - normalizedRetentionDays * DAY_MS;
+  const candidates = db.read('assets').filter((asset) => {
+    const createdAt = Date.parse(asset.createdAt);
+    return Number.isFinite(createdAt)
+      && createdAt <= cutoff
+      && !assetIsReferenced(db, asset.userId, asset.id, now);
+  });
+  const deletedIds = [];
+  const failedAssets = [];
+
+  for (const asset of candidates) {
+    try {
+      if (asset.objectKey) {
+        if (!assetStorage) throw new Error('Object storage is not configured');
+        await assetStorage.delete(asset.objectKey);
+      }
+      deletedIds.push(asset.id);
+    } catch (error) {
+      failedAssets.push({ id: asset.id, error });
+      onError(`Failed to automatically delete cloud asset ${asset.id}:`, error);
+    }
+  }
+
+  if (deletedIds.length) {
+    const deletedIdSet = new Set(deletedIds);
+    await db.mutate((data) => {
+      data.assets = data.assets.filter((asset) => !deletedIdSet.has(asset.id));
+    });
+  }
+  return { deleted: deletedIds.length, failed: failedAssets.length, deletedIds, failedAssets };
+}
+
 export function registerAssetRoutes(router, { db, requireAuth, assetStorage = null }) {
+  const retentionDays = parseRetentionDays(process.env.ASSET_RETENTION_DAYS);
+  let cleanupPromise = null;
+  const runCleanup = () => {
+    if (!cleanupPromise) {
+      cleanupPromise = cleanupExpiredAssets({ db, assetStorage, retentionDays })
+        .finally(() => { cleanupPromise = null; });
+    }
+    return cleanupPromise;
+  };
+  const cleanupTimer = setInterval(() => {
+    void runCleanup().catch((error) => console.error('Cloud asset cleanup failed:', error));
+  }, ASSET_CLEANUP_INTERVAL_MS);
+  cleanupTimer.unref?.();
+
   router.get('/public/:id', async (req, res) => {
     const asset = db.read('assets').find((entry) => entry.id === req.params.id);
     if (!asset) return res.status(404).json({ error: 'ASSET_NOT_FOUND', message: '图片不存在' });
@@ -67,6 +147,56 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
     res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     return res.send(bytes);
+  });
+
+  router.get('/', requireAuth, async (req, res, next) => {
+    try {
+      await runCleanup();
+    } catch (error) {
+      return next(error);
+    }
+    const quotaBytes = Number(process.env.ASSET_USER_QUOTA_BYTES) || DEFAULT_USER_QUOTA_BYTES;
+    const assets = db.read('assets').filter((asset) => asset.userId === req.user.id)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .map((asset) => {
+        const referenced = assetIsReferenced(db, req.user.id, asset.id);
+        return {
+          id: asset.id,
+          url: getPublicAssetUrl(req, asset.id),
+          mimeType: asset.mimeType,
+          byteSize: Number(asset.byteSize || 0),
+          storageProvider: asset.storageProvider || (asset.objectKey ? 'r2' : 'database'),
+          createdAt: asset.createdAt,
+          referenced,
+          expiresAt: referenced ? null : getAssetExpiration(asset.createdAt, retentionDays),
+        };
+      });
+    return res.json({
+      assets,
+      usedBytes: assets.reduce((sum, asset) => sum + asset.byteSize, 0),
+      quotaBytes,
+      storageProvider: assetStorage?.provider || 'database',
+      retentionDays,
+    });
+  });
+
+  router.delete('/:id', requireAuth, async (req, res) => {
+    const asset = db.read('assets').find((entry) => entry.id === req.params.id && entry.userId === req.user.id);
+    if (!asset) return res.status(404).json({ error: 'ASSET_NOT_FOUND', message: '素材不存在' });
+    if (assetIsReferenced(db, req.user.id, asset.id)) {
+      return res.status(409).json({ error: 'ASSET_IN_USE', message: '该素材仍被项目或生成历史使用，不能删除' });
+    }
+    if (asset.objectKey) {
+      if (!assetStorage) return storageError(res);
+      try {
+        await assetStorage.delete(asset.objectKey);
+      } catch (error) {
+        console.error('删除云端素材失败:', error);
+        return storageError(res);
+      }
+    }
+    await db.mutate((data) => { data.assets = data.assets.filter((entry) => entry.id !== asset.id); });
+    return res.status(204).end();
   });
 
   router.post('/', requireAuth, async (req, res, next) => {
