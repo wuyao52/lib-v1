@@ -487,7 +487,7 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
                   />
                 </div>
                 <p className="text-[10px] text-dark-400 mt-2">
-                  正在调用 {nodeData.settings?.style === 'cinematic' ? 'Seedance 2.0' : 'AI'} 生成{typeLabels[nodeData.type]}内容...
+                  {nodeData.generationMessage || `正在调用 ${nodeData.settings?.style === 'cinematic' ? 'Seedance 2.0' : 'AI'} 生成${typeLabels[nodeData.type]}内容...`}
                 </p>
               </div>
             )}
