@@ -400,8 +400,8 @@ export default function Canvas() {
         sourceImageUrl={sourceImageNode?.data?.generatedContent}
         sourceNodeType={sourceNode?.data?.type}
         initialReferences={generationSourceNodes.map((node) => ({ id: node.id, label: node.data.label, type: node.data.type, imageUrl: node.data.type === 'image' ? node.data.generatedContent : undefined }))}
-        mentionableNodes={project.nodes.filter((node) => !generationSourceNodeIdsRef.current.includes(node.id)).map((node) => ({ id: node.id, label: node.data.label, type: node.data.type }))}
-        durationRules={{ minDurationSec: configuredVideoModel.minDurationSec, maxDurationSec: configuredVideoModel.maxDurationSec, allowedDurationsSec: configuredVideoModel.allowedDurationsSec }}
+        mentionableNodes={project.nodes.map((node) => ({ id: node.id, label: node.data.label, type: node.data.type, imageUrl: node.data.type === 'image' ? node.data.generatedContent : undefined }))}
+        durationRules={{ managed: configuredVideoModel.managed, minDurationSec: configuredVideoModel.minDurationSec, maxDurationSec: configuredVideoModel.maxDurationSec, allowedDurationsSec: configuredVideoModel.allowedDurationsSec }}
       />
 
       {/* 去水印弹窗 */}
