@@ -89,10 +89,26 @@ test('system APIs, pricing, balances and managed gateway enforce roles and billi
   assert.equal(billing.balanceCents, 950);
   assert.equal(billing.transactions.some((item) => item.type === 'model_refund' && item.amountCents === 50), true);
 
-  await context.request(`/api/admin/users/${normal.user.id}/balance`, admin.cookie, { method: 'POST', body: JSON.stringify({ amountCents: -950 }) });
-  const insufficient = await context.request(`/api/system-ai/${createdApi.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'ok', duration: 5 }) });
-  assert.equal(insufficient.status, 402);
-  const adminCall = await context.request(`/api/system-ai/${createdApi.id}/v1/videos`, admin.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'ok', duration: 5 }) });
+  const pricing = (await pricingResponse.json()).pricing;
+  const fixedPricingResponse = await context.request(`/api/admin/pricing/${pricing.id}`, admin.cookie, { method: 'PUT', body: JSON.stringify({ allowedDurationsSec: [15], minDurationSec: 20, maxDurationSec: 30 }) });
+  assert.equal(fixedPricingResponse.status, 200);
+  const fixedPricing = (await fixedPricingResponse.json()).pricing;
+  assert.equal(fixedPricing.minDurationSec, null);
+  assert.equal(fixedPricing.maxDurationSec, null);
+  const fixedDurationSuccess = await context.request(`/api/system-ai/${createdApi.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'fixed-15', seconds: '15' }) });
+  assert.equal(fixedDurationSuccess.status, 200);
+  const invalidDuration = await context.request(`/api/system-ai/${createdApi.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'invalid-10', seconds: '10' }) });
+  assert.equal(invalidDuration.status, 400);
+  assert.match((await invalidDuration.json()).message, /本次收到 10 秒/);
+  billing = await (await context.request('/api/billing/me', normal.cookie)).json();
+  assert.equal(billing.balanceCents, 800);
+
+  await context.request(`/api/admin/users/${normal.user.id}/balance`, admin.cookie, { method: 'POST', body: JSON.stringify({ amountCents: -650 }) });
+  const concurrent = await Promise.all(['concurrent-a', 'concurrent-b'].map((prompt) => context.request(`/api/system-ai/${createdApi.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt, duration: 15 }) })));
+  assert.deepEqual(concurrent.map((response) => response.status).sort(), [200, 402]);
+  billing = await (await context.request('/api/billing/me', normal.cookie)).json();
+  assert.equal(billing.balanceCents, 0);
+  const adminCall = await context.request(`/api/system-ai/${createdApi.id}/v1/videos`, admin.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'ok', duration: 15 }) });
   assert.equal(adminCall.status, 200);
 });
 
