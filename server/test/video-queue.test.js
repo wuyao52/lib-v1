@@ -53,7 +53,7 @@ test('video queue enforces fair global and per-user concurrency, saves history, 
     };
     const queue = await createVideoQueue({ db, vault: { decrypt: (value) => value }, fetchImpl, autoStart: false });
 
-    await queue.enqueue({ id: 'job-a1', userId: 'user-a', apiId: 'api-1', modelId: 'video', requestBody: { prompt: 'a1' }, client: { projectId: 'project-a', nodeId: 'node-a' } });
+    await queue.enqueue({ id: 'job-a1', userId: 'user-a', apiId: 'api-1', modelId: 'video', requestBody: { prompt: 'a1' } });
     await queue.enqueue({ id: 'job-a2', userId: 'user-a', apiId: 'api-1', modelId: 'video', requestBody: { prompt: 'a2' } });
     await queue.enqueue({ id: 'job-b', userId: 'user-b', apiId: 'api-1', modelId: 'video', requestBody: { prompt: 'b' }, chargeCents: 50, billingReference: 'job-b' });
 
@@ -67,6 +67,7 @@ test('video queue enforces fair global and per-user concurrency, saves history, 
 
     assert.equal(db.data.generationHistory.length, 1);
     assert.equal(db.data.generationHistory[0].url, 'https://cdn.example/a1.mp4');
+    assert.equal(db.data.generationHistory[0].projectId, '');
     assert.equal(db.data.users.find((user) => user.id === 'user-b').balanceCents, 50);
     assert.equal(db.data.balanceTransactions.filter((item) => item.type === 'model_refund' && item.referenceId === 'job-b').length, 1);
 
@@ -113,7 +114,7 @@ test('video queue recovers interrupted submissions and only cleans expired termi
       systemApis: [{ id: 'api-1', enabled: true, baseUrl: 'https://upstream.example', encryptedApiKey: 'secret' }],
       generationJobs: [
         { ...baseJob, id: 'interrupted', status: 'submitting' },
-        { ...baseJob, id: 'old-completed', status: 'completed', completedAt: old },
+        { ...baseJob, id: 'old-completed', status: 'completed', completedAt: old, resultUrl: 'https://cdn.example/recovered.mp4' },
         { ...baseJob, id: 'old-processing', status: 'processing', providerTaskId: 'provider-old' },
       ],
     });
@@ -122,6 +123,7 @@ test('video queue recovers interrupted submissions and only cleans expired termi
       : new Response('{"status":"processing"}', { status: 200, headers: { 'content-type': 'application/json' } });
     const queue = await createVideoQueue({ db, vault: { decrypt: (value) => value }, fetchImpl, autoStart: false });
     assert.equal(db.data.generationJobs.find((job) => job.id === 'interrupted').status, 'queued');
+    assert.equal(db.data.generationHistory.find((item) => item.url === 'https://cdn.example/recovered.mp4')?.projectId, '');
     await queue.tick();
     assert.equal(db.data.generationJobs.some((job) => job.id === 'old-completed'), false);
     assert.equal(db.data.generationJobs.some((job) => job.id === 'old-processing'), true);
