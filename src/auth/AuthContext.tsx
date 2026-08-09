@@ -16,7 +16,6 @@ interface RegisterCredentials {
   email: string;
   password: string;
   verificationCode: string;
-  name: string;
 }
 
 interface LoginCredentials {
