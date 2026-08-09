@@ -207,14 +207,16 @@ const TABLES = {
       user_id CHAR(36) NOT NULL,
       sha256 CHAR(64) NOT NULL,
       mime_type VARCHAR(40) NOT NULL,
-      data_base64 MEDIUMTEXT NOT NULL,
+      data_base64 MEDIUMTEXT NULL,
+      object_key VARCHAR(1024) NULL,
+      storage_provider VARCHAR(20) NOT NULL DEFAULT 'database',
       byte_size INT NOT NULL,
       created_at VARCHAR(35) NOT NULL,
       UNIQUE KEY assets_user_hash_unique (user_id, sha256)
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
-    select: 'SELECT id, user_id AS userId, sha256, mime_type AS mimeType, data_base64 AS dataBase64, byte_size AS byteSize, created_at AS createdAt FROM assets',
-    insert: 'INSERT INTO assets (id, user_id, sha256, mime_type, data_base64, byte_size, created_at) VALUES ?',
-    values: (row) => [row.id, row.userId, row.sha256, row.mimeType, row.dataBase64, row.byteSize, row.createdAt],
+    select: 'SELECT id, user_id AS userId, sha256, mime_type AS mimeType, data_base64 AS dataBase64, object_key AS objectKey, storage_provider AS storageProvider, byte_size AS byteSize, created_at AS createdAt FROM assets',
+    insert: 'INSERT INTO assets (id, user_id, sha256, mime_type, data_base64, object_key, storage_provider, byte_size, created_at) VALUES ?',
+    values: (row) => [row.id, row.userId, row.sha256, row.mimeType, row.dataBase64 || null, row.objectKey || null, row.storageProvider || 'database', row.byteSize, row.createdAt],
   },
 };
 
@@ -239,6 +241,9 @@ export class MySqlDatabase {
     await this.ensureColumn('model_pricing', 'min_duration_sec', 'INT NULL');
     await this.ensureColumn('model_pricing', 'max_duration_sec', 'INT NULL');
     await this.ensureColumn('model_pricing', 'allowed_durations_sec', 'JSON NULL');
+    await this.ensureColumn('assets', 'object_key', 'VARCHAR(1024) NULL');
+    await this.ensureColumn('assets', 'storage_provider', "VARCHAR(20) NOT NULL DEFAULT 'database'");
+    await this.pool.query('ALTER TABLE `assets` MODIFY COLUMN `data_base64` MEDIUMTEXT NULL');
     for (const [collection, spec] of Object.entries(TABLES)) {
       const [rows] = await this.pool.query(spec.select);
       this.data[collection] = spec.parse ? rows.map(spec.parse) : rows;
