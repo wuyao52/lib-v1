@@ -1,6 +1,6 @@
 const FORWARDED_HEADERS = ['accept', 'authorization', 'content-type', 'cookie', 'origin', 'user-agent', 'x-api-key'];
-const PROTECTED_API_PATH = /^\/api\/(?:auth|director|skills|projects|admin|billing|catalog|system-ai)(?:\/|$)/;
-const PROTECTED_API_SCOPES = new Set(['auth', 'director', 'skills', 'projects', 'admin', 'billing', 'catalog', 'system-ai']);
+const PROTECTED_API_PATH = /^\/api\/(?:auth|director|skills|projects|assets|admin|billing|catalog|system-ai)(?:\/|$)/;
+const PROTECTED_API_SCOPES = new Set(['auth', 'director', 'skills', 'projects', 'assets', 'admin', 'billing', 'catalog', 'system-ai']);
 
 function getHeader(headers, name) {
   const matchingKey = Object.keys(headers || {}).find((key) => key.toLowerCase() === name);
@@ -18,7 +18,7 @@ function normalizeApiPath(rawPath) {
   if (!value) return '';
   const normalizedPath = `/${value.replace(/^\/+/, '')}`;
   if (normalizedPath.startsWith('/api/')) return normalizedPath;
-  const functionMatch = normalizedPath.match(/^\/\.netlify\/functions\/backend\/(auth|director|skills|projects|admin|billing|catalog|system-ai)(?:\/(.*))?$/);
+  const functionMatch = normalizedPath.match(/^\/\.netlify\/functions\/backend\/(auth|director|skills|projects|assets|admin|billing|catalog|system-ai)(?:\/(.*))?$/);
   if (functionMatch) return `/api/${functionMatch[1]}${functionMatch[2] ? `/${functionMatch[2]}` : ''}`;
   return normalizedPath;
 }
@@ -88,11 +88,18 @@ export async function handler(event) {
     }
     const setCookies = getSetCookies(response.headers);
 
+    const contentType = response.headers.get('content-type') || '';
+    const isTextResponse = /^(?:text\/)|(?:json|javascript|xml|svg)/i.test(contentType);
+    const body = isTextResponse
+      ? await response.text()
+      : Buffer.from(await response.arrayBuffer()).toString('base64');
+
     return {
       statusCode: response.status,
       headers: responseHeaders,
       ...(setCookies.length ? { multiValueHeaders: { 'set-cookie': setCookies } } : {}),
-      body: await response.text(),
+      ...(isTextResponse ? {} : { isBase64Encoded: true }),
+      body,
     };
   } catch (error) {
     console.error('Backend proxy failed:', error);
