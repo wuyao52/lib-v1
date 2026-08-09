@@ -101,6 +101,11 @@ function providerErrorMessage(data: any): string | null {
   return null;
 }
 
+function resolveVideoResolution(modelId: string, requested: unknown): string {
+  const modelResolution = modelId.match(/(?:^|[-_])(480|720|1080)p(?:$|[-_])/i)?.[1];
+  return modelResolution ? `${modelResolution}p` : String(requested || '1080p');
+}
+
 // AI 服务基类
 export class AIService {
   protected config: AIModelConfig;
@@ -294,7 +299,7 @@ export class SeedanceService extends AIService {
         model: modelId,
         prompt: prompt,
         aspect_ratio: settings.aspect_ratio || '16:9',
-        resolution: settings.resolution || '1080p',
+        resolution: resolveVideoResolution(modelId, settings.resolution),
         seconds: secondsValue,  // 使用 10 秒作为默认值
       };
 
@@ -391,15 +396,23 @@ export class SeedanceService extends AIService {
         });
 
         const data = await safeJsonParse(response);
-        console.log('轮询响应:', JSON.stringify(data, null, 2));
+        const businessError = providerErrorMessage(data);
+        if (!response.ok || businessError) {
+          const providerError = new Error(businessError || data.message || data.msg || data.error?.message || `轮询失败: ${response.status}`);
+          providerError.name = 'ProviderError';
+          throw providerError;
+        }
+        const payload = data.data && typeof data.data === 'object' ? data.data : data;
+        console.log('轮询响应摘要:', { code: data.code, status: payload.status || payload.state, progress: payload.progress || payload.percent });
 
         // 检查任务状态
-        const status = data.status || data.state;
+        const status = payload.status || payload.state || data.status || data.state;
         console.log('任务状态:', status);
 
         if (status === 'completed' || status === 'success') {
           // 尝试所有可能的视频 URL 字段
-          const videoUrl = data.video_url ||
+          const videoUrl = payload.video_url ||
+                          payload.url ||
                           data.result?.video_url ||
                           data.output?.video_url ||
                           data.data?.video_url ||
@@ -415,7 +428,7 @@ export class SeedanceService extends AIService {
               success: true,
               data: {
                 url: videoUrl,
-                thumbnail: data.thumbnail_url || data.result?.thumbnail_url,
+                thumbnail: payload.thumbnail_url || data.thumbnail_url || data.result?.thumbnail_url,
                 metadata: data,
               },
             };
@@ -432,12 +445,13 @@ export class SeedanceService extends AIService {
         }
 
         // 更新进度
-        const progress = data.progress || data.percent || 0;
+        const progress = payload.progress || payload.percent || data.progress || data.percent || 0;
         if (progress > 0) {
           console.log(`生成进度: ${progress}%`);
         }
       } catch (error: any) {
         if (isUserCancellation(error, signal)) throw userCancellationError();
+        if (error.name === 'ProviderError') throw error;
         if (error.message.includes('视频生成失败') || error.message.includes('未返回视频 URL')) {
           throw error;
         }
