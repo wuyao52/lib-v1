@@ -45,11 +45,30 @@ DATA_DIR=/var/data
 DATABASE_URL=${{MySQL.MYSQL_URL}}
 RESEND_API_KEY=re_your_api_key
 EMAIL_FROM="AI Drama Studio <register@your-verified-domain.example>"
+R2_ACCOUNT_ID=your_cloudflare_account_id
+R2_ACCESS_KEY_ID=your_r2_access_key_id
+R2_SECRET_ACCESS_KEY=your_r2_secret_access_key
+R2_BUCKET=ai-drama-assets
+ASSET_USER_QUOTA_BYTES=2147483648
 ```
 
 Netlify 会将 `/api/auth/*`、`/api/director/*`、`/api/skills/*` 与 `/api/projects/*` 转发到该后端，因此验证码和 HttpOnly 会话 Cookie 仍使用 Netlify 的同源地址。后端部署命令为 `npm ci && npm run build`，启动命令为 `npm start`。不要只部署 `dist/`，也不要把密钥写入 `.env.example` 或 `VITE_*` 浏览器变量。
 
 生产环境配置 `DATABASE_URL` 后，服务端会自动创建 MySQL 表并将用户、会话、验证码、Skill 和项目写入云数据库。密码始终使用 `scrypt` 哈希保存；项目中的模型 API Key 会在写库前清空，只保留在当前浏览器会话中。未配置 `DATABASE_URL` 时仅使用本地 JSON 存储，供开发和自动测试使用。
+
+### Cloudflare R2 素材存储
+
+在 Cloudflare 控制台进入 `R2 Object Storage`，创建存储桶（例如 `ai-drama-assets`），然后进入 `Manage R2 API Tokens` 创建仅限该存储桶的 `Object Read & Write` Token。将页面给出的 Account ID、Access Key ID、Secret Access Key 和存储桶名称分别填写到 Railway Variables：
+
+```env
+R2_ACCOUNT_ID=你的Account ID
+R2_ACCESS_KEY_ID=你的Access Key ID
+R2_SECRET_ACCESS_KEY=你的Secret Access Key
+R2_BUCKET=ai-drama-assets
+ASSET_USER_QUOTA_BYTES=2147483648
+```
+
+四个 `R2_*` 变量必须同时配置。重新部署 Railway 后，新图片写入 R2，MySQL 的 `assets` 表只保存对象 Key、哈希、类型、大小和用户归属；旧 Base64 素材仍可读取，并在再次上传相同素材时迁移到 R2。未配置 R2 时保留数据库存储兼容模式。`ASSET_USER_QUOTA_BYTES` 可选，默认每个用户 2 GiB。
 
 ## 认证、导演模式与 Skill
 
