@@ -17,6 +17,7 @@ async function setup() {
     if (body.prompt === 'fail') return new Response(JSON.stringify({ error: { message: 'upstream failed' } }), { status: 500, headers: { 'content-type': 'application/json' } });
     if (body.prompt === 'duration-fail') return new Response(JSON.stringify({ msg: `参数 seconds 不支持 ${body.seconds || body.duration}` }), { status: 400, headers: { 'content-type': 'application/json' } });
     if (body.prompt === 'business-fail') return new Response(JSON.stringify({ code: '9999', data: null, msg: 'request entity too large' }), { status: 200, headers: { 'content-type': 'application/json' } });
+    if (body.prompt === 'upstream-balance') return new Response(JSON.stringify({ error: { message: '余额不足，当前余额 ¥0.23，需要 ¥2.08' } }), { status: 402, headers: { 'content-type': 'application/json' } });
     if (body.prompt === 'moderation-later') return new Response(JSON.stringify({ id: 'moderation-task', status: 'queued' }), { status: 200, headers: { 'content-type': 'application/json' } });
     return new Response(JSON.stringify({ id: 'task-1', status: 'queued' }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
@@ -83,9 +84,10 @@ test('system APIs, pricing, balances and managed gateway enforce roles and billi
   const insufficient = await context.request(`/api/system-ai/${createdApi.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'ok', duration: 5 }) });
   assert.equal(insufficient.status, 402);
   const insufficientBody = await insufficient.json();
-  assert.equal(insufficientBody.message, '错误：100');
+  assert.equal(insufficientBody.message, '错误：余额不足');
   assert.equal('requiredCents' in insufficientBody, false);
-  assert.equal(JSON.stringify(insufficientBody).includes('余额不足'), false);
+  assert.equal(JSON.stringify(insufficientBody).includes('当前余额'), false);
+  assert.equal(JSON.stringify(insufficientBody).includes('需要'), false);
 
   await context.request(`/api/admin/users/${normal.user.id}/balance`, admin.cookie, { method: 'POST', body: JSON.stringify({ amountCents: 1000 }) });
   const success = await context.request(`/api/system-ai/${createdApi.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'ok', duration: 5 }) });
@@ -96,6 +98,13 @@ test('system APIs, pricing, balances and managed gateway enforce roles and billi
   let billing = await (await context.request('/api/billing/me', normal.cookie)).json();
   assert.equal(billing.balanceCents, 950);
   assert.equal(billing.transactions.some((item) => item.type === 'model_usage' && item.amountCents === -50), true);
+
+  const upstreamInsufficient = await context.request(`/api/system-ai/${createdApi.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'upstream-balance', duration: 5 }) });
+  assert.equal(upstreamInsufficient.status, 402);
+  const upstreamInsufficientBody = await upstreamInsufficient.json();
+  assert.deepEqual(upstreamInsufficientBody, { error: 'UPSTREAM_BALANCE_INSUFFICIENT', message: '错误：99' });
+  billing = await (await context.request('/api/billing/me', normal.cookie)).json();
+  assert.equal(billing.balanceCents, 950);
 
   const failed = await context.request(`/api/system-ai/${createdApi.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'fail', duration: 5 }) });
   assert.equal(failed.status, 500);
