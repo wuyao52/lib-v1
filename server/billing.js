@@ -189,6 +189,13 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
   router.post('/users/:id/balance', async (req, res) => {
     const amountCents = integer(req.body.amountCents);
     if (!Number.isInteger(amountCents) || amountCents === 0 || Math.abs(amountCents) > 10_000_000) return res.status(400).json({ error: 'INVALID_AMOUNT', message: '调整金额无效' });
+    if (db.changeBalanceAtomic) {
+      const result = await db.changeBalanceAtomic({ userId: req.params.id, amountCents, type: 'admin_adjustment', description: String(req.body.description || '系统用户调整余额').slice(0, 300), createdBy: req.user.id });
+      if (result.failure === 'USER_NOT_FOUND') return res.status(404).json({ error: result.failure, message: '用户不存在' });
+      if (result.failure) return res.status(409).json({ error: result.failure, message: '余额不能小于零' });
+      const user = db.read('users').find((item) => item.id === req.params.id);
+      return res.json({ user: safeUser(user || { id: req.params.id, balanceCents: result.balance }), transaction: result.transaction });
+    }
     let updated; let transaction; let failure;
     await db.mutate((data) => {
       const user = data.users.find((item) => item.id === req.params.id);
