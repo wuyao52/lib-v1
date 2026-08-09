@@ -10,6 +10,7 @@ export default defineConfig({
         manualChunks: {
           'react-vendor': ['react', 'react-dom', 'zustand'],
           'flow-vendor': ['@xyflow/react'],
+          'd3-vendor': ['d3-color', 'd3-dispatch', 'd3-drag', 'd3-ease', 'd3-interpolate', 'd3-selection', 'd3-timer', 'd3-transition', 'd3-zoom'],
           'motion-vendor': ['framer-motion'],
         },
       },
