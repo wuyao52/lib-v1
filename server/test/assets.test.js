@@ -72,11 +72,22 @@ test('image assets require auth, persist exact bytes, deduplicate per user and v
   assert.equal(firstAsset.mimeType, 'image/png');
   assert.equal(firstAsset.byteSize, PNG_BYTES.length);
 
-  const publicResponse = await fetch(`${baseUrl}${new URL(firstAsset.url).pathname}`);
-  assert.equal(publicResponse.status, 200);
-  assert.equal(publicResponse.headers.get('content-type'), 'image/png');
-  assert.equal(publicResponse.headers.get('x-content-type-options'), 'nosniff');
-  assert.deepEqual(Buffer.from(await publicResponse.arrayBuffer()), PNG_BYTES);
+  const unsignedUrl = `${baseUrl}${new URL(firstAsset.url).pathname}`;
+  const anonymousResponse = await fetch(unsignedUrl);
+  assert.equal(anonymousResponse.status, 401);
+  const ownerResponse = await fetch(unsignedUrl, { headers: { cookie: firstCookie } });
+  assert.equal(ownerResponse.status, 200);
+  assert.equal(ownerResponse.headers.get('content-type'), 'image/png');
+  assert.equal(ownerResponse.headers.get('x-content-type-options'), 'nosniff');
+  assert.deepEqual(Buffer.from(await ownerResponse.arrayBuffer()), PNG_BYTES);
+
+  const signedResult = await (await fetch(`${baseUrl}/api/assets/${firstAsset.id}/signed-url`, { headers: { cookie: firstCookie } })).json();
+  const signedUrl = new URL(signedResult.url);
+  const signedResponse = await fetch(`${baseUrl}${signedUrl.pathname}${signedUrl.search}`);
+  assert.equal(signedResponse.status, 200);
+  assert.deepEqual(Buffer.from(await signedResponse.arrayBuffer()), PNG_BYTES);
+  signedUrl.searchParams.set('signature', 'tampered');
+  assert.equal((await fetch(`${baseUrl}${signedUrl.pathname}${signedUrl.search}`)).status, 401);
 
   const duplicateUpload = await upload(baseUrl, firstCookie, PNG_DATA_URL);
   assert.equal(duplicateUpload.status, 200);
@@ -154,7 +165,7 @@ test('R2 asset storage keeps bytes out of the database and migrates legacy asset
   assert.match(migrated.objectKey, /^assets\/[^/]+\/[a-f0-9]{64}\.png$/);
   assert.equal(puts.length, 1);
 
-  const publicResponse = await fetch(`${baseUrl}/api/assets/public/${migrated.id}`);
+  const publicResponse = await fetch(`${baseUrl}/api/assets/public/${migrated.id}`, { headers: { cookie } });
   assert.equal(publicResponse.status, 200);
   assert.deepEqual(Buffer.from(await publicResponse.arrayBuffer()), PNG_BYTES);
 
