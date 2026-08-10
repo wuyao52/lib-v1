@@ -40,6 +40,17 @@ test('Netlify backend proxy forwards protected APIs and preserves session cookie
   assert.match(result.multiValueHeaders['set-cookie'][0], /ads_session=/);
 });
 
+test('Netlify backend proxy preserves security headers from the Node service', async (t) => {
+  const previousOrigin = process.env.API_ORIGIN;
+  const previousFetch = globalThis.fetch;
+  process.env.API_ORIGIN = 'https://api.example.com';
+  globalThis.fetch = async () => new Response('{}', { status: 200, headers: { 'content-type': 'application/json', 'content-security-policy': "default-src 'self'", 'x-frame-options': 'DENY' } });
+  t.after(() => { if (previousOrigin === undefined) delete process.env.API_ORIGIN; else process.env.API_ORIGIN = previousOrigin; globalThis.fetch = previousFetch; });
+  const result = await handler(createEvent('/api/health'));
+  assert.equal(result.headers['content-security-policy'], "default-src 'self'");
+  assert.equal(result.headers['x-frame-options'], 'DENY');
+});
+
 test('Netlify backend proxy reconstructs the protected path from a redirect scope', async (t) => {
   const previousOrigin = process.env.API_ORIGIN;
   const previousFetch = globalThis.fetch;
