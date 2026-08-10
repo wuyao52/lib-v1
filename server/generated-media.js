@@ -1,14 +1,22 @@
 import { randomUUID } from 'node:crypto';
+import { lookup } from 'node:dns/promises';
+import { assertPublicHost } from './api-discovery.js';
+import { readLimitedBody } from './resource-guard.js';
 
 const retentionMs = () => {
   const days = Number.parseInt(process.env.GENERATION_HISTORY_RETENTION_DAYS || '90', 10);
   return Math.min(3650, Math.max(3, Number.isInteger(days) ? days : 90)) * 24 * 60 * 60 * 1000;
 };
 const DEFAULT_MAX_VIDEO_BYTES = 1024 * 1024 * 1024;
+const DEFAULT_NON_STREAM_MAX_BYTES = 32 * 1024 * 1024;
 
 const maxVideoBytes = () => {
   const configured = Number(process.env.GENERATED_VIDEO_MAX_BYTES);
   return Number.isSafeInteger(configured) && configured > 0 ? configured : DEFAULT_MAX_VIDEO_BYTES;
+};
+const maxNonStreamBytes = () => {
+  const configured = Number(process.env.GENERATED_VIDEO_NON_STREAM_MAX_BYTES);
+  return Number.isSafeInteger(configured) && configured > 0 ? Math.min(configured, maxVideoBytes()) : Math.min(DEFAULT_NON_STREAM_MAX_BYTES, maxVideoBytes());
 };
 
 function parseRange(value) {
@@ -20,13 +28,16 @@ function parseRange(value) {
   return { start, end, header: `bytes=${start}-${end ?? ''}` };
 }
 
-export function createGeneratedMediaService({ db, storage, fetchImpl = fetch } = {}) {
+export function createGeneratedMediaService({ db, storage, fetchImpl = fetch, resolveHost = lookup } = {}) {
   const archive = async (job, result) => {
     if (!storage || !result?.url) return result;
     const existing = db.read('generatedMedia').find((item) => item.jobId === job.id);
     if (existing) return { ...result, url: `/api/generated-media/${existing.id}` };
     const target = new URL(result.url);
     if (target.protocol !== 'https:') throw new Error('生成视频归档只允许 HTTPS 来源');
+    // A provider result URL is still untrusted input. Resolve it immediately
+    // before downloading so an external API cannot turn archiving into SSRF.
+    await assertPublicHost(target.hostname, resolveHost);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 120000);
     try {
@@ -43,8 +54,8 @@ export function createGeneratedMediaService({ db, storage, fetchImpl = fetch } =
       if (storage.putStream) {
         await storage.putStream({ key: objectKey, body: response.body, mimeType, contentLength: contentLength || undefined });
       } else {
-        const bytes = Buffer.from(await response.arrayBuffer());
-        if (bytes.length > maxVideoBytes()) throw new Error('生成视频超过平台归档大小限制');
+        if (!contentLength || contentLength > maxNonStreamBytes()) throw new Error('当前存储不支持流式归档，视频过大或未声明大小，已拒绝以保护服务器内存');
+        const bytes = await readLimitedBody(response, maxNonStreamBytes());
         byteSize = bytes.length;
         await storage.put({ key: objectKey, bytes, mimeType });
       }
