@@ -22,6 +22,7 @@ import { registerUserApiConfigRoutes, registerUserAiRoutes } from './user-api-co
 import { createResourceGuard } from './resource-guard.js';
 import { startMaintenanceScheduler } from './maintenance.js';
 import { createPaymentService, registerPaymentRoutes } from './payments.js';
+import { createMonitoringService } from './monitoring.js';
 
 const currentDir = fileURLToPath(new URL('.', import.meta.url));
 
@@ -107,6 +108,7 @@ export async function createApp(options = {}) {
   );
   const assetStorage = options.assetStorage === undefined ? createObjectStorageFromEnv() : options.assetStorage;
   const generatedMedia = createGeneratedMediaService({ db, storage: assetStorage, fetchImpl: options.fetchImpl });
+  const monitoring = createMonitoringService({ db, fetchImpl: options.fetchImpl, env: process.env });
   const maintenance = options.maintenance === false ? null : startMaintenanceScheduler({ db, storage: assetStorage, generatedMedia });
   const paymentService = createPaymentService({ db, fetchImpl: options.fetchImpl, env: process.env, config: options.paymentConfig });
   const systemUserEmails = new Set(String(process.env.SYSTEM_USER_EMAILS || '')
@@ -121,12 +123,14 @@ export async function createApp(options = {}) {
     });
   }
   const app = express();
+  if (options.monitoring !== false) monitoring.start();
   const allowedOrigins = new Set(options.allowedOrigins || ['http://localhost:3000', 'http://127.0.0.1:3000']);
   const auth = createAuthService(db, {
     secureCookies: options.secureCookies ?? process.env.NODE_ENV === 'production',
     sendEmailCode: options.sendEmailCode || createEmailSenderFromEnv(),
     generateImageCaptcha: options.generateImageCaptcha,
     systemUserEmails,
+    securityEvent: async (req, action, metadata = {}) => db.mutate((data) => data.auditLogs.push({ id: metadata.userId || req.user?.id || null, action, targetType: 'security', targetId: null, ipAddress: String(req.ip || '').slice(0, 100), userAgent: String(req.get('user-agent') || '').slice(0, 300), metadata: { requestId: req.requestId || null, ...metadata }, createdAt: new Date().toISOString() })),
   });
   const encryptionKey = options.encryptionKey ?? process.env.APP_ENCRYPTION_KEY;
   const vault = createSecretVault(encryptionKey || (process.env.NODE_ENV === 'production' ? '' : 'local-development-encryption-key-change-me'));
@@ -190,7 +194,7 @@ export async function createApp(options = {}) {
     try { if (db.ping) await db.ping(); } catch { checks.database = 'error'; }
     try { if (assetStorage?.health) await assetStorage.health(); } catch { checks.objectStorage = 'error'; }
     const ok = checks.database === 'ok' && checks.objectStorage !== 'error';
-    return res.status(ok ? 200 : 503).json({ ok, service: 'ai-drama-studio', checks });
+    return res.status(ok ? 200 : 503).json({ ok, service: 'ai-drama-studio', checks, monitoring: { configured: monitoring.configured, intervalMs: monitoring.intervalMs } });
   });
   const authRouter = express.Router();
   const authRateLimiter = createRateLimiter({ db, limit: 12, windowMs: 60_000 });
