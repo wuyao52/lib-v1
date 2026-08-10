@@ -156,8 +156,41 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
         averageCompletionMs: durations.length ? Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length) : null,
         refundedCents,
         archiveFallbacks: completed.filter((job) => job.resultUrl && !archivedJobIds.has(job.id)).length,
+        failureRate: recent.length ? Number((recent.filter((job) => job.status === 'failed').length / recent.length).toFixed(4)) : 0,
+        queueBacklog: recent.filter((job) => ['queued', 'submitting', 'processing'].includes(job.status)).length,
+        averageQueueWaitMs: (() => { const waits = recent.map((job) => Date.parse(job.submittedAt) - Date.parse(job.createdAt)).filter((value) => Number.isFinite(value) && value >= 0); return waits.length ? Math.round(waits.reduce((sum, value) => sum + value, 0) / waits.length) : null; })(),
       },
     });
+  });
+  router.get('/security-alerts', (_req, res) => {
+    const since = Date.now() - (24 * 60 * 60 * 1000);
+    const logs = db.read('auditLogs').filter((log) => Date.parse(log.createdAt) >= since);
+    const failedByIp = new Map();
+    logs.filter((log) => log.action === 'login_failed').forEach((log) => failedByIp.set(log.ipAddress, (failedByIp.get(log.ipAddress) || 0) + 1));
+    const loginBruteForce = [...failedByIp.entries()].filter(([, count]) => count >= 5).map(([ipAddress, count]) => ({ ipAddress, count }));
+    const privilegedActions = logs.filter((log) => ['system_api_revealed', 'user_role_updated', 'user_balance_adjusted', 'payment_refund_requested'].includes(log.action)).length;
+    const modelCalls = logs.filter((log) => log.action === 'managed_model_requested').length;
+    return res.json({ generatedAt: nowIso(), windowHours: 24, alerts: { loginBruteForce, privilegedActions, modelCalls }, recentSecurityEvents: logs.filter((log) => log.targetType === 'security').slice(-100).reverse() });
+  });
+  router.get('/operations-alerts', (_req, res) => {
+    const now = Date.now();
+    const since = now - (24 * 60 * 60 * 1000);
+    const jobs = db.read('generationJobs');
+    const recent = jobs.filter((job) => Date.parse(job.createdAt) >= since);
+    const backlog = jobs.filter((job) => ['queued', 'submitting', 'processing'].includes(job.status));
+    const failed = recent.filter((job) => job.status === 'failed').length;
+    const failureRate = recent.length ? failed / recent.length : 0;
+    const queueThreshold = Math.max(1, Number.parseInt(process.env.ALERT_QUEUE_BACKLOG || '25', 10) || 25);
+    const failureThreshold = Math.min(1, Math.max(0.01, Number(process.env.ALERT_FAILURE_RATE || '0.2') || 0.2));
+    const delayedThresholdMs = Math.max(60_000, (Number.parseInt(process.env.ALERT_PROCESSING_MINUTES || '30', 10) || 30) * 60_000);
+    const delayed = backlog.filter((job) => job.status === 'processing' && now - Date.parse(job.updatedAt || job.createdAt) >= delayedThresholdMs)
+      .map((job) => ({ jobId: job.id, userId: job.userId, apiId: job.apiId, updatedAt: job.updatedAt }));
+    const alerts = [
+      ...(backlog.length >= queueThreshold ? [{ code: 'QUEUE_BACKLOG', severity: 'warning', count: backlog.length, threshold: queueThreshold }] : []),
+      ...(recent.length && failureRate >= failureThreshold ? [{ code: 'GENERATION_FAILURE_RATE', severity: 'warning', count: failed, total: recent.length, rate: Number(failureRate.toFixed(4)), threshold: failureThreshold }] : []),
+      ...(delayed.length ? [{ code: 'PROCESSING_DELAYED', severity: 'warning', count: delayed.length, thresholdMinutes: Math.round(delayedThresholdMs / 60_000) }] : []),
+    ];
+    return res.json({ generatedAt: nowIso(), windowHours: 24, healthy: alerts.length === 0, alerts, delayed });
   });
   router.get('/payment-reconciliation', (_req, res) => {
     const orders = db.read('paymentOrders');
