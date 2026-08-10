@@ -93,7 +93,7 @@ export function decryptWechatResource(resource, apiV3Key) {
 
 function createWechatProvider(config, fetchImpl) {
   return {
-    enabled: Boolean(config.appId && config.mchId && config.serialNo && config.privateKey && config.platformCertificate && config.apiV3Key?.length === 32 && config.notifyUrl && config.refundNotifyUrl),
+    enabled: Boolean(config.appId && config.mchId && config.serialNo && config.platformSerialNo && config.privateKey && config.platformCertificate && config.apiV3Key?.length === 32 && config.notifyUrl && config.refundNotifyUrl),
     async create(order, clientIp) {
       const path = '/v3/pay/transactions/h5';
       const body = JSON.stringify({ appid: config.appId, mchid: config.mchId, description: 'AI Drama Studio 余额充值', out_trade_no: order.merchantOrderNo, notify_url: config.notifyUrl, amount: { total: order.amountCents, currency: 'CNY' }, scene_info: { payer_client_ip: clientIp || '127.0.0.1', h5_info: { type: 'Wap' } } });
@@ -103,6 +103,7 @@ function createWechatProvider(config, fetchImpl) {
       return result.h5_url;
     },
     verify(rawBody, headers) {
+      if (String(headers['wechatpay-serial'] || '') !== String(config.platformSerialNo || '')) throw new Error('微信支付平台证书序列号不匹配');
       const timestamp = String(headers['wechatpay-timestamp'] || '');
       const nonce = String(headers['wechatpay-nonce'] || '');
       const signature = String(headers['wechatpay-signature'] || '');
@@ -110,6 +111,7 @@ function createWechatProvider(config, fetchImpl) {
       if (!signature || !rsaVerify('RSA-SHA256', Buffer.from(message), pem(config.platformCertificate), Buffer.from(signature, 'base64'))) throw new Error('微信支付回调签名无效');
       if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) throw new Error('微信支付回调时间戳已过期');
       const notification = JSON.parse(rawBody);
+      if (notification.event_type && notification.event_type !== 'TRANSACTION.SUCCESS') throw new Error('微信支付通知事件类型无效');
       const transaction = decryptWechatResource(notification.resource, config.apiV3Key);
       if (transaction.trade_state !== 'SUCCESS' || transaction.appid !== config.appId || transaction.mchid !== config.mchId) throw new Error('微信支付交易信息无效');
       return { merchantOrderNo: String(transaction.out_trade_no), providerTradeNo: String(transaction.transaction_id), amountCents: Number(transaction.amount?.total), eventId: String(notification.id), payloadHash: sha256(rawBody) };
@@ -123,6 +125,7 @@ function createWechatProvider(config, fetchImpl) {
       return { completed: result.status === 'SUCCESS', providerRefundNo: String(result.refund_id || '') };
     },
     verifyRefund(rawBody, headers) {
+      if (String(headers['wechatpay-serial'] || '') !== String(config.platformSerialNo || '')) throw new Error('微信支付平台证书序列号不匹配');
       const timestamp = String(headers['wechatpay-timestamp'] || ''); const nonce = String(headers['wechatpay-nonce'] || ''); const signature = String(headers['wechatpay-signature'] || '');
       if (!signature || !rsaVerify('RSA-SHA256', Buffer.from(`${timestamp}\n${nonce}\n${rawBody}\n`), pem(config.platformCertificate), Buffer.from(signature, 'base64'))) throw new Error('微信退款回调签名无效');
       if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) throw new Error('微信退款回调时间戳已过期');
@@ -181,6 +184,7 @@ async function settlePaidOrder(db, provider, payment) {
     const order = data.paymentOrders.find((item) => item.provider === provider && item.merchantOrderNo === payment.merchantOrderNo);
     if (!order) return;
     result.found = true;
+    if (order.status === 'pending' && Date.parse(order.expiresAt) < Date.now()) return;
     if (Number(order.amountCents) !== Number(payment.amountCents)) { result.mismatch = true; return; }
     if (data.paymentEvents.some((item) => item.provider === provider && item.providerEventId === payment.eventId)) return;
     data.paymentEvents.push({ id: sha256(`${provider}:${payment.eventId}`), provider, providerEventId: payment.eventId, orderId: order.id, eventType: 'payment_succeeded', payloadHash: payment.payloadHash, createdAt: nowIso() });
@@ -200,7 +204,7 @@ export function createPaymentService({ db, fetchImpl = fetch, env = process.env,
   const notifyBase = String(env.PAYMENT_NOTIFY_BASE_URL || '').replace(/\/+$/, '');
   const paymentConfig = config || {
     alipay: { appId: env.ALIPAY_APP_ID, privateKey: env.ALIPAY_PRIVATE_KEY, publicKey: env.ALIPAY_PUBLIC_KEY, sellerId: env.ALIPAY_SELLER_ID, notifyUrl: `${notifyBase}/api/payments/callback/alipay`, returnUrl: env.ALIPAY_RETURN_URL },
-    wechat: { appId: env.WECHAT_PAY_APP_ID, mchId: env.WECHAT_PAY_MCH_ID, serialNo: env.WECHAT_PAY_SERIAL_NO, privateKey: env.WECHAT_PAY_PRIVATE_KEY, platformCertificate: env.WECHAT_PAY_PLATFORM_CERT, apiV3Key: env.WECHAT_PAY_API_V3_KEY, notifyUrl: `${notifyBase}/api/payments/callback/wechat`, refundNotifyUrl: `${notifyBase}/api/payments/callback/wechat-refund` },
+    wechat: { appId: env.WECHAT_PAY_APP_ID, mchId: env.WECHAT_PAY_MCH_ID, serialNo: env.WECHAT_PAY_SERIAL_NO, platformSerialNo: env.WECHAT_PAY_PLATFORM_SERIAL_NO, privateKey: env.WECHAT_PAY_PRIVATE_KEY, platformCertificate: env.WECHAT_PAY_PLATFORM_CERT, apiV3Key: env.WECHAT_PAY_API_V3_KEY, notifyUrl: `${notifyBase}/api/payments/callback/wechat`, refundNotifyUrl: `${notifyBase}/api/payments/callback/wechat-refund` },
   };
   const providers = { alipay: createAlipayProvider(paymentConfig.alipay || {}, fetchImpl), wechat: createWechatProvider(paymentConfig.wechat || {}, fetchImpl) };
   return { providers, settle: (provider, payment) => settlePaidOrder(db, provider, payment), reserveRefund: (orderId) => reserveRefund(db, orderId), finishRefund: (orderId, eventId) => finishRefund(db, orderId, eventId), rollbackRefund: (orderId) => rollbackRefund(db, orderId) };
@@ -248,7 +252,11 @@ export function registerPaymentRoutes(router, { db, requireAuth, requireSystem, 
     const amountCents = Number(req.body?.amountCents);
     if (!provider?.enabled) return res.status(503).json({ error: 'PAYMENT_PROVIDER_NOT_CONFIGURED', message: '该支付渠道尚未配置' });
     if (!Number.isSafeInteger(amountCents) || amountCents < 100 || amountCents > 10_000_000) return res.status(400).json({ error: 'INVALID_AMOUNT', message: '充值金额必须在 1-100000 元之间' });
-    const createdAt = new Date();
+    const now = new Date();
+    await db.mutate((data) => data.paymentOrders.forEach((item) => {
+      if (item.status === 'pending' && Date.parse(item.expiresAt) < now.getTime()) item.status = 'expired';
+    }));
+    const createdAt = now;
     const order = { id: randomUUID(), userId: req.user.id, merchantOrderNo: orderNumber(), provider: providerName, amountCents, status: 'pending', providerTradeNo: null, payUrl: '', createdAt: createdAt.toISOString(), expiresAt: new Date(createdAt.getTime() + 30 * 60 * 1000).toISOString(), paidAt: null, refundedAt: null };
     await db.mutate((data) => data.paymentOrders.push(order));
     try {
