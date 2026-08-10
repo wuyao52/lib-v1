@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 
-const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
+const retentionMs = () => {
+  const days = Number.parseInt(process.env.GENERATION_HISTORY_RETENTION_DAYS || '90', 10);
+  return Math.min(3650, Math.max(3, Number.isInteger(days) ? days : 90)) * 24 * 60 * 60 * 1000;
+};
 const DEFAULT_MAX_VIDEO_BYTES = 1024 * 1024 * 1024;
 
 const maxVideoBytes = () => {
@@ -48,7 +51,7 @@ export function createGeneratedMediaService({ db, storage, fetchImpl = fetch } =
       const createdAt = new Date().toISOString();
       const record = {
         id, userId: job.userId, jobId: job.id, objectKey, mimeType, byteSize,
-        sourceUrl: result.url, createdAt, expiresAt: new Date(Date.parse(createdAt) + THREE_DAYS_MS).toISOString(),
+        sourceUrl: result.url, createdAt, expiresAt: new Date(Date.parse(createdAt) + retentionMs()).toISOString(),
       };
       await db.mutate((data) => data.generatedMedia.push(record));
       return { ...result, url: `/api/generated-media/${id}` };
