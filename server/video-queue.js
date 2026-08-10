@@ -10,10 +10,10 @@ const intFromEnv = (name, fallback, minimum, maximum) => {
 };
 
 const queueConfig = () => ({
-  globalConcurrency: intFromEnv('VIDEO_QUEUE_GLOBAL_CONCURRENCY', 20, 1, 200),
-  userConcurrency: intFromEnv('VIDEO_QUEUE_USER_CONCURRENCY', 20, 1, 50),
-  apiConcurrency: intFromEnv('VIDEO_QUEUE_API_CONCURRENCY', 20, 1, 100),
-  pollConcurrency: intFromEnv('VIDEO_QUEUE_POLL_CONCURRENCY', 20, 1, 200),
+  globalConcurrency: intFromEnv('VIDEO_QUEUE_GLOBAL_CONCURRENCY', 12, 1, 200),
+  userConcurrency: intFromEnv('VIDEO_QUEUE_USER_CONCURRENCY', 4, 1, 50),
+  apiConcurrency: intFromEnv('VIDEO_QUEUE_API_CONCURRENCY', 8, 1, 100),
+  pollConcurrency: intFromEnv('VIDEO_QUEUE_POLL_CONCURRENCY', 12, 1, 200),
   maxQueuePerUser: intFromEnv('VIDEO_QUEUE_MAX_PENDING_PER_USER', 50, 1, 500),
   taskTimeoutMs: intFromEnv('VIDEO_QUEUE_TASK_TIMEOUT_MINUTES', 60, 5, 1440) * 60 * 1000,
   historyRetentionMs: intFromEnv('VIDEO_QUEUE_HISTORY_DAYS', 7, 1, 90) * 24 * 60 * 60 * 1000,
