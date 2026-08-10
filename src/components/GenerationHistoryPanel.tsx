@@ -30,16 +30,15 @@ export default function GenerationHistoryPanel({ onClose }: { onClose: () => voi
   const [items, setItems] = useState<HistoryItem[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [loadError, setLoadError] = useState('');
   const refresh = useCallback(() => {
     void apiRequest<{ history: HistoryItem[]; nextCursor: string | null }>('/api/generation-history?limit=50')
       .then((result) => {
-        setItems((current) => {
-          const merged = new Map([...current, ...result.history].map((item) => [item.id, item]));
-          return [...merged.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-        });
-        setNextCursor((current) => current ?? result.nextCursor);
+        setItems(result.history);
+        setNextCursor(result.nextCursor);
+        setLoadError('');
       })
-      .catch((error) => console.warn('读取生成历史失败:', error));
+      .catch((error) => { console.warn('读取生成历史失败:', error); setLoadError(error instanceof Error ? error.message : '历史记录暂时无法加载'); });
   }, []);
   const loadMore = useCallback(async () => {
     if (!nextCursor || loadingMore) return;
@@ -48,7 +47,7 @@ export default function GenerationHistoryPanel({ onClose }: { onClose: () => voi
       const result = await apiRequest<{ history: HistoryItem[]; nextCursor: string | null }>(`/api/generation-history?limit=50&cursor=${encodeURIComponent(nextCursor)}`);
       setItems((current) => [...current, ...result.history.filter((item) => !current.some((existing) => existing.id === item.id))]);
       setNextCursor(result.nextCursor);
-    } catch (error) { console.warn('读取更多生成历史失败:', error); }
+    } catch (error) { console.warn('读取更多生成历史失败:', error); setLoadError(error instanceof Error ? error.message : '历史记录暂时无法加载'); }
     finally { setLoadingMore(false); }
   }, [loadingMore, nextCursor]);
   useEffect(() => {
@@ -67,6 +66,7 @@ export default function GenerationHistoryPanel({ onClose }: { onClose: () => voi
         </header>
         <div className="min-h-0 overflow-y-auto p-3 sm:p-4">
           <div className="space-y-2">
+            {loadError && <div role="alert" className="flex items-center justify-between gap-3 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200"><span>历史加载失败：{loadError}</span><button type="button" onClick={refresh} className="shrink-0 text-primary-300 hover:text-white">重试</button></div>}
             {items.map((item) => {
               const createdAt = new Date(item.createdAt);
               return (
