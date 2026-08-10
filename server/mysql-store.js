@@ -292,6 +292,7 @@ const TABLES = {
       attempt_count INT NOT NULL DEFAULT 0,
       next_poll_at BIGINT NOT NULL DEFAULT 0,
       created_at VARCHAR(35) NOT NULL,
+      submitted_at VARCHAR(35) NULL,
       updated_at VARCHAR(35) NOT NULL,
       completed_at VARCHAR(35) NULL,
       lease_owner VARCHAR(64) NULL,
@@ -305,16 +306,16 @@ const TABLES = {
       error_code AS errorCode, error_message AS errorMessage, charge_cents AS chargeCents,
       billing_reference AS billingReference, project_id AS projectId, node_id AS nodeId, prompt,
       attempt_count AS attemptCount, next_poll_at AS nextPollAt, created_at AS createdAt,
-      updated_at AS updatedAt, completed_at AS completedAt, lease_owner AS leaseOwner, lease_until AS leaseUntil FROM generation_jobs`,
+      submitted_at AS submittedAt, updated_at AS updatedAt, completed_at AS completedAt, lease_owner AS leaseOwner, lease_until AS leaseUntil FROM generation_jobs`,
     insert: `INSERT INTO generation_jobs (id, user_id, api_id, model_id, request_body, status, provider_task_id,
       progress, result_url, thumbnail, error_code, error_message, charge_cents, billing_reference, project_id,
-      node_id, prompt, attempt_count, next_poll_at, created_at, updated_at, completed_at, lease_owner, lease_until) VALUES ?`,
+      node_id, prompt, attempt_count, next_poll_at, created_at, submitted_at, updated_at, completed_at, lease_owner, lease_until) VALUES ?`,
     values: (row) => [
       row.id, row.userId, row.apiId, row.modelId, typeof row.requestBody === 'string' ? row.requestBody : JSON.stringify(row.requestBody || {}),
       row.status, row.providerTaskId || null, Number(row.progress || 0), row.resultUrl || null, row.thumbnail || null,
       row.errorCode || null, row.errorMessage || null, Number(row.chargeCents || 0), row.billingReference || null,
       row.projectId || null, row.nodeId || null, row.prompt || '', Number(row.attemptCount || 0), Number(row.nextPollAt || 0),
-      row.createdAt, row.updatedAt, row.completedAt || null, row.leaseOwner || null, Number(row.leaseUntil || 0),
+      row.createdAt, row.submittedAt || null, row.updatedAt, row.completedAt || null, row.leaseOwner || null, Number(row.leaseUntil || 0),
     ],
     parse: (row) => ({ ...row, requestBody: typeof row.requestBody === 'string' ? JSON.parse(row.requestBody || '{}') : (row.requestBody || {}) }),
   },
@@ -379,7 +380,7 @@ const TABLES = {
 const GENERATION_JOB_PATCH_COLUMNS = {
   status: 'status', providerTaskId: 'provider_task_id', progress: 'progress', resultUrl: 'result_url',
   thumbnail: 'thumbnail', errorCode: 'error_code', errorMessage: 'error_message', attemptCount: 'attempt_count',
-  nextPollAt: 'next_poll_at', updatedAt: 'updated_at', completedAt: 'completed_at',
+  nextPollAt: 'next_poll_at', submittedAt: 'submitted_at', updatedAt: 'updated_at', completedAt: 'completed_at',
   leaseOwner: 'lease_owner', leaseUntil: 'lease_until',
 };
 
@@ -416,6 +417,7 @@ export class MySqlDatabase {
     await this.ensureColumn('assets', 'storage_provider', "VARCHAR(20) NOT NULL DEFAULT 'database'");
     await this.ensureColumn('generation_jobs', 'lease_owner', 'VARCHAR(64) NULL');
     await this.ensureColumn('generation_jobs', 'lease_until', 'BIGINT NOT NULL DEFAULT 0');
+    await this.ensureColumn('generation_jobs', 'submitted_at', 'VARCHAR(35) NULL');
     await this.ensureColumn('user_api_configs', 'enabled', 'TINYINT(1) NOT NULL DEFAULT 1');
     await this.ensureColumn('user_api_configs', 'disabled_at', 'VARCHAR(35) NULL');
     await this.pool.query('ALTER TABLE `assets` MODIFY COLUMN `data_base64` MEDIUMTEXT NULL');
@@ -658,7 +660,7 @@ export class MySqlDatabase {
           ['submitting', updatedAt, workerId, leaseUntil, job.id, 'queued'],
         );
         if (!result.affectedRows) continue;
-        Object.assign(job, { status: 'submitting', updatedAt, leaseOwner: workerId, leaseUntil });
+        Object.assign(job, { status: 'submitting', submittedAt: job.submittedAt || updatedAt, updatedAt, leaseOwner: workerId, leaseUntil });
         claimed.push({ ...job });
       }
     });
@@ -811,9 +813,10 @@ export class MySqlDatabase {
       const connection = await this.pool.getConnection();
       try {
         await connection.beginTransaction();
-        const [rows] = await connection.query('SELECT id, user_id AS userId, amount_cents AS amountCents, status FROM payment_orders WHERE provider = ? AND merchant_order_no = ? FOR UPDATE', [provider, payment.merchantOrderNo]);
+        const [rows] = await connection.query('SELECT id, user_id AS userId, amount_cents AS amountCents, status, expires_at AS expiresAt FROM payment_orders WHERE provider = ? AND merchant_order_no = ? FOR UPDATE', [provider, payment.merchantOrderNo]);
         if (!rows.length) { await connection.rollback(); return; }
         const order = rows[0]; result.found = true;
+        if (order.status === 'pending' && Date.parse(order.expiresAt) < Date.now()) { await connection.query('UPDATE payment_orders SET status = ? WHERE id = ? AND status = ?', ['expired', order.id, 'pending']); await connection.commit(); const cachedOrder = this.data.paymentOrders.find((item) => item.id === order.id); if (cachedOrder) cachedOrder.status = 'expired'; return; }
         if (Number(order.amountCents) !== Number(payment.amountCents)) { result.mismatch = true; await connection.rollback(); return; }
         const [events] = await connection.query('SELECT id FROM payment_events WHERE provider = ? AND provider_event_id = ? LIMIT 1', [provider, payment.eventId]);
         if (events.length) { await connection.commit(); return; }
