@@ -74,7 +74,11 @@ function setSessionCookie(res, token, secure) {
   });
 }
 
-export function createAuthService(db, { secureCookies = false, sendEmailCode, generateImageCaptcha = createNumericCaptcha, systemUserEmails = new Set() } = {}) {
+export function createAuthService(db, { secureCookies = false, sendEmailCode, generateImageCaptcha = createNumericCaptcha, systemUserEmails = new Set(), securityEvent = null } = {}) {
+  const recordSecurityEvent = async (req, action, metadata = {}) => {
+    if (securityEvent) return securityEvent(req, action, metadata);
+    return db.mutate((data) => data.auditLogs.push({ id: randomUUID(), userId: metadata.userId || req.user?.id || null, action, targetType: 'security', targetId: null, ipAddress: String(req.ip || '').slice(0, 100), userAgent: String(req.get('user-agent') || '').slice(0, 300), metadata: { requestId: req.requestId || null, ...metadata }, createdAt: new Date().toISOString() }));
+  };
   async function issueEmailCode(email, purpose) {
     const now = Date.now();
     const activeCode = db.read('emailVerifications')
@@ -317,9 +321,11 @@ export function createAuthService(db, { secureCookies = false, sendEmailCode, ge
         if (!identifier) return res.status(400).json({ error: 'VALIDATION_ERROR', message: '请输入用户名或邮箱' });
         const user = db.read('users').find((item) => item.email === identifier || item.username.toLowerCase() === identifier);
         if (!user || !(await verifyPassword(req.body.password, user.passwordHash))) {
+          await recordSecurityEvent(req, 'login_failed', { identifierType: identifier.includes('@') ? 'email' : 'username' });
           return res.status(401).json({ error: 'INVALID_CREDENTIALS', message: '邮箱或密码错误' });
         }
         await createSession(user.id, req, res);
+        await recordSecurityEvent(req, 'login_succeeded', { userId: user.id });
         return res.json({ user: publicUser(user) });
       } catch (routeError) {
         return next(routeError);
