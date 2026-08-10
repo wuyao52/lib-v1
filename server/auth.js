@@ -10,6 +10,7 @@ const EMAIL_CODE_COOLDOWN_MS = 60 * 1000;
 const EMAIL_CODE_MAX_ATTEMPTS = 5;
 const IMAGE_CAPTCHA_TTL_MS = 5 * 60 * 1000;
 const IMAGE_CAPTCHA_MAX_ATTEMPTS = 5;
+const MAX_SESSIONS_PER_USER = 10;
 
 const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
 const normalizeUsername = (value) => String(value || '').trim();
@@ -188,6 +189,9 @@ export function createAuthService(db, { secureCookies = false, sendEmailCode, ge
     const now = Date.now();
     await db.mutate((data) => {
       data.sessions = data.sessions.filter((session) => session.expiresAt > now);
+      const existing = data.sessions.filter((session) => session.userId === userId).sort((a, b) => b.createdAt - a.createdAt);
+      const retained = new Set(existing.slice(0, MAX_SESSIONS_PER_USER - 1).map((session) => session.id));
+      data.sessions = data.sessions.filter((session) => session.userId !== userId || retained.has(session.id));
       data.sessions.push({
         id: randomUUID(),
         userId,
