@@ -51,6 +51,24 @@ test('Netlify backend proxy preserves security headers from the Node service', a
   assert.equal(result.headers['x-frame-options'], 'DENY');
 });
 
+test('Netlify backend proxy forwards the operational health probe', async (t) => {
+  const previousOrigin = process.env.API_ORIGIN;
+  const previousFetch = globalThis.fetch;
+  process.env.API_ORIGIN = 'https://api.example.com';
+  globalThis.fetch = async (url) => {
+    assert.equal(String(url), 'https://api.example.com/api/health/operations');
+    return new Response(JSON.stringify({ ok: true, checks: { backup: 'ok', restoreDrill: 'ok' } }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  t.after(() => {
+    if (previousOrigin === undefined) delete process.env.API_ORIGIN;
+    else process.env.API_ORIGIN = previousOrigin;
+    globalThis.fetch = previousFetch;
+  });
+  const result = await handler(createEvent('/.netlify/functions/backend/health/operations'));
+  assert.equal(result.statusCode, 200);
+  assert.equal(JSON.parse(result.body).ok, true);
+});
+
 test('Netlify backend proxy reconstructs the protected path from a redirect scope', async (t) => {
   const previousOrigin = process.env.API_ORIGIN;
   const previousFetch = globalThis.fetch;

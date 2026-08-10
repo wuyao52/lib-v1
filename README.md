@@ -33,6 +33,23 @@ service log, and remove the variable immediately so later restarts do not send
 duplicate tests. `/api/health` reports enabled channels without exposing
 addresses, credentials, application data, or prompt contents.
 
+`GET /api/health` checks the live database, object storage and queue. The
+deeper `GET /api/health/operations` probe returns HTTP 503 when queue pressure,
+backup freshness or restore-drill freshness is outside policy, without
+exposing backup contents or credentials. Run a non-mutating production check
+after every backend deployment:
+
+```bash
+SMOKE_BASE_URL=https://your-backend.example.com npm run smoke:production
+```
+
+The smoke check verifies both health probes, security and cache headers, two
+different server-side captchas, and 20 concurrent health requests. Production
+uses a separate `restore-drill-cron` Railway service with schedule
+`0 3 1 * *` (the first day of each month at 03:00 UTC / 11:00 Asia/Shanghai).
+Set `ALERT_RESTORE_DRILL_MAX_AGE_HOURS=840` on the web service so a missed or
+failed monthly restore raises an operational alert independently of backups.
+
 一个基于无限画布的 AI 短剧生成工作台，支持使用文字、图片和视频生成 AI 短剧。
 
 ## 当前架构

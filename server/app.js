@@ -56,7 +56,7 @@ function collectionsForRequest(pathname) {
   const scope = String(pathname || '').split('/').filter(Boolean)[1] || '';
   const common = ['users', 'sessions'];
   const byScope = {
-    auth: ['emailVerifications', 'imageCaptchas'], director: [], skills: ['skills'], projects: ['projects'],
+    auth: ['emailVerifications', 'imageCaptchas'], health: ['generationJobs', 'auditLogs'], director: [], skills: ['skills'], projects: ['projects'],
     assets: ['assets', 'projects'], 'generated-media': ['generatedMedia'], 'generation-history': ['generationHistory'],
     billing: ['balanceTransactions', 'rechargeRequests'], catalog: ['systemApis', 'modelPricing'],
     admin: ['systemApis', 'modelPricing', 'balanceTransactions', 'rechargeRequests', 'generationJobs', 'generatedMedia', 'auditLogs', 'paymentOrders', 'paymentEvents'],
@@ -209,6 +209,21 @@ export async function createApp(options = {}) {
     }
     const ok = checks.database === 'ok' && checks.objectStorage !== 'error';
     return res.status(ok ? 200 : 503).json({ ok, service: 'ai-drama-studio', checks, monitoring: { configured: monitoring.configured, channels: monitoring.channels, intervalMs: monitoring.intervalMs } });
+  });
+  app.get('/api/health/operations', (_req, res) => {
+    const snapshot = monitoring.snapshot();
+    const alerts = snapshot.alerts.map((item) => item.code);
+    return res.status(alerts.length ? 503 : 200).json({
+      ok: alerts.length === 0,
+      service: 'ai-drama-studio',
+      release: String(process.env.RAILWAY_DEPLOYMENT_ID || process.env.APP_RELEASE || '').trim() || null,
+      alerts,
+      checks: {
+        queue: alerts.some((code) => code === 'QUEUE_BACKLOG' || code === 'GENERATION_FAILURE_RATE') ? 'error' : 'ok',
+        backup: alerts.some((code) => code === 'BACKUP_FAILED' || code === 'BACKUP_STALE') ? 'error' : 'ok',
+        restoreDrill: alerts.some((code) => code === 'RESTORE_DRILL_FAILED' || code === 'RESTORE_DRILL_STALE') ? 'error' : 'ok',
+      },
+    });
   });
   const authRouter = express.Router();
   const authRateLimiter = createRateLimiter({ db, limit: 12, windowMs: 60_000 });

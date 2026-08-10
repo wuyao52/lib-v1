@@ -19,18 +19,29 @@ function operationSnapshot(db, env = process.env, now = Date.now()) {
   const queueThreshold = Math.max(1, Number.parseInt(env.ALERT_QUEUE_BACKLOG || '25', 10) || 25);
   const failureThreshold = Math.min(1, Math.max(0.01, Number(env.ALERT_FAILURE_RATE || '0.2') || 0.2));
   const backupMaxAgeHours = Math.max(1, Number.parseInt(env.ALERT_BACKUP_MAX_AGE_HOURS || '12', 10) || 12);
+  const restoreDrillMaxAgeHours = Math.max(1, Number.parseInt(env.ALERT_RESTORE_DRILL_MAX_AGE_HOURS || '840', 10) || 840);
   const backupEvents = (db.read('auditLogs') || []).filter((item) => item.targetType === 'backup');
-  const latestBackup = backupEvents.filter((item) => ['backup_completed', 'backup_drill_completed'].includes(item.action)).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-  const latestFailure = backupEvents.filter((item) => ['backup_failed', 'backup_drill_failed'].includes(item.action)).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  const latestBackup = backupEvents.filter((item) => item.action === 'backup_completed').sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  const latestFailure = backupEvents.filter((item) => item.action === 'backup_failed').sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  const latestRestoreDrill = backupEvents.filter((item) => ['mysql_restore_drill_completed', 'backup_drill_completed'].includes(item.action)).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  const latestRestoreFailure = backupEvents.filter((item) => ['mysql_restore_drill_failed', 'backup_drill_failed'].includes(item.action)).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
   const backupStale = !latestBackup || now - Date.parse(latestBackup.createdAt) >= backupMaxAgeHours * 60 * 60 * 1000;
   const backupFailed = latestFailure && (!latestBackup || latestFailure.createdAt > latestBackup.createdAt);
+  const restoreDrillStale = !latestRestoreDrill || now - Date.parse(latestRestoreDrill.createdAt) >= restoreDrillMaxAgeHours * 60 * 60 * 1000;
+  const restoreDrillFailed = latestRestoreFailure && (!latestRestoreDrill || latestRestoreFailure.createdAt > latestRestoreDrill.createdAt);
   const alerts = [
     ...(backlog >= queueThreshold ? [{ code: 'QUEUE_BACKLOG', count: backlog, threshold: queueThreshold }] : []),
     ...(recent.length && failureRate >= failureThreshold ? [{ code: 'GENERATION_FAILURE_RATE', count: failed, total: recent.length, rate: Number(failureRate.toFixed(4)), threshold: failureThreshold }] : []),
     ...(backupFailed ? [{ code: 'BACKUP_FAILED', occurredAt: latestFailure.createdAt }] : []),
     ...(backupStale ? [{ code: 'BACKUP_STALE', thresholdHours: backupMaxAgeHours, lastSuccessAt: latestBackup?.createdAt || null }] : []),
+    ...(restoreDrillFailed ? [{ code: 'RESTORE_DRILL_FAILED', occurredAt: latestRestoreFailure.createdAt }] : []),
+    ...(restoreDrillStale ? [{ code: 'RESTORE_DRILL_STALE', thresholdHours: restoreDrillMaxAgeHours, lastSuccessAt: latestRestoreDrill?.createdAt || null }] : []),
   ];
-  return { alerts, backlog, failed, total: recent.length, failureRate: Number(failureRate.toFixed(4)), backup: { lastSuccessAt: latestBackup?.createdAt || null, lastFailureAt: latestFailure?.createdAt || null } };
+  return {
+    alerts, backlog, failed, total: recent.length, failureRate: Number(failureRate.toFixed(4)),
+    backup: { lastSuccessAt: latestBackup?.createdAt || null, lastFailureAt: latestFailure?.createdAt || null },
+    restoreDrill: { lastSuccessAt: latestRestoreDrill?.createdAt || null, lastFailureAt: latestRestoreFailure?.createdAt || null },
+  };
 }
 
 export function createMonitoringService({ db, fetchImpl = fetch, env = process.env, emailSender = null } = {}) {
@@ -83,6 +94,7 @@ export function createMonitoringService({ db, fetchImpl = fetch, env = process.e
 
   return {
     check,
+    snapshot: () => operationSnapshot(db, env),
     test: () => dispatch('operations.test', { operations: operationSnapshot(db, env) }),
     start() { if (!timer) { timer = setInterval(() => void check().catch((error) => console.error('Monitoring notification failed:', error.message)), intervalMs); timer.unref?.(); } return intervalMs; },
     stop() { if (timer) clearInterval(timer); timer = null; },

@@ -104,6 +104,12 @@
   force = true
 
 [[redirects]]
+  from = "/api/health/*"
+  to = "/.netlify/functions/backend/health/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
   from = "/api/health"
   to = "/.netlify/functions/backend/health"
   status = 200

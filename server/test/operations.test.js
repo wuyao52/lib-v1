@@ -134,6 +134,18 @@ test('health checks report object-storage failure and admin metrics stay role pr
   assert.equal(health.status, 503);
   assert.deepEqual((await health.json()).checks, { database: 'ok', objectStorage: 'error', queue: 'disabled' });
 
+  const operationsBefore = await fetch(`${baseUrl}/api/health/operations`);
+  assert.equal(operationsBefore.status, 503);
+  assert.deepEqual((await operationsBefore.json()).alerts, ['BACKUP_STALE', 'RESTORE_DRILL_STALE']);
+  const now = new Date().toISOString();
+  await db.mutate((data) => data.auditLogs.push(
+    { id: 'backup-ready', userId: null, action: 'backup_completed', targetType: 'backup', targetId: null, ipAddress: 'test', userAgent: 'test', metadata: {}, createdAt: now },
+    { id: 'restore-ready', userId: null, action: 'mysql_restore_drill_completed', targetType: 'backup', targetId: null, ipAddress: 'test', userAgent: 'test', metadata: {}, createdAt: now },
+  ));
+  const operationsReady = await fetch(`${baseUrl}/api/health/operations`);
+  assert.equal(operationsReady.status, 200);
+  assert.deepEqual((await operationsReady.json()).checks, { queue: 'ok', backup: 'ok', restoreDrill: 'ok' });
+
   const register = async (username) => {
     const email = `${username}@example.com`;
     await fetch(`${baseUrl}/api/auth/email-code`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, purpose: 'register' }) });
