@@ -77,6 +77,27 @@ export default function NodePropertiesPanel() {
                 />
               </div>
 
+              {data.type === 'video' && data.generatedContent && (
+                <section className="space-y-3 border border-dark-600 rounded-lg bg-dark-900/60 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs font-medium text-white">生成视频详情</span>
+                    <span className={data.status === 'error' ? 'text-[10px] text-red-300' : 'text-[10px] text-green-300'}>
+                      {data.status === 'error' ? '生成失败' : '已生成'}
+                    </span>
+                  </div>
+                  <video src={data.generatedContent} poster={data.thumbnail} controls preload="metadata" className="aspect-video w-full rounded bg-black" />
+                  <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+                    <div><dt className="text-dark-500">时长</dt><dd className="mt-0.5 text-dark-200">{data.duration || '-'} 秒</dd></div>
+                    <div><dt className="text-dark-500">模型</dt><dd className="mt-0.5 truncate text-dark-200" title={data.generationMeta?.modelName || configuredVideoModel.name}>{data.generationMeta?.modelName || configuredVideoModel.name || configuredVideoModel.modelId || '-'}</dd></div>
+                    <div><dt className="text-dark-500">风格</dt><dd className="mt-0.5 text-dark-200">{data.settings?.style || '默认'}</dd></div>
+                    <div><dt className="text-dark-500">来源</dt><dd className="mt-0.5 text-dark-200">{data.mediaSource === 'uploaded' ? '上传素材' : 'AI 生成'}</dd></div>
+                  </dl>
+                  {(data.prompt || data.content) && <div><p className="text-[10px] text-dark-500">提示词</p><p className="mt-1 max-h-24 overflow-y-auto whitespace-pre-wrap text-xs leading-5 text-dark-300">{data.prompt || data.content}</p></div>}
+                  {data.generationMeta?.completedAt && <p className="text-[10px] text-dark-500">完成时间：{new Date(data.generationMeta.completedAt).toLocaleString()}</p>}
+                  {data.error && <p className="rounded border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-200">错误：{data.error}</p>}
+                </section>
+              )}
+
               {!isUploadedImage && <>
               {/* AI 提示词 */}
               <div className="space-y-2">
