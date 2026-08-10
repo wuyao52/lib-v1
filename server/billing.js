@@ -223,8 +223,16 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
   router.post('/users/:id/balance', async (req, res) => {
     const amountCents = integer(req.body.amountCents);
     if (!Number.isInteger(amountCents) || amountCents === 0 || Math.abs(amountCents) > 10_000_000) return res.status(400).json({ error: 'INVALID_AMOUNT', message: '调整金额无效' });
+    const suppliedKey = String(req.get('idempotency-key') || '').trim();
+    if (suppliedKey && !/^[A-Za-z0-9_-]{16,100}$/.test(suppliedKey)) return res.status(400).json({ error: 'INVALID_IDEMPOTENCY_KEY', message: '幂等键无效' });
+    const referenceId = suppliedKey ? `admin-balance:${req.user.id}:${req.params.id}:${suppliedKey}` : null;
+    const existingTransaction = referenceId && db.read('balanceTransactions').find((item) => item.referenceId === referenceId && item.type === 'admin_adjustment');
+    if (existingTransaction) {
+      const user = db.read('users').find((item) => item.id === req.params.id);
+      return res.json({ user: safeUser(user || { id: req.params.id, balanceCents: 0 }), transaction: existingTransaction, replayed: true });
+    }
     if (db.changeBalanceAtomic) {
-      const result = await db.changeBalanceAtomic({ userId: req.params.id, amountCents, type: 'admin_adjustment', description: String(req.body.description || '系统用户调整余额').slice(0, 300), createdBy: req.user.id });
+      const result = await db.changeBalanceAtomic({ userId: req.params.id, amountCents, type: 'admin_adjustment', description: String(req.body.description || '系统用户调整余额').slice(0, 300), referenceId, createdBy: req.user.id });
       if (result.failure === 'USER_NOT_FOUND') return res.status(404).json({ error: result.failure, message: '用户不存在' });
       if (result.failure) return res.status(409).json({ error: result.failure, message: '余额不能小于零' });
       const user = db.read('users').find((item) => item.id === req.params.id);
@@ -237,7 +245,7 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
       if (!user) { failure = 'USER_NOT_FOUND'; return; }
       if (Number(user.balanceCents || 0) + amountCents < 0) { failure = 'INSUFFICIENT_BALANCE'; return; }
       user.balanceCents = Number(user.balanceCents || 0) + amountCents;
-      transaction = { id: randomUUID(), userId: user.id, amountCents, type: 'admin_adjustment', description: String(req.body.description || '系统用户调整余额').slice(0, 300), referenceId: null, createdBy: req.user.id, createdAt: nowIso() };
+      transaction = { id: randomUUID(), userId: user.id, amountCents, type: 'admin_adjustment', description: String(req.body.description || '系统用户调整余额').slice(0, 300), referenceId, createdBy: req.user.id, createdAt: nowIso() };
       data.balanceTransactions.push(transaction); updated = safeUser(user);
     });
     if (failure === 'USER_NOT_FOUND') return res.status(404).json({ error: failure, message: '用户不存在' });
