@@ -1,4 +1,4 @@
-import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 
@@ -85,15 +85,15 @@ export function createObjectStorageFromEnv(env = process.env, { clientFactory = 
       }
       return true;
     },
-    async put({ key, bytes, mimeType }) {
-      await client.send(new PutObjectCommand({ Bucket: config.bucket, Key: key, Body: bytes, ContentType: mimeType }));
+    async put({ key, bytes, mimeType, signal }) {
+      await client.send(new PutObjectCommand({ Bucket: config.bucket, Key: key, Body: bytes, ContentType: mimeType, ContentLength: bytes?.length }), { abortSignal: signal });
     },
     async putStream({ key, body, mimeType, contentLength }) {
       const stream = typeof Readable.fromWeb === 'function' ? Readable.fromWeb(body) : body;
       await client.send(new PutObjectCommand({ Bucket: config.bucket, Key: key, Body: stream, ContentType: mimeType, ContentLength: contentLength || undefined }));
     },
-    async get(key) {
-      const response = await client.send(new GetObjectCommand({ Bucket: config.bucket, Key: key }));
+    async get(key, { signal } = {}) {
+      const response = await client.send(new GetObjectCommand({ Bucket: config.bucket, Key: key }), { abortSignal: signal });
       if (!response.Body) throw new Error('对象存储内容为空');
       return Buffer.from(await response.Body.transformToByteArray());
     },
@@ -109,6 +109,18 @@ export function createObjectStorageFromEnv(env = process.env, { clientFactory = 
     },
     async delete(key) {
       await client.send(new DeleteObjectCommand({ Bucket: config.bucket, Key: key }));
+    },
+    async list(prefix = '') {
+      const objects = [];
+      let continuationToken;
+      do {
+        const response = await client.send(new ListObjectsV2Command({ Bucket: config.bucket, Prefix: prefix, ContinuationToken: continuationToken }));
+        for (const item of response.Contents || []) {
+          if (item.Key) objects.push({ key: item.Key, size: Number(item.Size || 0), lastModified: item.LastModified?.toISOString?.() || null });
+        }
+        continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+      } while (continuationToken);
+      return objects;
     },
   };
 }

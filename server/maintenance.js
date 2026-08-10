@@ -1,4 +1,4 @@
-import { createFreshEncryptedBackup } from './backup.js';
+import { cleanupStoredBackups, createFreshEncryptedBackup, recordBackupEvent } from './backup.js';
 import { cleanupExpiredAssets } from './assets.js';
 
 const HOUR = 60 * 60 * 1000;
@@ -9,7 +9,8 @@ const intEnv = (name, fallback, min, max) => {
 
 export async function runMaintenance({ db, storage, generatedMedia, now = new Date() } = {}) {
   if (db?.consumeRateLimit) {
-    const lock = await db.consumeRateLimit('maintenance:global-lock', 1, 5 * 60 * 1000, now.getTime());
+    const lockMinutes = intEnv('MAINTENANCE_LOCK_MINUTES', 30, 10, 1440);
+    const lock = await db.consumeRateLimit('maintenance:global-lock', 1, lockMinutes * 60 * 1000, now.getTime());
     if (!lock.allowed) return { skipped: true, reason: 'MAINTENANCE_LOCKED', ranAt: now.toISOString() };
   }
   const results = { ranAt: now.toISOString(), assets: null, media: null, backup: null };
@@ -17,10 +18,22 @@ export async function runMaintenance({ db, storage, generatedMedia, now = new Da
   results.media = generatedMedia ? await generatedMedia.cleanup() : { deleted: 0 };
   const key = String(process.env.BACKUP_ENCRYPTION_KEY || '');
   if (storage && key.length >= 24) {
-    const document = await createFreshEncryptedBackup(db, key, results.ranAt);
     const objectKey = `backups/database-${results.ranAt.replace(/[:.]/g, '-')}.json`;
-    await storage.put({ key: objectKey, bytes: Buffer.from(JSON.stringify(document)), mimeType: 'application/json' });
-    results.backup = { objectKey, checksum: document.checksum };
+    try {
+      const document = await createFreshEncryptedBackup(db, key, results.ranAt);
+      const bytes = Buffer.from(JSON.stringify(document));
+      await storage.put({ key: objectKey, bytes, mimeType: 'application/json' });
+      const retention = await cleanupStoredBackups(storage, {
+        now,
+        retentionDays: intEnv('BACKUP_RETENTION_DAYS', 30, 1, 3650),
+        minimumCopies: intEnv('BACKUP_MINIMUM_COPIES', 7, 1, 1000),
+      });
+      results.backup = { objectKey, checksum: document.checksum, bytes: bytes.length, retention };
+      await recordBackupEvent(db, 'backup_completed', results.backup);
+    } catch (error) {
+      await recordBackupEvent(db, 'backup_failed', { objectKey, code: String(error?.code || error?.name || 'BACKUP_FAILED').slice(0, 100) });
+      throw error;
+    }
   }
   return results;
 }

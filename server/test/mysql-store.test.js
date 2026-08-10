@@ -134,3 +134,16 @@ test('MySQL unique index resolves concurrent case-insensitive usernames to one a
   assert.equal(results.find((result) => !result.created).error, 'USERNAME_EXISTS');
   assert.equal(users.length, 1);
 });
+
+test('MySQL startup makes audit user nullable for system and pre-authentication events', async () => {
+  const statements = [];
+  const db = new MySqlDatabase('mysql://user:pass@127.0.0.1/test');
+  db.pool = { async query(sql) {
+    statements.push(sql);
+    if (/^SELECT /i.test(sql)) return [[]];
+    return [{ affectedRows: 0 }];
+  } };
+  await db.init();
+  assert.equal(statements.some((sql) => /ALTER TABLE `audit_logs` MODIFY COLUMN `user_id` CHAR\(36\) NULL/i.test(sql)), true);
+  assert.equal(statements.some((sql) => /CREATE TABLE IF NOT EXISTS audit_logs[\s\S]*user_id CHAR\(36\) NULL/i.test(sql)), true);
+});

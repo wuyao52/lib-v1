@@ -100,6 +100,20 @@ OSS_ENDPOINT=
 
 如果生产数据库只开放 Railway 私网且本地无法直连，可临时设置 `BACKUP_DRILL_ON_START=true` 并重新部署后端。服务启动后会在后台执行同一套隔离演练并把脱敏结果写入部署日志；确认 `Backup drill completed` 后必须删除该变量并再次部署，避免以后每次重启重复生成演练备份。
 
+数据库备份使用 `ai-drama-studio-backup-v2`：原始 JSON 先 gzip 压缩，再使用独立的 `BACKUP_ENCRYPTION_KEY` 进行 AES-GCM 加密；恢复代码继续兼容旧 v1 对象。维护任务默认使用 30 分钟数据库共享锁，避免多实例或反复触发产生重复备份；对象上传和下载各有 15 分钟超时。建议在 Railway Variables 明确配置：
+
+```env
+BACKUP_ENCRYPTION_KEY=与其他密钥不同的高强度随机值
+MAINTENANCE_LOCK_MINUTES=30
+BACKUP_RETENTION_DAYS=30
+BACKUP_MINIMUM_COPIES=7
+ALERT_BACKUP_MAX_AGE_HOURS=12
+```
+
+系统用户可以在“系统管理控制台 → 生产备份与恢复演练”查看对象 Key、大小、时间、保留策略和脱敏事件。手动演练必须再次输入当前系统账号密码，接口立即返回仅表示后台任务已接受；只有出现“恢复演练验证完成”事件才算成功。该页面不会返回备份正文、数据库内容、下载地址或任何密钥。
+
+生产环境应使用 Railway Cron 或独立 maintenance service 定时执行维护，不要依赖前端访问触发。欧洲 Railway 到北京 OSS 的首次真实演练中，约 4.57 MB 的旧 v1 对象上传耗时约 394.8 秒；本轮 v2 生产对象由 `4,572,108` 降至 `4,542,417` bytes（约 0.65%），上传约 188.2 秒、下载约 4.27 秒，19 个集合恢复一致。生产数据包含大量已压缩素材，gzip 收益有限；跨境延迟仍然明显。若持续使用北京 OSS，应评估 OSS 传输加速或把后端迁移到更接近中国大陆的区域，并保留 15 分钟传输超时与失败告警。
+
 ### 持久化视频任务队列
 
 系统视频模型请求会先写入 MySQL `generation_jobs` 表，再由 Railway 后端按全站、用户和 API 三层并发限制公平提交。浏览器关闭后任务仍会继续，成功结果由后端写入三天生成历史，失败任务只退款一次。临时 `429` 和 `5xx` 会延迟重试；终态队列记录默认保留 7 天。

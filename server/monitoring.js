@@ -18,11 +18,19 @@ function operationSnapshot(db, env = process.env, now = Date.now()) {
   const failureRate = recent.length ? failed / recent.length : 0;
   const queueThreshold = Math.max(1, Number.parseInt(env.ALERT_QUEUE_BACKLOG || '25', 10) || 25);
   const failureThreshold = Math.min(1, Math.max(0.01, Number(env.ALERT_FAILURE_RATE || '0.2') || 0.2));
+  const backupMaxAgeHours = Math.max(1, Number.parseInt(env.ALERT_BACKUP_MAX_AGE_HOURS || '12', 10) || 12);
+  const backupEvents = (db.read('auditLogs') || []).filter((item) => item.targetType === 'backup');
+  const latestBackup = backupEvents.filter((item) => ['backup_completed', 'backup_drill_completed'].includes(item.action)).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  const latestFailure = backupEvents.filter((item) => ['backup_failed', 'backup_drill_failed'].includes(item.action)).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  const backupStale = !latestBackup || now - Date.parse(latestBackup.createdAt) >= backupMaxAgeHours * 60 * 60 * 1000;
+  const backupFailed = latestFailure && (!latestBackup || latestFailure.createdAt > latestBackup.createdAt);
   const alerts = [
     ...(backlog >= queueThreshold ? [{ code: 'QUEUE_BACKLOG', count: backlog, threshold: queueThreshold }] : []),
     ...(recent.length && failureRate >= failureThreshold ? [{ code: 'GENERATION_FAILURE_RATE', count: failed, total: recent.length, rate: Number(failureRate.toFixed(4)), threshold: failureThreshold }] : []),
+    ...(backupFailed ? [{ code: 'BACKUP_FAILED', occurredAt: latestFailure.createdAt }] : []),
+    ...(backupStale ? [{ code: 'BACKUP_STALE', thresholdHours: backupMaxAgeHours, lastSuccessAt: latestBackup?.createdAt || null }] : []),
   ];
-  return { alerts, backlog, failed, total: recent.length, failureRate: Number(failureRate.toFixed(4)) };
+  return { alerts, backlog, failed, total: recent.length, failureRate: Number(failureRate.toFixed(4)), backup: { lastSuccessAt: latestBackup?.createdAt || null, lastFailureAt: latestFailure?.createdAt || null } };
 }
 
 export function createMonitoringService({ db, fetchImpl = fetch, env = process.env } = {}) {

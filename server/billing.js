@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { discoverSystemApi } from './api-discovery.js';
 import { verifyPassword } from './auth.js';
+import { runBackupDrill } from './backup-drill.js';
 
 const CATEGORIES = new Set(['text', 'image', 'video']);
 const BILLING_UNITS = new Set(['request', 'image', 'second']);
@@ -125,8 +126,9 @@ export function registerBillingRoutes(router, { db, requireAuth }) {
   });
 }
 
-export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImpl, resolveHost, videoQueue = null }) {
+export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImpl, resolveHost, videoQueue = null, backupStorage = null, backupEncryptionKey = '' }) {
   router.use(requireSystem);
+  let backupDrillRunning = false;
   const audit = async (req, action, targetType, targetId, metadata = {}) => {
     const record = { id: randomUUID(), userId: req.user.id, action, targetType, targetId: targetId || null, ipAddress: String(req.ip || '').slice(0, 100), userAgent: String(req.get('user-agent') || '').slice(0, 300), metadata: { requestId: req.requestId || null, ...metadata }, createdAt: nowIso() };
     await db.mutate((data) => data.auditLogs.push(record));
@@ -143,6 +145,36 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
     counts: { queued: 0, submitting: 0, processing: 0, completed: 0, failed: 0 },
     config: null, recent: [],
   }));
+  router.get('/backups', async (_req, res, next) => {
+    try {
+      if (!backupStorage || typeof backupStorage.list !== 'function') return res.status(503).json({ error: 'BACKUP_STORAGE_UNAVAILABLE', message: 'Backup storage is not configured' });
+      const events = db.read('auditLogs').filter((item) => item.targetType === 'backup').slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 100);
+      const eventsByKey = new Map(events.filter((item) => item.targetId).map((item) => [item.targetId, item]));
+      const objects = (await backupStorage.list('backups/')).filter((item) => item.key.endsWith('.json')).sort((a, b) => String(b.lastModified || b.key).localeCompare(String(a.lastModified || a.key)));
+      return res.json({
+        configured: true, provider: backupStorage.provider, running: backupDrillRunning,
+        policy: { retentionDays: Number(process.env.BACKUP_RETENTION_DAYS || 30), minimumCopies: Number(process.env.BACKUP_MINIMUM_COPIES || 7) },
+        backups: objects.map((item) => ({ ...item, kind: item.key.includes('/drills/') ? 'drill' : 'scheduled', verification: eventsByKey.get(item.key)?.action || null })),
+        events: events.map((item) => ({ id: item.id, action: item.action, objectKey: item.targetId, metadata: item.metadata, createdAt: item.createdAt })),
+      });
+    } catch (error) { return next(error); }
+  });
+  router.post('/backups/drill', async (req, res) => {
+    if (!(await requireCurrentPassword(req, res, 'backup_drill_started', 'backup', null))) return;
+    if (!backupStorage || String(backupEncryptionKey).length < 24) return res.status(503).json({ error: 'BACKUP_NOT_CONFIGURED', message: 'Backup storage or encryption key is not configured' });
+    if (backupDrillRunning) return res.status(409).json({ error: 'BACKUP_DRILL_RUNNING', message: 'A backup drill is already running' });
+    if (db.consumeRateLimit) {
+      const lock = await db.consumeRateLimit('backup-drill-admin-lock', 1, 30 * 60 * 1000);
+      if (!lock.allowed) return res.status(409).json({ error: 'BACKUP_DRILL_LOCKED', message: 'A backup drill was started recently' });
+    }
+    backupDrillRunning = true;
+    const operationId = randomUUID();
+    await audit(req, 'backup_drill_started', 'backup', operationId);
+    void runBackupDrill({ db, storage: backupStorage, encryptionKey: backupEncryptionKey })
+      .catch(() => undefined)
+      .finally(() => { backupDrillRunning = false; });
+    return res.status(202).json({ accepted: true, operationId });
+  });
   router.get('/metrics', (_req, res) => {
     const jobs = db.read('generationJobs');
     const now = Date.now();
@@ -192,12 +224,23 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
     const delayedThresholdMs = Math.max(60_000, (Number.parseInt(process.env.ALERT_PROCESSING_MINUTES || '30', 10) || 30) * 60_000);
     const delayed = backlog.filter((job) => job.status === 'processing' && now - Date.parse(job.updatedAt || job.createdAt) >= delayedThresholdMs)
       .map((job) => ({ jobId: job.id, userId: job.userId, apiId: job.apiId, updatedAt: job.updatedAt }));
+    const backupMaxAgeHours = Math.max(1, Number.parseInt(process.env.ALERT_BACKUP_MAX_AGE_HOURS || '12', 10) || 12);
+    const backupEvents = db.read('auditLogs').filter((item) => item.targetType === 'backup');
+    const latestBackup = backupEvents.filter((item) => ['backup_completed', 'backup_drill_completed'].includes(item.action)).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+    const latestBackupFailure = backupEvents.filter((item) => ['backup_failed', 'backup_drill_failed'].includes(item.action)).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+    const backupStale = !latestBackup || now - Date.parse(latestBackup.createdAt) >= backupMaxAgeHours * 60 * 60 * 1000;
+    const backupFailed = latestBackupFailure && (!latestBackup || latestBackupFailure.createdAt > latestBackup.createdAt);
     const alerts = [
       ...(backlog.length >= queueThreshold ? [{ code: 'QUEUE_BACKLOG', severity: 'warning', count: backlog.length, threshold: queueThreshold }] : []),
       ...(recent.length && failureRate >= failureThreshold ? [{ code: 'GENERATION_FAILURE_RATE', severity: 'warning', count: failed, total: recent.length, rate: Number(failureRate.toFixed(4)), threshold: failureThreshold }] : []),
       ...(delayed.length ? [{ code: 'PROCESSING_DELAYED', severity: 'warning', count: delayed.length, thresholdMinutes: Math.round(delayedThresholdMs / 60_000) }] : []),
+      ...(backupFailed ? [{ code: 'BACKUP_FAILED', severity: 'critical', count: 1, occurredAt: latestBackupFailure.createdAt }] : []),
+      ...(backupStale ? [{ code: 'BACKUP_STALE', severity: 'critical', count: 1, thresholdHours: backupMaxAgeHours, lastSuccessAt: latestBackup?.createdAt || null }] : []),
     ];
-    return res.json({ generatedAt: nowIso(), windowHours: 24, healthy: alerts.length === 0, alerts, delayed });
+    return res.json({
+      generatedAt: nowIso(), windowHours: 24, healthy: alerts.length === 0, alerts, delayed,
+      backup: { lastSuccessAt: latestBackup?.createdAt || null, lastFailureAt: latestBackupFailure?.createdAt || null },
+    });
   });
   router.get('/payment-reconciliation', (_req, res) => {
     const orders = db.read('paymentOrders');

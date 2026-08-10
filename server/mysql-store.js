@@ -359,7 +359,7 @@ const TABLES = {
     table: 'audit_logs',
     create: `CREATE TABLE IF NOT EXISTS audit_logs (
       id CHAR(36) PRIMARY KEY,
-      user_id CHAR(36) NOT NULL,
+      user_id CHAR(36) NULL,
       action VARCHAR(80) NOT NULL,
       target_type VARCHAR(40) NOT NULL,
       target_id VARCHAR(100) NULL,
@@ -421,6 +421,7 @@ export class MySqlDatabase {
     await this.ensureColumn('user_api_configs', 'enabled', 'TINYINT(1) NOT NULL DEFAULT 1');
     await this.ensureColumn('user_api_configs', 'disabled_at', 'VARCHAR(35) NULL');
     await this.pool.query('ALTER TABLE `assets` MODIFY COLUMN `data_base64` MEDIUMTEXT NULL');
+    await this.pool.query('ALTER TABLE `audit_logs` MODIFY COLUMN `user_id` CHAR(36) NULL');
     for (const [collection, spec] of Object.entries(TABLES)) {
       const [rows] = await this.pool.query(spec.select);
       this.data[collection] = spec.parse ? rows.map(spec.parse) : rows;

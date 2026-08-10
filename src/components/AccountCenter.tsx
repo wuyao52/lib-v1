@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Activity, Check, Coins, Copy, Eye, EyeOff, Pencil, Plus, RefreshCw, Shield, Trash2, Wallet, X } from 'lucide-react';
+import { Activity, Archive, Check, Coins, Copy, Eye, EyeOff, Pencil, Play, Plus, RefreshCw, Shield, Trash2, Wallet, X } from 'lucide-react';
 import { apiRequest } from '@/services/apiClient';
 import { useAuth, type AuthUser } from '@/auth/AuthContext';
 
@@ -15,8 +15,16 @@ type QueueOverview = {
   recent: Array<{ id: string; userId: string; modelId: string; status: string; progress: number; errorCode?: string | null; createdAt: string }>;
 };
 type AdminMetrics = { recent: { total: number; completed: number; failed: number; activeUsers: number; failureRate: number; queueBacklog: number; averageQueueWaitMs: number | null } };
-type OperationsAlerts = { healthy: boolean; alerts: Array<{ code: string; severity: string; count: number; total?: number; rate?: number; threshold?: number; thresholdMinutes?: number }>; delayed: Array<{ jobId: string; userId: string; apiId: string; updatedAt: string }> };
+type OperationsAlerts = { healthy: boolean; alerts: Array<{ code: string; severity: string; count: number; total?: number; rate?: number; threshold?: number; thresholdMinutes?: number; thresholdHours?: number }>; delayed: Array<{ jobId: string; userId: string; apiId: string; updatedAt: string }>; backup?: { lastSuccessAt: string | null; lastFailureAt: string | null } };
 type SecurityAlerts = { alerts: { loginBruteForce: Array<{ ipAddress: string; count: number }>; privilegedActions: number; modelCalls: number } };
+type BackupOverview = {
+  configured: boolean;
+  provider: string;
+  running: boolean;
+  policy: { retentionDays: number; minimumCopies: number };
+  backups: Array<{ key: string; size: number; lastModified: string | null; kind: 'drill' | 'scheduled'; verification: string | null }>;
+  events: Array<{ id: string; action: string; objectKey: string | null; createdAt: string }>;
+};
 type ProviderFlags = Record<'alipay' | 'wechat', boolean>;
 type BillingProps = { balance: number; transactions: Transaction[]; recharges: Recharge[]; amount: string; setAmount: (value: string) => void; providers: ProviderFlags; provider: 'alipay' | 'wechat'; setProvider: (value: 'alipay' | 'wechat') => void; orders: PaymentOrder[]; startPayment: () => void };
 type AdminUsersProps = { users: AuthUser[]; currentUserId?: string; recharges: Recharge[]; balanceAdjustments: Record<string, string>; setBalanceAdjustments: (value: Record<string, string>) => void; currentPassword: string; act: (job: () => Promise<unknown>, success: string) => Promise<void> };
@@ -55,6 +63,13 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
   const [metrics, setMetrics] = useState<AdminMetrics | null>(null);
   const [operationsAlerts, setOperationsAlerts] = useState<OperationsAlerts | null>(null);
   const [securityAlerts, setSecurityAlerts] = useState<SecurityAlerts | null>(null);
+  const [backupOverview, setBackupOverview] = useState<BackupOverview | null>(null);
+
+  const loadBackups = useCallback(async () => {
+    const data = await apiRequest<BackupOverview>('/api/admin/backups');
+    setBackupOverview(data);
+    return data;
+  }, []);
 
   const load = useCallback(async () => {
     if (mode === 'billing') {
@@ -67,7 +82,7 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
       setPaymentProviders(providerData.providers); setPaymentOrders(orderData.orders);
       return;
     }
-    const [apiData, priceData, userData, rechargeData, queueData, paymentData, metricData, operationData, securityData] = await Promise.all([
+    const [apiData, priceData, userData, rechargeData, queueData, paymentData, metricData, operationData, securityData, backupData] = await Promise.all([
       apiRequest<{ apis: SystemApi[] }>('/api/admin/system-apis'),
       apiRequest<{ pricing: Pricing[] }>('/api/admin/pricing'),
       apiRequest<{ users: AuthUser[] }>('/api/admin/users'),
@@ -77,11 +92,13 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
       apiRequest<AdminMetrics>('/api/admin/metrics'),
       apiRequest<OperationsAlerts>('/api/admin/operations-alerts'),
       apiRequest<SecurityAlerts>('/api/admin/security-alerts'),
+      apiRequest<BackupOverview>('/api/admin/backups').catch(() => null),
     ]);
     setApis(apiData.apis); setPricing(priceData.pricing); setUsers(userData.users); setRecharges(rechargeData.recharges);
     setQueue(queueData);
     setPaymentOrders(paymentData.orders);
     setMetrics(metricData); setOperationsAlerts(operationData); setSecurityAlerts(securityData);
+    setBackupOverview(backupData);
   }, [mode]);
 
   useEffect(() => { load().catch((error) => setMessage(error.message)); }, [load]);
@@ -101,6 +118,12 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
     return () => window.clearInterval(timer);
   }, [mode]);
 
+  useEffect(() => {
+    if (mode !== 'admin' || !backupOverview?.running) return undefined;
+    const timer = window.setInterval(() => { void loadBackups().catch(() => undefined); }, 15000);
+    return () => window.clearInterval(timer);
+  }, [backupOverview?.running, loadBackups, mode]);
+
   const act = async (job: () => Promise<unknown>, success: string) => {
     try { await job(); await load(); await refresh(); setMessage(success); } catch (error: any) { setMessage(error.message); }
   };
@@ -110,6 +133,15 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
       const { order } = await apiRequest<{ order: PaymentOrder }>('/api/payments/orders', { method: 'POST', body: JSON.stringify({ provider: paymentProvider, amountCents: Math.round(Number(amount) * 100) }) });
       window.location.assign(order.payUrl);
     } catch (error: any) { setMessage(error.message); }
+  };
+
+  const startBackupDrill = async () => {
+    if (!adminPassword) return setMessage('开始恢复演练前请输入当前系统账号密码');
+    try {
+      await apiRequest<{ accepted: true; operationId: string }>('/api/admin/backups/drill', { method: 'POST', body: JSON.stringify({ currentPassword: adminPassword }) });
+      await loadBackups();
+      setMessage('后台恢复演练已启动。只有出现“验证完成”事件后才代表演练成功。');
+    } catch (error) { setMessage(errorMessage(error)); }
   };
 
   const revealApiKey = async (apiId: string) => {
@@ -247,6 +279,7 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
           </section>
 
           <OperationsView metrics={metrics} operationsAlerts={operationsAlerts} securityAlerts={securityAlerts} />
+          <BackupManagementView overview={backupOverview} currentPassword={adminPassword} onStart={startBackupDrill} onRefresh={loadBackups} setMessage={setMessage} />
           <QueueView overview={queue} users={users} />
           <AdminPaymentOrders orders={paymentOrders} users={users} currentPassword={adminPassword} act={act} />
           <AdminUsers users={users} currentUserId={user?.id} recharges={recharges} balanceAdjustments={balanceAdjustments} setBalanceAdjustments={setBalanceAdjustments} currentPassword={adminPassword} act={act} />
@@ -267,12 +300,26 @@ function OperationsView({ metrics, operationsAlerts, securityAlerts }: { metrics
     ['平均等待', metrics?.recent.averageQueueWaitMs == null ? '-' : `${Math.round(metrics.recent.averageQueueWaitMs / 1000)} 秒`],
     ['活跃用户', String(metrics?.recent.activeUsers ?? 0)],
   ];
-  const labels: Record<string, string> = { QUEUE_BACKLOG: '队列积压', GENERATION_FAILURE_RATE: '生成失败率偏高', PROCESSING_DELAYED: '任务处理延迟' };
+  const labels: Record<string, string> = { QUEUE_BACKLOG: '队列积压', GENERATION_FAILURE_RATE: '生成失败率偏高', PROCESSING_DELAYED: '任务处理延迟', BACKUP_FAILED: '最近备份失败', BACKUP_STALE: '备份超过时限' };
   return <section className="border border-dark-600 bg-dark-900/30 p-4 rounded">
     <div className="flex items-center justify-between gap-3"><div><h3 className="flex items-center gap-2 text-sm font-medium text-white"><Activity className="h-4 w-4 text-cyan-400" />运行监测</h3><p className="mt-1 text-xs text-dark-400">每 5 秒自动刷新，仅展示聚合指标与任务标识。</p></div><span className={operationsAlerts?.healthy ? 'text-xs text-green-400' : 'text-xs text-amber-300'}>{operationsAlerts?.healthy ? '运行正常' : '需要处理告警'}</span></div>
     <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">{stats.map(([label, value]) => <div key={label} className="border border-dark-600 bg-dark-900 px-3 py-2 rounded"><p className="text-[10px] text-dark-500">{label}</p><p className="mt-1 text-lg text-white">{value}</p></div>)}</div>
     <div className="mt-3 space-y-1 text-xs">{operationsAlerts?.alerts.length ? operationsAlerts.alerts.map((alert) => <div key={alert.code} className="flex items-center justify-between gap-3 border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-amber-200 rounded"><span>{labels[alert.code] || alert.code}</span><span>{alert.code === 'GENERATION_FAILURE_RATE' ? `${alert.count}/${alert.total} (${((alert.rate || 0) * 100).toFixed(1)}%)` : `${alert.count} 项`}</span></div>) : <p className="text-dark-400">暂无运营告警</p>}</div>
     <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-dark-400"><span>登录异常 IP：{securityAlerts?.alerts.loginBruteForce.length ?? 0}</span><span>敏感管理操作：{securityAlerts?.alerts.privilegedActions ?? 0}</span><span>系统模型调用：{securityAlerts?.alerts.modelCalls ?? 0}</span></div>
+  </section>;
+}
+
+function BackupManagementView({ overview, currentPassword, onStart, onRefresh, setMessage }: { overview: BackupOverview | null; currentPassword: string; onStart: () => Promise<void>; onRefresh: () => Promise<BackupOverview>; setMessage: (value: string) => void }) {
+  const formatBytes = (bytes: number) => bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(2)} MB` : `${Math.max(0, Math.round(bytes / 1024))} KB`;
+  const eventLabels: Record<string, string> = { backup_completed: '定时备份完成', backup_failed: '定时备份失败', backup_drill_started: '恢复演练已启动', backup_drill_completed: '恢复演练验证完成', backup_drill_failed: '恢复演练失败' };
+  return <section>
+    <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+      <div><h3 className="flex items-center gap-2 text-sm font-medium text-white"><Archive className="h-4 w-4 text-green-400" />生产备份与恢复演练</h3><p className="mt-1 text-xs text-dark-400">对象仅展示元数据；备份正文、数据库内容和加密密钥不会返回浏览器。</p></div>
+      <div className="flex items-center gap-2"><button title="刷新备份状态" onClick={() => void onRefresh().catch((error) => setMessage(errorMessage(error)))} className="p-2 text-dark-400 hover:text-white"><RefreshCw className="h-4 w-4" /></button><button disabled={!currentPassword || overview?.running || !overview} onClick={() => void onStart()} className="flex items-center gap-2 border border-green-500/40 px-3 py-2 text-xs text-green-300 disabled:border-dark-600 disabled:text-dark-600"><Play className="h-4 w-4" />{overview?.running ? '演练进行中' : '开始恢复演练'}</button></div>
+    </div>
+    <div className="flex flex-wrap gap-x-5 gap-y-1 border-y border-dark-700 py-2 text-xs text-dark-400"><span>存储：{overview?.provider || '未连接'}</span><span>保留：{overview?.policy.retentionDays ?? '-'} 天</span><span>最低副本：{overview?.policy.minimumCopies ?? '-'}</span><span>对象数：{overview?.backups.length ?? 0}</span></div>
+    <div className="max-h-64 divide-y divide-dark-700 overflow-y-auto">{overview?.backups.length ? overview.backups.map((item) => <div key={item.key} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4 py-3 text-xs"><span className="min-w-0 text-dark-300"><span className="block text-sm text-white">{item.kind === 'drill' ? '恢复演练备份' : '定时数据库备份'} · {item.verification === 'backup_drill_completed' || item.verification === 'backup_completed' ? <span className="text-green-400">验证完成</span> : <span className="text-dark-400">已存储</span>}</span><code className="mt-1 block truncate text-[10px] text-dark-500" title={item.key}>{item.key}</code></span><span className="text-right text-dark-400">{formatBytes(item.size)}<small className="block text-dark-500">{item.lastModified ? new Date(item.lastModified).toLocaleString() : '时间未知'}</small></span></div>) : <p className="py-5 text-center text-xs text-dark-500">暂无可见备份对象</p>}</div>
+    <div className="mt-3 text-xs text-dark-400"><span className="mr-2">最近事件：</span>{overview?.events[0] ? <span className={overview.events[0].action.endsWith('failed') ? 'text-red-400' : overview.events[0].action.endsWith('completed') ? 'text-green-400' : 'text-cyan-400'}>{eventLabels[overview.events[0].action] || overview.events[0].action} · {new Date(overview.events[0].createdAt).toLocaleString()}</span> : '暂无事件'}</div>
   </section>;
 }
 

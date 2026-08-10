@@ -89,3 +89,20 @@ test('object storage health checks the object permissions used by the applicatio
   assert.equal(commands[0].input.Key, commands[1].input.Key);
   assert.equal(commands[0].input.Key, commands[2].input.Key);
 });
+
+test('object storage lists every backup page without exposing credentials', async () => {
+  const commands = [];
+  const storage = createObjectStorageFromEnv({
+    OSS_REGION: 'cn-beijing', OSS_ACCESS_KEY_ID: 'test-access-key',
+    OSS_ACCESS_KEY_SECRET: 'test-secret-key', OSS_BUCKET: 'ai-drama-assets-ooc',
+  }, {
+    clientFactory: () => ({ send: async (command) => {
+      commands.push(command);
+      if (!command.input.ContinuationToken) return { IsTruncated: true, NextContinuationToken: 'page-2', Contents: [{ Key: 'backups/a.json', Size: 10, LastModified: new Date('2026-08-10T00:00:00Z') }] };
+      return { IsTruncated: false, Contents: [{ Key: 'backups/b.json', Size: 20, LastModified: new Date('2026-08-09T00:00:00Z') }] };
+    } }),
+  });
+  const objects = await storage.list('backups/');
+  assert.deepEqual(objects.map((item) => item.key), ['backups/a.json', 'backups/b.json']);
+  assert.deepEqual(commands.map((command) => command.input.ContinuationToken || null), [null, 'page-2']);
+});
