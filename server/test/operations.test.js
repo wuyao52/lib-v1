@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createApp } from '../app.js';
 import { JsonDatabase } from '../store.js';
-import { createEncryptedBackup, decodeEncryptedBackup, restoreEncryptedBackup } from '../backup.js';
+import { createEncryptedBackup, createFreshEncryptedBackup, decodeEncryptedBackup, restoreEncryptedBackup } from '../backup.js';
 import { runMaintenance } from '../maintenance.js';
 
 const backupKey = 'independent-backup-encryption-key-for-tests';
@@ -38,6 +38,21 @@ test('maintenance writes an encrypted backup to object storage', async () => {
     assert.equal(JSON.stringify(saved).includes('maintenance@example.com'), false);
     assert.equal(decodeEncryptedBackup(saved, backupKey).collections.users[0].email, 'maintenance@example.com');
   } finally { if (previous === undefined) delete process.env.BACKUP_ENCRYPTION_KEY; else process.env.BACKUP_ENCRYPTION_KEY = previous; }
+});
+
+test('fresh backups refresh every MySQL collection before encryption', async () => {
+  const calls = [];
+  const db = {
+    data: { users: [{ id: 'stale-user' }], projects: [] },
+    refreshCollections: async (names) => {
+      calls.push([...names]);
+      db.data.users = [{ id: 'fresh-user' }];
+    },
+  };
+  const document = await createFreshEncryptedBackup(db, backupKey, '2026-08-10T01:00:00.000Z');
+  const payload = decodeEncryptedBackup(document, backupKey);
+  assert.deepEqual(calls, [['users', 'projects']]);
+  assert.equal(payload.collections.users[0].id, 'fresh-user');
 });
 
 test('maintenance respects a shared database lock', async () => {

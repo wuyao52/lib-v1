@@ -12,7 +12,8 @@
     "build": "vite build",
     "preview": "vite preview --host",
     "start": "node server/index.js",
-    "test": "node --test server/test/*.test.js"
+    "test": "node --test server/test/*.test.js",
+    "backup:drill": "node server/scripts/backup-drill.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1106.0",

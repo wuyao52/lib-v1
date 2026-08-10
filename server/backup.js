@@ -18,6 +18,13 @@ export function createEncryptedBackup(db, encryptionKey, createdAt = new Date().
   };
 }
 
+export async function createFreshEncryptedBackup(db, encryptionKey, createdAt = new Date().toISOString()) {
+  if (typeof db?.refreshCollections === 'function') {
+    await db.refreshCollections(Object.keys(db.data || {}));
+  }
+  return createEncryptedBackup(db, encryptionKey, createdAt);
+}
+
 export function decodeEncryptedBackup(document, encryptionKey) {
   if (!document || document.format !== FORMAT || typeof document.encryptedPayload !== 'string') throw new Error('备份格式无效');
   const plaintext = createSecretVault(encryptionKey).decrypt(document.encryptedPayload);
