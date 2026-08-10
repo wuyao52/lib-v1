@@ -211,6 +211,9 @@ function publicOrder(order) {
 }
 
 export function registerPaymentRoutes(router, { db, requireAuth, requireSystem, paymentService }) {
+  const audit = async (req, action, targetId, metadata = {}) => {
+    await db.mutate((data) => data.auditLogs.push({ id: randomUUID(), userId: req.user.id, action, targetType: 'payment_order', targetId, ipAddress: String(req.ip || '').slice(0, 100), userAgent: String(req.get('user-agent') || '').slice(0, 300), metadata: { requestId: req.requestId || null, ...metadata }, createdAt: new Date().toISOString() }));
+  };
   router.post('/callback/alipay', async (req, res) => {
     try {
       const payment = paymentService.providers.alipay.verify(req.body || {});
@@ -274,6 +277,7 @@ export function registerPaymentRoutes(router, { db, requireAuth, requireSystem, 
       const result = await paymentService.providers[reserved.order.provider].refund(reserved.order);
       if (result.completed) await paymentService.finishRefund(reserved.order.id, result.providerRefundNo || `refund-${reserved.order.id}`);
       const order = db.read('paymentOrders').find((item) => item.id === reserved.order.id);
+      await audit(req, 'payment_refund_requested', order.id, { provider: order.provider, amountCents: order.amountCents, status: order.status });
       return res.json({ order: publicOrder(order) });
     } catch (error) {
       await paymentService.rollbackRefund(reserved.order.id);
