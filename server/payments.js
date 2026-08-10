@@ -1,4 +1,5 @@
 import { createDecipheriv, createHash, randomBytes, randomUUID, sign as rsaSign, verify as rsaVerify } from 'node:crypto';
+import { verifyPassword } from './auth.js';
 
 const nowIso = () => new Date().toISOString();
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
@@ -276,6 +277,11 @@ export function registerPaymentRoutes(router, { db, requireAuth, requireSystem, 
     return res.status(201).json({ order: publicOrder(order) });
   });
   router.post('/admin/orders/:id/refund', requireSystem, async (req, res) => {
+    const user = db.read('users').find((item) => item.id === req.user.id);
+    if (!user || !(await verifyPassword(String(req.body?.currentPassword || ''), user.passwordHash))) {
+      await audit(req, 'payment_refund_denied', req.params.id);
+      return res.status(401).json({ error: 'PASSWORD_INVALID', message: '请先输入当前系统账号密码以确认退款' });
+    }
     const reserved = await paymentService.reserveRefund(req.params.id);
     if (!reserved.ok) {
       const status = reserved.error === 'ORDER_NOT_FOUND' ? 404 : 409;
