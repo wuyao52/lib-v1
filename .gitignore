@@ -33,5 +33,8 @@ Thumbs.db
 # Logs
 *.log
 
+# One-time local operational credentials
+.tmp-railway-*
+
 # Server runtime data
 server/data/
