@@ -128,7 +128,7 @@ export function registerBillingRoutes(router, { db, requireAuth }) {
 export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImpl, resolveHost, videoQueue = null }) {
   router.use(requireSystem);
   const audit = async (req, action, targetType, targetId, metadata = {}) => {
-    const record = { id: randomUUID(), userId: req.user.id, action, targetType, targetId: targetId || null, ipAddress: String(req.ip || '').slice(0, 100), userAgent: String(req.get('user-agent') || '').slice(0, 300), metadata, createdAt: nowIso() };
+    const record = { id: randomUUID(), userId: req.user.id, action, targetType, targetId: targetId || null, ipAddress: String(req.ip || '').slice(0, 100), userAgent: String(req.get('user-agent') || '').slice(0, 300), metadata: { requestId: req.requestId || null, ...metadata }, createdAt: nowIso() };
     await db.mutate((data) => data.auditLogs.push(record));
     return record;
   };
@@ -184,6 +184,7 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
       user.role = role; updated = safeUser(user);
     });
     if (!updated) return res.status(404).json({ error: 'USER_NOT_FOUND', message: '用户不存在' });
+    await audit(req, 'user_role_updated', 'user', updated.id, { role: updated.role });
     return res.json({ user: updated });
   });
   router.post('/users/:id/balance', async (req, res) => {
@@ -194,6 +195,7 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
       if (result.failure === 'USER_NOT_FOUND') return res.status(404).json({ error: result.failure, message: '用户不存在' });
       if (result.failure) return res.status(409).json({ error: result.failure, message: '余额不能小于零' });
       const user = db.read('users').find((item) => item.id === req.params.id);
+      await audit(req, 'user_balance_adjusted', 'user', req.params.id, { amountCents, transactionId: result.transaction?.id || null });
       return res.json({ user: safeUser(user || { id: req.params.id, balanceCents: result.balance }), transaction: result.transaction });
     }
     let updated; let transaction; let failure;
@@ -207,6 +209,7 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
     });
     if (failure === 'USER_NOT_FOUND') return res.status(404).json({ error: failure, message: '用户不存在' });
     if (failure) return res.status(409).json({ error: failure, message: '余额不能小于零' });
+    await audit(req, 'user_balance_adjusted', 'user', req.params.id, { amountCents, transactionId: transaction?.id || null });
     return res.json({ user: updated, transaction });
   });
 
@@ -281,6 +284,7 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
       });
       if (failure === 'API_NOT_FOUND') return res.status(404).json({ error: failure, message: '系统 API 不存在' });
       if (failure) return res.status(409).json({ error: failure, message: '该模型已经定价' });
+      await audit(req, 'model_pricing_created', 'model_pricing', pricing.id, { apiId: pricing.apiId, modelId: pricing.modelId, unitPriceCents: pricing.unitPriceCents });
       return res.status(201).json({ pricing });
     } catch (error) { return res.status(400).json({ error: 'PRICING_VALIDATION_ERROR', message: error.message }); }
   });
@@ -298,6 +302,7 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
       if (failure === 'API_NOT_FOUND') return res.status(404).json({ error: failure, message: '系统 API 不存在' });
       if (failure) return res.status(409).json({ error: failure, message: '该模型已经定价' });
       if (!updated) return res.status(404).json({ error: 'PRICING_NOT_FOUND', message: '模型定价不存在' });
+      await audit(req, 'model_pricing_updated', 'model_pricing', updated.id, { apiId: updated.apiId, modelId: updated.modelId, unitPriceCents: updated.unitPriceCents });
       return res.json({ pricing: updated });
     } catch (error) { return res.status(400).json({ error: 'PRICING_VALIDATION_ERROR', message: error.message }); }
   });
@@ -332,6 +337,7 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
     if (failure === 'RECHARGE_NOT_FOUND') return res.status(404).json({ error: failure, message: '充值申请不存在' });
     if (failure === 'USER_NOT_FOUND') return res.status(404).json({ error: failure, message: '用户不存在' });
     if (failure) return res.status(409).json({ error: failure, message: '该申请已处理' });
+    await audit(req, 'recharge_reviewed', 'recharge', updatedRecharge.id, { decision, amountCents: updatedRecharge.amountCents, userId: updatedRecharge.userId });
     return res.json({ recharge: updatedRecharge, user: updatedUser });
   });
 }
