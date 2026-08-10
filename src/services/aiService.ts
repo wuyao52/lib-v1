@@ -493,7 +493,7 @@ export class SeedanceService extends AIService {
               data: {
                 url: videoUrl,
                 thumbnail: payload.thumbnail_url || data.thumbnail_url || data.result?.thumbnail_url,
-                metadata: data,
+                metadata: { ...data, taskId },
               },
             };
           } else {
