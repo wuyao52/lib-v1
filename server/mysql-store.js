@@ -150,13 +150,16 @@ const TABLES = {
       provider VARCHAR(80) NOT NULL,
       encrypted_base_url TEXT NOT NULL,
       encrypted_api_key TEXT NOT NULL,
+      enabled TINYINT(1) NOT NULL DEFAULT 1,
+      disabled_at VARCHAR(35) NULL,
       created_at VARCHAR(35) NOT NULL,
       updated_at VARCHAR(35) NOT NULL,
       INDEX user_api_configs_user_idx (user_id, updated_at)
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
-    select: 'SELECT id, user_id AS userId, name, provider, encrypted_base_url AS encryptedBaseUrl, encrypted_api_key AS encryptedApiKey, created_at AS createdAt, updated_at AS updatedAt FROM user_api_configs',
-    insert: 'INSERT INTO user_api_configs (id, user_id, name, provider, encrypted_base_url, encrypted_api_key, created_at, updated_at) VALUES ?',
-    values: (row) => [row.id, row.userId, row.name, row.provider, row.encryptedBaseUrl, row.encryptedApiKey, row.createdAt, row.updatedAt],
+    select: 'SELECT id, user_id AS userId, name, provider, encrypted_base_url AS encryptedBaseUrl, encrypted_api_key AS encryptedApiKey, enabled, disabled_at AS disabledAt, created_at AS createdAt, updated_at AS updatedAt FROM user_api_configs',
+    insert: 'INSERT INTO user_api_configs (id, user_id, name, provider, encrypted_base_url, encrypted_api_key, enabled, disabled_at, created_at, updated_at) VALUES ?',
+    values: (row) => [row.id, row.userId, row.name, row.provider, row.encryptedBaseUrl, row.encryptedApiKey, row.enabled === false ? 0 : 1, row.disabledAt || null, row.createdAt, row.updatedAt],
+    parse: (row) => ({ ...row, enabled: Boolean(row.enabled) }),
   },
   modelPricing: {
     table: 'model_pricing',
@@ -389,6 +392,7 @@ export class MySqlDatabase {
       connectionLimit: 5,
       enableKeepAlive: true,
       charset: 'utf8mb4',
+      ...(String(process.env.DATABASE_SSL || '').toLowerCase() === 'true' ? { ssl: { rejectUnauthorized: true } } : {}),
     });
     this.data = structuredClone(EMPTY_DATABASE);
     this.writeQueue = Promise.resolve();
@@ -412,6 +416,8 @@ export class MySqlDatabase {
     await this.ensureColumn('assets', 'storage_provider', "VARCHAR(20) NOT NULL DEFAULT 'database'");
     await this.ensureColumn('generation_jobs', 'lease_owner', 'VARCHAR(64) NULL');
     await this.ensureColumn('generation_jobs', 'lease_until', 'BIGINT NOT NULL DEFAULT 0');
+    await this.ensureColumn('user_api_configs', 'enabled', 'TINYINT(1) NOT NULL DEFAULT 1');
+    await this.ensureColumn('user_api_configs', 'disabled_at', 'VARCHAR(35) NULL');
     await this.pool.query('ALTER TABLE `assets` MODIFY COLUMN `data_base64` MEDIUMTEXT NULL');
     for (const [collection, spec] of Object.entries(TABLES)) {
       const [rows] = await this.pool.query(spec.select);
