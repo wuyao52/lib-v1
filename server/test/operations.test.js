@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { createApp } from '../app.js';
 import { JsonDatabase } from '../store.js';
 import { createEncryptedBackup, decodeEncryptedBackup, restoreEncryptedBackup } from '../backup.js';
+import { runMaintenance } from '../maintenance.js';
 
 const backupKey = 'independent-backup-encryption-key-for-tests';
 
@@ -21,6 +22,31 @@ test('encrypted backup restores real database rows and rejects tampering', async
   assert.equal(target.read('users')[0].email, 'backup@example.com');
   assert.throws(() => decodeEncryptedBackup({ ...document, checksum: '0'.repeat(64) }, backupKey), /完整性校验失败/);
   assert.throws(() => decodeEncryptedBackup(document, 'different-backup-key-that-is-long-enough'), /authenticate|加密|密钥|Unsupported state/i);
+});
+
+test('maintenance writes an encrypted backup to object storage', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ads-maintenance-'));
+  const db = await new JsonDatabase(join(directory, 'database.json')).init();
+  await db.mutate((data) => data.users.push({ id: 'user-maintenance', username: 'maintenance', email: 'maintenance@example.com', name: 'Maintenance', passwordHash: 'hash', role: 'user', balanceCents: 0, createdAt: new Date().toISOString() }));
+  const puts = [];
+  const previous = process.env.BACKUP_ENCRYPTION_KEY;
+  process.env.BACKUP_ENCRYPTION_KEY = backupKey;
+  try {
+    const result = await runMaintenance({ db, storage: { put: async (item) => puts.push(item), delete: async () => {} }, generatedMedia: { cleanup: async () => ({ deleted: 0 }) }, now: new Date('2026-08-10T00:00:00.000Z') });
+    assert.match(result.backup.objectKey, /^backups\/database-2026-08-10T00-00-00-000Z\.json$/);
+    const saved = JSON.parse(puts[0].bytes.toString('utf8'));
+    assert.equal(JSON.stringify(saved).includes('maintenance@example.com'), false);
+    assert.equal(decodeEncryptedBackup(saved, backupKey).collections.users[0].email, 'maintenance@example.com');
+  } finally { if (previous === undefined) delete process.env.BACKUP_ENCRYPTION_KEY; else process.env.BACKUP_ENCRYPTION_KEY = previous; }
+});
+
+test('maintenance respects a shared database lock', async () => {
+  let calls = 0;
+  const db = { consumeRateLimit: async () => ({ allowed: ++calls === 1 }), read: () => [], mutate: async () => {} };
+  const first = await runMaintenance({ db, generatedMedia: { cleanup: async () => ({ deleted: 0 }) } });
+  const second = await runMaintenance({ db, generatedMedia: { cleanup: async () => ({ deleted: 0 }) } });
+  assert.equal(first.skipped, undefined);
+  assert.deepEqual(second, { skipped: true, reason: 'MAINTENANCE_LOCKED', ranAt: second.ranAt });
 });
 
 test('health checks report object-storage failure and admin metrics stay role protected', async (t) => {
