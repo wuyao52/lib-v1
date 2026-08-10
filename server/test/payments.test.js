@@ -65,12 +65,15 @@ test('signed Alipay payment and refund execute once while forged callbacks are r
   const reconciliation = await (await fetch(`${baseUrl}/api/admin/payment-reconciliation`, { headers: { cookie } })).json();
   assert.equal(reconciliation.ok, true);
   assert.deepEqual(reconciliation.paidWithoutCredit, []);
-  const refund = await fetch(`${baseUrl}/api/payments/admin/orders/${storedOrder.id}/refund`, { method: 'POST', headers: { cookie } });
+  const deniedRefund = await fetch(`${baseUrl}/api/payments/admin/orders/${storedOrder.id}/refund`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ currentPassword: 'incorrect-password' }) });
+  assert.equal(deniedRefund.status, 401);
+  assert.equal(db.read('paymentOrders').find((item) => item.id === storedOrder.id).status, 'paid');
+  const refund = await fetch(`${baseUrl}/api/payments/admin/orders/${storedOrder.id}/refund`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ currentPassword: 'strong-password' }) });
   assert.equal(refund.status, 200);
   assert.equal((await refund.json()).order.status, 'refunded');
   assert.equal(db.read('users').find((item) => item.id === user.id).balanceCents, 0);
   assert.equal(db.read('balanceTransactions').filter((item) => item.type === 'payment_refund' && item.referenceId === storedOrder.id).length, 1);
-  assert.equal((await fetch(`${baseUrl}/api/payments/admin/orders/${storedOrder.id}/refund`, { method: 'POST', headers: { cookie } })).status, 409);
+  assert.equal((await fetch(`${baseUrl}/api/payments/admin/orders/${storedOrder.id}/refund`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ currentPassword: 'strong-password' }) })).status, 409);
 });
 
 test('WeChat API v3 resource decryption authenticates ciphertext', () => {
@@ -114,7 +117,7 @@ test('WeChat H5 payment settles only a verified callback and completes an asynch
   assert.equal((await postNotice({ out_trade_no: order.merchantOrderNo, transaction_id: 'wechat-trade-1', trade_state: 'SUCCESS', appid: 'wx-app', mchid: 'mch-1', amount: { total: 500 } })).status, 200);
   assert.equal(db.read('users').find((item) => item.id === user.id).balanceCents, 500);
   await db.mutate((data) => { data.users.find((item) => item.id === user.id).role = 'system'; });
-  assert.equal((await fetch(`${baseUrl}/api/payments/admin/orders/${order.id}/refund`, { method: 'POST', headers: { cookie } })).status, 200);
+  assert.equal((await fetch(`${baseUrl}/api/payments/admin/orders/${order.id}/refund`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ currentPassword: 'wechat-payment-password' }) })).status, 200);
   assert.equal(db.read('paymentOrders').find((item) => item.id === order.id).status, 'refunding');
   const refund = await postNotice('/api/payments/callback/wechat-refund', { out_refund_no: `R${order.merchantOrderNo}`, refund_status: 'SUCCESS', amount: { refund: 500, total: 500 } }, 'REFUND.SUCCESS');
   assert.equal(refund.status, 200);
