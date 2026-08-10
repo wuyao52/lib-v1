@@ -1,0 +1,30 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { createApp } from '../app.js';
+
+test('successful login writes a valid audit row and missing video history is restored after refresh', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'ads-login-history-recovery-'));
+  const codes = new Map();
+  const { app, db } = await createApp({ databasePath: join(directory, 'database.json'), secureCookies: false, videoQueue: false, monitoring: false, sendEmailCode: async ({ email, code }) => codes.set(email, code), generateImageCaptcha: () => ({ text: '24682', data: '<svg/>' }) });
+  const server = app.listen(0, '127.0.0.1'); await new Promise((resolve) => server.once('listening', resolve)); t.after(() => server.close());
+  const origin = `http://127.0.0.1:${server.address().port}`; const email = 'restored-history@example.com';
+  await fetch(`${origin}/api/auth/email-code`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, purpose: 'register' }) });
+  const registered = await fetch(`${origin}/api/auth/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'restored-history', email, password: 'history-password', verificationCode: codes.get(email) }) });
+  const user = (await registered.json()).user;
+  const captcha = await (await fetch(`${origin}/api/auth/captcha`)).json();
+  const login = await fetch(`${origin}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ identifier: 'restored-history', password: 'history-password', captchaId: captcha.captchaId, captchaCode: '24682' }) });
+  assert.equal(login.status, 200);
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  const audit = db.read('auditLogs').find((item) => item.action === 'login_succeeded');
+  assert.equal(audit.userId, user.id); assert.match(audit.id, /^[0-9a-f-]{36}$/);
+  const completedAt = new Date().toISOString();
+  await db.mutate((data) => data.generationJobs.push({ id: 'recover-video-1', userId: user.id, apiId: 'api-1', modelId: 'video', status: 'completed', resultUrl: 'https://cdn.example/recover-video.mp4', thumbnail: 'https://cdn.example/recover.jpg', prompt: 'fresh recovery proof', projectId: 'project-1', nodeId: 'node-1', createdAt: completedAt, updatedAt: completedAt, completedAt }));
+  const history = await (await fetch(`${origin}/api/generation-history?limit=10`, { headers: { cookie } })).json();
+  assert.equal(history.history.length, 1);
+  assert.equal(history.history[0].url, 'https://cdn.example/recover-video.mp4');
+  assert.equal(history.history[0].prompt, 'fresh recovery proof');
+  assert.ok(Date.parse(history.history[0].expiresAt) - Date.parse(completedAt) >= 89 * 24 * 60 * 60 * 1000);
+});
