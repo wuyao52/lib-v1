@@ -510,6 +510,10 @@ export class MySqlDatabase {
       const connection = await this.pool.getConnection();
       try {
         await connection.beginTransaction();
+        if (referenceId && type === 'admin_adjustment') {
+          const [existing] = await connection.query('SELECT id, user_id AS userId, amount_cents AS amountCents, type, description, reference_id AS referenceId, created_by AS createdBy, created_at AS createdAt FROM balance_transactions WHERE reference_id = ? AND type = ? LIMIT 1 FOR UPDATE', [referenceId, type]);
+          if (existing.length) { await connection.commit(); const user = this.data.users.find((item) => item.id === userId); result = { failure: null, balance: Number(user?.balanceCents || 0), transaction: existing[0], replayed: true }; return; }
+        }
         const [users] = await connection.query('SELECT balance_cents AS balanceCents FROM users WHERE id = ? FOR UPDATE', [userId]);
         if (!users.length) { result.failure = 'USER_NOT_FOUND'; await connection.rollback(); return; }
         const next = Number(users[0].balanceCents) + Number(amountCents);
