@@ -51,4 +51,5 @@ test('two service instances share an alert lock and send one notification', asyn
   const results = await Promise.all([first.check(), second.check()]);
   assert.equal(results.filter((result) => result.changed).length, 1);
   assert.equal(calls.length, 1);
+  assert.ok([...locks.keys()].every((key) => key.length === 64));
 });

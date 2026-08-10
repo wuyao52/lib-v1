@@ -46,7 +46,8 @@ export function createMonitoringService({ db, fetchImpl = fetch, env = process.e
     const fingerprint = JSON.stringify(snapshot.alerts);
     const fingerprintKey = createHmac('sha256', 'monitoring-alert-fingerprint').update(fingerprint).digest('hex');
     if (db.consumeRateLimit) {
-      const lock = await db.consumeRateLimit(`monitoring:alert:${fingerprintKey}`, 1, Math.max(intervalMs * 2, 60_000));
+      // The shared rate-limit primary key is CHAR(64); the HMAC is already namespace-specific.
+      const lock = await db.consumeRateLimit(fingerprintKey, 1, Math.max(intervalMs * 2, 60_000));
       if (!lock.allowed) return { changed: false, snapshot, shared: true };
     } else if (fingerprint === lastFingerprint) return { changed: false, snapshot };
     const event = snapshot.alerts.length ? 'operations.alert' : 'operations.recovered';
