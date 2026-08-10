@@ -19,6 +19,8 @@ import { createObjectStorageFromEnv } from './object-storage.js';
 import { createVideoQueue } from './video-queue.js';
 import { createGeneratedMediaService, registerGeneratedMediaRoutes } from './generated-media.js';
 import { registerUserApiConfigRoutes, registerUserAiRoutes } from './user-api-configs.js';
+import { createResourceGuard } from './resource-guard.js';
+import { startMaintenanceScheduler } from './maintenance.js';
 import { createPaymentService, registerPaymentRoutes } from './payments.js';
 
 const currentDir = fileURLToPath(new URL('.', import.meta.url));
@@ -28,6 +30,10 @@ function securityHeaders(_req, res, next) {
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'same-origin');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  res.setHeader('Content-Security-Policy', "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' https:; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data: https:");
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  if (_req.secure) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   next();
 }
 
@@ -63,7 +69,8 @@ function collectionsForRequest(pathname) {
 function createRateLimiter({ db, limit = 10, windowMs = 60_000 } = {}) {
   return async (req, res, next) => {
     const identity = req.body?.email || req.body?.identifier || req.body?.username || '';
-    const key = createHash('sha256').update(`${req.ip}:${String(identity).toLowerCase()}`).digest('hex');
+    const scope = `${req.baseUrl || ''}${req.path || ''}`;
+    const key = createHash('sha256').update(`${scope}:${req.ip}:${String(identity).toLowerCase()}`).digest('hex');
     const now = Date.now();
     try {
       let bucket;
@@ -100,6 +107,7 @@ export async function createApp(options = {}) {
   );
   const assetStorage = options.assetStorage === undefined ? createObjectStorageFromEnv() : options.assetStorage;
   const generatedMedia = createGeneratedMediaService({ db, storage: assetStorage, fetchImpl: options.fetchImpl });
+  const maintenance = options.maintenance === false ? null : startMaintenanceScheduler({ db, storage: assetStorage, generatedMedia });
   const paymentService = createPaymentService({ db, fetchImpl: options.fetchImpl, env: process.env, config: options.paymentConfig });
   const systemUserEmails = new Set(String(process.env.SYSTEM_USER_EMAILS || '')
     .split(',').map((value) => value.trim().toLowerCase()).filter(Boolean));
@@ -130,12 +138,15 @@ export async function createApp(options = {}) {
   const videoQueue = options.videoQueue === false ? null : await createVideoQueue({
     db, vault, fetchImpl: options.fetchImpl, autoStart: options.videoQueueAutoStart !== false, generatedMedia,
   });
+  const resourceGuard = options.resourceGuard || createResourceGuard({ db });
 
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
   app.use(securityHeaders);
   const preserveRawBody = (req, _res, buffer) => { req.rawBody = Buffer.from(buffer); };
-  app.use(express.json({ limit: '25mb', verify: preserveRawBody }));
+  // Custom API calls may be multipart uploads; keep their exact body for the allowlisted proxy.
+  app.use('/api/user-ai', express.raw({ type: () => true, limit: '12mb', verify: preserveRawBody }));
+  app.use(express.json({ limit: '22mb', verify: preserveRawBody }));
   app.use(express.urlencoded({ extended: false, limit: '1mb', verify: preserveRawBody }));
   app.use(cookieParser());
   app.use(createOriginGuard(allowedOrigins));
@@ -144,9 +155,26 @@ export async function createApp(options = {}) {
     catch (error) { next(error); }
   });
   app.use(auth.authenticate);
+  app.use('/api', (req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
+  app.use(async (req, res, next) => {
+    if (!req.path.startsWith('/api/system-ai/') && !req.path.startsWith('/api/user-ai/')) return next();
+    if (!req.user) return next();
+    const bucket = await resourceGuard.rateLimit(req.user.id);
+    if (!bucket.allowed) {
+      res.setHeader('Retry-After', String(Math.max(1, Math.ceil((bucket.resetAt - Date.now()) / 1000))));
+      return res.status(429).json({ error: 'AI_RATE_LIMITED', message: 'AI 请求次数过多，请稍后重试' });
+    }
+    if (req.method === 'GET' && (req.path.endsWith('/v1/models') || /\/v1\/videos\/[^/]+$/.test(req.path))) return next();
+    let release;
+    try { release = await resourceGuard.acquire(req.user.id); }
+    catch (error) { return res.status(429).json({ error: error.code, message: error.message }); }
+    res.once('finish', release); res.once('close', release);
+    return next();
+  });
   const requestLogger = options.logger === undefined ? (process.env.NODE_ENV === 'production' ? console : null) : options.logger;
   app.use((req, res, next) => {
-    const requestId = String(req.get('x-request-id') || randomUUID()).slice(0, 100);
+    const suppliedRequestId = String(req.get('x-request-id') || '');
+    const requestId = /^[A-Za-z0-9_-]{1,80}$/.test(suppliedRequestId) ? suppliedRequestId : randomUUID();
     const startedAt = Date.now();
     req.requestId = requestId;
     res.setHeader('x-request-id', requestId);
@@ -236,5 +264,5 @@ export async function createApp(options = {}) {
     res.status(500).json({ error: 'INTERNAL_ERROR', message: '服务器内部错误' });
   });
 
-  return { app, db, auth, videoQueue };
+  return { app, db, auth, videoQueue, maintenance };
 }
