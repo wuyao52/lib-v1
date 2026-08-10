@@ -57,7 +57,7 @@ test('full creator workflow keeps project, asset, billing, queue and history con
   assert.equal(pricingResponse.status, 201);
   assert.equal((await (await request('/api/catalog/models', user.cookie)).json()).models[0].modelId, 'video-model');
   assert.equal((await request('/api/admin/users', user.cookie)).status, 403);
-  await request(`/api/admin/users/${user.user.id}/balance`, admin.cookie, { method: 'POST', body: JSON.stringify({ amountCents: 100 }) });
+  await request(`/api/admin/users/${user.user.id}/balance`, admin.cookie, { method: 'POST', body: JSON.stringify({ amountCents: 100, currentPassword: 'strong-password' }) });
 
   const projectId = 'workflow-project';
   const initialProject = { id: projectId, title: '联合工作流', description: 'integration', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), nodes: [], edges: [], settings: {} };
@@ -96,7 +96,7 @@ test('full creator workflow keeps project, asset, billing, queue and history con
   assert.equal((await request('/api/generation-history', admin.cookie)).status, 200);
   assert.equal((await (await request(`/api/projects/${projectId}`, admin.cookie)).json()).project, undefined);
 
-  await request(`/api/admin/users/${user.user.id}/balance`, admin.cookie, { method: 'POST', body: JSON.stringify({ amountCents: 100 }) });
+  await request(`/api/admin/users/${user.user.id}/balance`, admin.cookie, { method: 'POST', body: JSON.stringify({ amountCents: 100, currentPassword: 'strong-password' }) });
   const failing = await request(`/api/system-ai/${api.id}/v1/videos`, user.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'will-fail', seconds: 5 }) });
   assert.equal(failing.status, 202);
   const failedJob = await failing.json();
