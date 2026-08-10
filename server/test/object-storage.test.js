@@ -59,3 +59,33 @@ test('Alibaba Cloud OSS accepts an explicit regional endpoint override', () => {
   }, { clientFactory: (config) => { clientConfig = config; return { send: async () => ({}) }; } });
   assert.equal(clientConfig.endpoint, 'https://custom-oss.example.com');
 });
+
+test('object storage health checks the object permissions used by the application', async () => {
+  const commands = [];
+  const storage = createObjectStorageFromEnv({
+    OSS_REGION: 'cn-beijing',
+    OSS_ACCESS_KEY_ID: 'test-access-key',
+    OSS_ACCESS_KEY_SECRET: 'test-secret-key',
+    OSS_BUCKET: 'ai-drama-assets-ooc',
+  }, {
+    clientFactory: () => ({
+      send: async (command) => {
+        commands.push(command);
+        if (command.constructor.name === 'GetObjectCommand') {
+          return { Body: { transformToByteArray: async () => Buffer.from('ok') } };
+        }
+        return {};
+      },
+    }),
+  });
+
+  assert.equal(await storage.health(), true);
+  assert.deepEqual(commands.map((command) => command.constructor.name), [
+    'PutObjectCommand',
+    'GetObjectCommand',
+    'DeleteObjectCommand',
+  ]);
+  assert.match(commands[0].input.Key, /^healthchecks\/[\w-]+\.txt$/);
+  assert.equal(commands[0].input.Key, commands[1].input.Key);
+  assert.equal(commands[0].input.Key, commands[2].input.Key);
+});
