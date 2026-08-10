@@ -81,6 +81,21 @@ ASSET_RETENTION_DAYS=30
 
 四个 `R2_*` 变量必须同时配置。重新部署 Railway 后，新图片写入 R2，MySQL 的 `assets` 表只保存对象 Key、哈希、类型、大小和用户归属；旧 Base64 素材仍可读取，并在再次上传相同素材时迁移到 R2。未配置 R2 时保留数据库存储兼容模式。`ASSET_USER_QUOTA_BYTES` 可选，默认每个用户 2 GiB。`ASSET_RETENTION_DAYS` 默认是 30，仅自动删除超过保留期且未被项目或有效生成历史引用的素材；服务端每 6 小时检查一次，打开云端素材管理时也会立即检查。
 
+### 阿里云 OSS 素材存储（国内支付推荐）
+
+不使用 R2 时，可在阿里云 OSS 创建**私有** Bucket，并创建只对该 Bucket 有读写权限的 RAM 用户 AccessKey。不要同时填写任何 `R2_*` 变量。Railway Variables 填写：
+
+```env
+OSS_REGION=cn-hangzhou
+OSS_ACCESS_KEY_ID=RAM 用户的 AccessKey ID
+OSS_ACCESS_KEY_SECRET=RAM 用户的 AccessKey Secret
+OSS_BUCKET=ai-drama-assets
+# 可留空；默认使用 https://s3.cn-hangzhou.aliyuncs.com
+OSS_ENDPOINT=
+```
+
+`OSS_REGION` 必须与 Bucket 所在地域一致，例如华东 1（杭州）使用 `cn-hangzhou`。不需要开放 Bucket 公共读；应用会通过自身的受控素材接口读取文件。该配置同样用于素材、生成视频归档与加密数据库备份。数据库内的旧 Base64 素材可继续读取；如果生产环境已有 R2 对象，请先完成对象迁移，再移除 `R2_*` 配置，避免旧对象不可访问。
+
 ### 持久化视频任务队列
 
 系统视频模型请求会先写入 MySQL `generation_jobs` 表，再由 Railway 后端按全站、用户和 API 三层并发限制公平提交。浏览器关闭后任务仍会继续，成功结果由后端写入三天生成历史，失败任务只退款一次。临时 `429` 和 `5xx` 会延迟重试；终态队列记录默认保留 7 天。

@@ -30,6 +30,12 @@ const formatBytes = (bytes: number) => {
   return `${value >= 10 ? value.toFixed(1) : value.toFixed(2)} ${units[unit]}`;
 };
 
+const storageProviderLabel = (provider: string) => ({
+  r2: 'Cloudflare R2',
+  'aliyun-oss': '阿里云 OSS',
+  database: '数据库兼容存储',
+}[provider] || provider || '数据库兼容存储');
+
 export default function AssetManager({ onClose }: { onClose: () => void }) {
   const [overview, setOverview] = useState<AssetOverview | null>(null);
   const [loading, setLoading] = useState(true);
@@ -83,7 +89,7 @@ export default function AssetManager({ onClose }: { onClose: () => void }) {
             <div className="h-2 overflow-hidden rounded bg-dark-700"><div className={`h-full ${usedPercent >= 90 ? 'bg-red-500' : usedPercent >= 70 ? 'bg-amber-500' : 'bg-cyan-500'}`} style={{ width: `${usedPercent}%` }} /></div>
             <p className="mt-2 text-xs text-dark-500">未引用素材保留 {overview.retentionDays} 天，到期后自动从云端删除；项目或有效生成历史正在使用的素材不会删除。</p>
           </div>
-          <div className="flex items-center gap-2 text-xs text-dark-300">{overview.storageProvider === 'r2' ? <Cloud className="h-4 w-4 text-cyan-400" /> : <Database className="h-4 w-4 text-amber-400" />}{overview.storageProvider === 'r2' ? 'Cloudflare R2' : '数据库兼容存储'}</div>
+          <div className="flex items-center gap-2 text-xs text-dark-300">{overview.storageProvider === 'database' ? <Database className="h-4 w-4 text-amber-400" /> : <Cloud className="h-4 w-4 text-cyan-400" />}{storageProviderLabel(overview.storageProvider)}</div>
         </div>}
 
         {error && <div className="mb-4 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">{error}</div>}
