@@ -33,6 +33,7 @@ export default function Toolbar() {
     addNode,
     project,
     saveCurrentProject,
+    isSaving,
     exportProject,
     toggleSettings,
     toggleModelConfig,
@@ -107,7 +108,8 @@ export default function Toolbar() {
           <div className="flex items-center gap-1">
             <button
               onClick={saveCurrentProject}
-              className="p-2 rounded-lg hover:bg-dark-700 text-dark-300 hover:text-white transition-colors"
+              disabled={isSaving}
+              className="p-2 rounded-lg hover:bg-dark-700 text-dark-300 hover:text-white transition-colors disabled:opacity-40"
               title="保存项目"
             >
               <Save className="w-4 h-4" />
