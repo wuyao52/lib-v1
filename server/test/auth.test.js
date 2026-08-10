@@ -177,3 +177,25 @@ test('registration needs no nickname and usernames are unique case-insensitively
   assert.equal(conflict.error, 'USERNAME_EXISTS');
   assert.equal(context.db.read('users').filter((user) => user.username.toLowerCase() === 'uniqueuser').length, 1);
 });
+
+test('security headers, origin protection and session cap are enforced', async (t) => {
+  const context = await startServer();
+  t.after(() => context.server.close());
+  const health = await fetch(`${context.baseUrl}/api/health`, { headers: { 'x-request-id': '<script>alert(1)</script>' } });
+  assert.match(health.headers.get('content-security-policy'), /default-src 'self'/);
+  assert.equal(health.headers.get('cache-control'), 'no-store');
+  assert.match(health.headers.get('x-request-id'), /^[0-9a-f-]{36}$/);
+  const blocked = await fetch(`${context.baseUrl}/api/auth/login`, { method: 'POST', headers: { origin: 'https://attacker.example', 'content-type': 'application/json' }, body: JSON.stringify({}) });
+  assert.equal(blocked.status, 403);
+
+  const email = 'sessions@example.com';
+  const code = await requestCode(context, email, 'register');
+  const registered = await fetch(`${context.baseUrl}/api/auth/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'sessions', email, password: 'strong-password', verificationCode: code }) });
+  assert.equal(registered.status, 201);
+  for (let index = 0; index < 11; index += 1) {
+    const captchaId = await requestCaptcha(context);
+    const login = await fetch(`${context.baseUrl}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ identifier: email, password: 'strong-password', captchaId, captchaCode: '24682' }) });
+    assert.equal(login.status, 200);
+  }
+  assert.equal(context.db.read('sessions').filter((session) => session.userId === context.db.read('users')[0].id).length, 10);
+});
