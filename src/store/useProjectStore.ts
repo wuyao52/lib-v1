@@ -53,6 +53,7 @@ const defaultSettings: ProjectSettings = {
 const generateId = () => `id-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
 let storageScope = 'unscoped';
+let saveQueuedWhileBusy = false;
 const getProjectListKey = () => `ai-drama-projects:${storageScope}`;
 const getProjectDataKey = (projectId: string) => `ai-drama-project:${storageScope}:${projectId}`;
 
@@ -884,6 +885,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
   saveCurrentProject: async () => {
     const { project } = get();
     if (!project) return;
+    if (get().isSaving) { saveQueuedWhileBusy = true; return; }
 
     set({ isSaving: true });
 
@@ -913,6 +915,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     } catch (error) {
       console.error('项目图片云端迁移失败', error);
       set({ isSaving: false });
+      if (saveQueuedWhileBusy) { saveQueuedWhileBusy = false; queueMicrotask(() => get().saveCurrentProject()); }
       return;
     }
 
@@ -942,12 +945,17 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
         isSaving: false,
       }));
       saveProjectsToStorage(versionedProjects);
+      if (saveQueuedWhileBusy || get().project?.updatedAt !== projectToSave.updatedAt) {
+        saveQueuedWhileBusy = false;
+        queueMicrotask(() => get().saveCurrentProject());
+      }
     } catch (error) {
       console.error('云端保存失败，本地副本已保留', error);
       if (error instanceof ApiError && error.code === 'PROJECT_VERSION_CONFLICT') {
         set({ projects: updatedProjects, isSaving: false, autoSaveEnabled: false });
         alert('项目已在其他页面或设备更新。为避免覆盖，自动保存已暂停；请重新打开项目获取最新版本。');
       } else set({ projects: updatedProjects, isSaving: false });
+      if (saveQueuedWhileBusy) { saveQueuedWhileBusy = false; queueMicrotask(() => get().saveCurrentProject()); }
     }
   },
 
