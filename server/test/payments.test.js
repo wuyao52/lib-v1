@@ -86,3 +86,38 @@ test('WeChat API v3 resource decryption authenticates ciphertext', () => {
   assert.equal(decryptWechatResource(resource, apiV3Key).amount.total, 500);
   assert.throws(() => decryptWechatResource({ ...resource, associated_data: 'tampered' }, apiV3Key));
 });
+
+test('WeChat H5 payment settles only a verified callback and completes an asynchronous refund', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'ads-wechat-payment-'));
+  const merchant = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } });
+  const platform = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } });
+  const apiV3Key = '12345678901234567890123456789012'; const codes = new Map(); const requests = [];
+  const encrypt = (payload, associatedData) => { const nonceText = randomBytes(6).toString('hex'); const cipher = createCipheriv('aes-256-gcm', Buffer.from(apiV3Key), Buffer.from(nonceText)); cipher.setAAD(Buffer.from(associatedData)); return { ciphertext: Buffer.concat([cipher.update(JSON.stringify(payload)), cipher.final(), cipher.getAuthTag()]).toString('base64'), nonce: nonceText, associated_data: associatedData }; };
+  const { app, db } = await createApp({
+    databasePath: join(directory, 'database.json'), secureCookies: false, videoQueue: false,
+    sendEmailCode: async ({ email, code }) => codes.set(email, code),
+    fetchImpl: async (url, options) => { requests.push({ url: String(url), options }); return new Response(JSON.stringify(String(url).includes('/refunds') ? { status: 'PROCESSING', refund_id: 'wechat-refund-1' } : { h5_url: 'https://wx.tenpay.com/cgi-bin/mmpayweb-bin/checkmweb?prepay_id=wx-prepay' }), { status: 200, headers: { 'content-type': 'application/json' } }); },
+    paymentConfig: { alipay: {}, wechat: { appId: 'wx-app', mchId: 'mch-1', serialNo: 'merchant-cert-1', platformSerialNo: 'platform-cert-1', privateKey: merchant.privateKey, platformCertificate: platform.publicKey, apiV3Key, notifyUrl: 'https://backend.example/api/payments/callback/wechat', refundNotifyUrl: 'https://backend.example/api/payments/callback/wechat-refund' } },
+  });
+  const server = app.listen(0, '127.0.0.1'); await new Promise((resolve) => server.once('listening', resolve)); t.after(() => server.close());
+  const baseUrl = `http://127.0.0.1:${server.address().port}`; const email = 'wechat-payer@example.com';
+  await fetch(`${baseUrl}/api/auth/email-code`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, purpose: 'register' }) });
+  const registration = await fetch(`${baseUrl}/api/auth/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'wechat-payer', email, password: 'wechat-payment-password', verificationCode: codes.get(email) }) });
+  const cookie = registration.headers.get('set-cookie').split(';')[0]; const user = (await registration.json()).user;
+  const created = await (await fetch(`${baseUrl}/api/payments/orders`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ provider: 'wechat', amountCents: 500 }) })).json();
+  assert.match(created.order.payUrl, /^https:\/\/wx\.tenpay\.com/); assert.match(requests[0].options.headers.authorization, /^WECHATPAY2-SHA256-RSA2048 /);
+  const order = db.read('paymentOrders').find((item) => item.id === created.order.id);
+  const postNotice = async (pathOrPayload, payloadOrEvent, eventType = 'TRANSACTION.SUCCESS') => { const path = typeof pathOrPayload === 'string' ? pathOrPayload : '/api/payments/callback/wechat'; const payload = typeof pathOrPayload === 'string' ? payloadOrEvent : pathOrPayload; const actualEvent = typeof pathOrPayload === 'string' ? eventType : 'TRANSACTION.SUCCESS'; const raw = JSON.stringify({ id: `event-${actualEvent}`, event_type: actualEvent, resource: encrypt(payload, 'transaction') }); const timestamp = String(Math.floor(Date.now() / 1000)); const nonce = 'callback-nonce'; const signature = rsaSign('RSA-SHA256', Buffer.from(`${timestamp}\n${nonce}\n${raw}\n`), platform.privateKey).toString('base64'); return fetch(`${baseUrl}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', 'wechatpay-timestamp': timestamp, 'wechatpay-nonce': nonce, 'wechatpay-serial': 'platform-cert-1', 'wechatpay-signature': signature }, body: raw }); };
+  const forged = await fetch(`${baseUrl}/api/payments/callback/wechat`, { method: 'POST', headers: { 'content-type': 'application/json', 'wechatpay-timestamp': String(Math.floor(Date.now() / 1000)), 'wechatpay-nonce': 'x', 'wechatpay-serial': 'platform-cert-1', 'wechatpay-signature': 'forged' }, body: '{}' });
+  assert.equal(forged.status, 401);
+  assert.equal((await postNotice({ out_trade_no: order.merchantOrderNo, transaction_id: 'wechat-trade-1', trade_state: 'SUCCESS', appid: 'wx-app', mchid: 'mch-1', amount: { total: 500 } })).status, 200);
+  assert.equal((await postNotice({ out_trade_no: order.merchantOrderNo, transaction_id: 'wechat-trade-1', trade_state: 'SUCCESS', appid: 'wx-app', mchid: 'mch-1', amount: { total: 500 } })).status, 200);
+  assert.equal(db.read('users').find((item) => item.id === user.id).balanceCents, 500);
+  await db.mutate((data) => { data.users.find((item) => item.id === user.id).role = 'system'; });
+  assert.equal((await fetch(`${baseUrl}/api/payments/admin/orders/${order.id}/refund`, { method: 'POST', headers: { cookie } })).status, 200);
+  assert.equal(db.read('paymentOrders').find((item) => item.id === order.id).status, 'refunding');
+  const refund = await postNotice('/api/payments/callback/wechat-refund', { out_refund_no: `R${order.merchantOrderNo}`, refund_status: 'SUCCESS', amount: { refund: 500, total: 500 } }, 'REFUND.SUCCESS');
+  assert.equal(refund.status, 200);
+  assert.equal(db.read('paymentOrders').find((item) => item.id === order.id).status, 'refunded');
+  assert.equal(db.read('users').find((item) => item.id === user.id).balanceCents, 0);
+});
