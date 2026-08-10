@@ -82,7 +82,7 @@ export async function handler(event) {
       redirect: 'manual',
     });
     const responseHeaders = {};
-    for (const name of ['cache-control', 'content-type', 'location']) {
+    for (const name of ['cache-control', 'content-type', 'location', 'content-security-policy', 'x-content-type-options', 'x-frame-options', 'referrer-policy', 'permissions-policy', 'cross-origin-opener-policy', 'cross-origin-resource-policy', 'strict-transport-security']) {
       const value = response.headers.get(name);
       if (value) responseHeaders[name] = value;
     }
