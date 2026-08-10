@@ -183,7 +183,7 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
           url: getPublicAssetUrl(req, asset.id),
           mimeType: asset.mimeType,
           byteSize: Number(asset.byteSize || 0),
-          storageProvider: asset.storageProvider || (asset.objectKey ? 'r2' : 'database'),
+          storageProvider: asset.storageProvider || (asset.objectKey ? assetStorage?.provider || 'object-storage' : 'database'),
           createdAt: asset.createdAt,
           referenced,
           expiresAt: referenced ? null : getAssetExpiration(asset.createdAt, retentionDays),
