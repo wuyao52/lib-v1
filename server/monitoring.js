@@ -48,8 +48,31 @@ export function createMonitoringService({ db, fetchImpl = fetch, env = process.e
   const endpoint = publicHttpsUrl(env.ALERT_WEBHOOK_URL);
   const secret = String(env.ALERT_WEBHOOK_SECRET || '');
   const intervalMs = Math.max(60_000, (Number.parseInt(env.MONITORING_INTERVAL_MINUTES || '5', 10) || 5) * 60_000);
-  let lastFingerprint = null;
+  const repeatMs = Math.max(60 * 60 * 1000, (Number.parseInt(env.ALERT_REPEAT_HOURS || '24', 10) || 24) * 60 * 60 * 1000);
+  let localAlertFingerprint = null;
+  let localRecoverySent = true;
+  let localTestSent = false;
   let timer = null;
+
+  const lock = async (namespace, value, windowMs) => {
+    if (!db.consumeRateLimit) return true;
+    const key = createHmac('sha256', 'monitoring-notification-lock').update(`${namespace}:${value}`).digest('hex');
+    return (await db.consumeRateLimit(key, 1, windowMs)).allowed;
+  };
+
+  const latestNotification = () => (db.read('auditLogs') || [])
+    .filter((item) => item.targetType === 'monitoring' && ['monitoring_alert_sent', 'monitoring_recovered_sent'].includes(item.action))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] || null;
+
+  const recordNotification = async (action, event, fingerprint, snapshot) => {
+    if (typeof db.mutate !== 'function') return;
+    await db.mutate((data) => data.auditLogs.push({
+      id: randomUUID(), userId: null, action, targetType: 'monitoring', targetId: null,
+      ipAddress: 'system', userAgent: 'monitoring',
+      metadata: { event, fingerprint, alertCodes: snapshot.alerts.map((item) => item.code) },
+      createdAt: nowIso(),
+    }));
+  };
 
   const emailRecipients = () => {
     const configured = String(env.ALERT_EMAIL_RECIPIENTS || '').split(',').map((item) => item.trim().toLowerCase()).filter(Boolean);
@@ -69,37 +92,69 @@ export function createMonitoringService({ db, fetchImpl = fetch, env = process.e
     }
     const recipients = emailSender ? emailRecipients() : [];
     if (recipients.length) {
-      const codes = (payload.operations?.alerts || []).map((item) => item.code).join(', ') || 'RECOVERED';
+      const codes = event === 'operations.test'
+        ? 'TEST'
+        : (payload.operations?.alerts || []).map((item) => item.code).join(', ') || 'RECOVERED';
+      const subjectType = event === 'operations.test' ? '运维测试' : event === 'operations.recovered' ? '运维恢复' : '运维告警';
       const text = [`服务：ai-drama-studio`, `事件：${event}`, `时间：${envelope.occurredAt}`, `状态：${codes}`, '', '请登录系统管理控制台查看脱敏指标和任务标识。'].join('\n');
-      await Promise.all(recipients.map((to) => emailSender({ to, subject: `[AI Drama Studio] 运维告警：${codes}`, text })));
+      await Promise.all(recipients.map((to) => emailSender({ to, subject: `[AI Drama Studio] ${subjectType}：${codes}`, text })));
       channels.push('email');
     }
     return channels.length ? { delivered: true, channels, recipients: recipients.length } : { delivered: false, reason: 'NOT_CONFIGURED' };
   };
 
   const check = async () => {
+    if (typeof db.refreshCollections === 'function') await db.refreshCollections(['generationJobs', 'auditLogs', 'users']);
     const snapshot = operationSnapshot(db, env);
-    const fingerprint = JSON.stringify(snapshot.alerts);
-    const fingerprintKey = createHmac('sha256', 'monitoring-alert-fingerprint').update(fingerprint).digest('hex');
-    if (db.consumeRateLimit) {
-      // The shared rate-limit primary key is CHAR(64); the HMAC is already namespace-specific.
-      const lock = await db.consumeRateLimit(fingerprintKey, 1, Math.max(intervalMs * 2, 60_000));
-      if (!lock.allowed) return { changed: false, snapshot, shared: true };
-    } else if (fingerprint === lastFingerprint) return { changed: false, snapshot };
-    const event = snapshot.alerts.length ? 'operations.alert' : 'operations.recovered';
+    const fingerprint = createHmac('sha256', 'monitoring-alert-fingerprint').update(JSON.stringify(snapshot.alerts)).digest('hex');
+    const latest = latestNotification();
+
+    if (!snapshot.alerts.length) {
+      const needsRecovery = latest?.action === 'monitoring_alert_sent' || (!db.mutate && !localRecoverySent);
+      if (!needsRecovery) return { changed: false, snapshot, reason: 'HEALTHY' };
+      if (!(await lock('recovery', latest?.id || localAlertFingerprint || fingerprint, 30 * 24 * 60 * 60 * 1000))) {
+        localRecoverySent = true;
+        return { changed: false, snapshot, shared: true };
+      }
+      const event = 'operations.recovered';
+      const delivery = await dispatch(event, { operations: snapshot });
+      localRecoverySent = true;
+      localAlertFingerprint = null;
+      if (delivery.delivered) await recordNotification('monitoring_recovered_sent', event, fingerprint, snapshot);
+      return { changed: Boolean(delivery.delivered), event, delivery, snapshot };
+    }
+
+    if (!db.consumeRateLimit && localAlertFingerprint === fingerprint) return { changed: false, snapshot };
+    if (!(await lock('alert', fingerprint, repeatMs))) {
+      localAlertFingerprint = fingerprint;
+      localRecoverySent = false;
+      return { changed: false, snapshot, shared: true };
+    }
+    const event = 'operations.alert';
     const delivery = await dispatch(event, { operations: snapshot });
-    lastFingerprint = fingerprint;
-    return { changed: true, event, delivery, snapshot };
+    localAlertFingerprint = fingerprint;
+    localRecoverySent = false;
+    if (delivery.delivered) await recordNotification('monitoring_alert_sent', event, fingerprint, snapshot);
+    return { changed: Boolean(delivery.delivered), event, delivery, snapshot };
+  };
+
+  const testOnce = async () => {
+    const deployment = String(env.RAILWAY_DEPLOYMENT_ID || env.APP_RELEASE || 'local');
+    if (localTestSent || !(await lock('test', deployment, 30 * 24 * 60 * 60 * 1000))) return { delivered: false, reason: 'ALREADY_SENT' };
+    localTestSent = true;
+    return dispatch('operations.test', { operations: operationSnapshot(db, env) });
   };
 
   return {
     check,
     snapshot: () => operationSnapshot(db, env),
     test: () => dispatch('operations.test', { operations: operationSnapshot(db, env) }),
+    testOnce,
     start() { if (!timer) { timer = setInterval(() => void check().catch((error) => console.error('Monitoring notification failed:', error.message)), intervalMs); timer.unref?.(); } return intervalMs; },
     stop() { if (timer) clearInterval(timer); timer = null; },
     configured: Boolean((endpoint && secret.length >= 24) || (emailSender && emailRecipients().length)),
     channels: { webhook: Boolean(endpoint && secret.length >= 24), email: Boolean(emailSender && emailRecipients().length) },
     intervalMs,
+    repeatMs,
   };
 }
