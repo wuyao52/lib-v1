@@ -127,6 +127,8 @@ export function registerUserAiRoutes(router, { db, requireAuth, vault, fetchImpl
       const marker = `/api/user-ai/${config.id}`;
       const relativeUrl = req.originalUrl.slice(req.originalUrl.indexOf(marker) + marker.length) || '/';
       const target = targetFrom(baseUrl, relativeUrl);
+      // Resolve immediately before outbound I/O as a defense against DNS rebinding after configuration validation.
+      await assertPublicHost(target.hostname, resolveHost);
       const apiKey = vault.decrypt(config.encryptedApiKey);
       const contentType = String(req.headers['content-type'] || 'application/json');
       if (!/^application\/json|^multipart\/form-data|^application\/x-www-form-urlencoded/i.test(contentType)) return res.status(415).json({ error: 'UNSUPPORTED_CONTENT_TYPE', message: '不支持的请求内容类型' });
