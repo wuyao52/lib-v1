@@ -178,6 +178,19 @@ test('registration needs no nickname and usernames are unique case-insensitively
   assert.equal(context.db.read('users').filter((user) => user.username.toLowerCase() === 'uniqueuser').length, 1);
 });
 
+test('email-code endpoint limits rotating email addresses from one IP', async (t) => {
+  const context = await startServer();
+  t.after(() => context.server.close());
+  const responses = await Promise.all(Array.from({ length: 7 }, (_, index) => fetch(`${context.baseUrl}/api/auth/email-code`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email: `rotating-${index}@example.com`, purpose: 'register' }),
+  })));
+  assert.deepEqual(responses.slice(0, 6).map((response) => response.status), [202, 202, 202, 202, 202, 202]);
+  assert.equal(responses[6].status, 429);
+  assert.equal(context.sentCodes.length, 6);
+});
+
 test('security headers, origin protection and session cap are enforced', async (t) => {
   const context = await startServer();
   t.after(() => context.server.close());
