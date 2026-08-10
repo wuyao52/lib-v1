@@ -117,3 +117,77 @@ test('monitoring delivers the same redacted alert to webhook and system-user ema
   assert.equal((await service.check()).changed, false);
   assert.equal(emails.length, 1);
 });
+
+test('monitoring is silent while initially healthy and sends one alert and one recovery across instances', async () => {
+  const now = new Date().toISOString();
+  const data = {
+    users: [{ id: 'system-1', role: 'system', email: 'operator@example.com' }],
+    generationJobs: [],
+    auditLogs: [
+      { id: 'backup-ok', action: 'backup_completed', targetType: 'backup', createdAt: now },
+      { id: 'restore-ok', action: 'mysql_restore_drill_completed', targetType: 'backup', createdAt: now },
+    ],
+  };
+  const locks = new Map();
+  const db = {
+    read: (collection) => data[collection] || [],
+    mutate: async (mutation) => mutation(data),
+    async consumeRateLimit(key, limit, windowMs) {
+      const current = locks.get(key);
+      if (!current || current.resetAt <= Date.now()) {
+        locks.set(key, { count: 1, resetAt: Date.now() + windowMs });
+        return { allowed: true, count: 1, resetAt: Date.now() + windowMs };
+      }
+      current.count += 1;
+      return { allowed: current.count <= limit, count: current.count, resetAt: current.resetAt };
+    },
+  };
+  const emails = [];
+  const options = { db, env: { ALERT_REPEAT_HOURS: '24' }, emailSender: async (message) => emails.push(message) };
+  const first = createMonitoringService(options);
+  assert.equal((await first.check()).reason, 'HEALTHY');
+  assert.equal(emails.length, 0);
+
+  data.generationJobs.push({ id: 'queued-1', status: 'queued', createdAt: now });
+  const alerting = createMonitoringService({ ...options, env: { ALERT_REPEAT_HOURS: '24', ALERT_QUEUE_BACKLOG: '1' } });
+  assert.equal((await alerting.check()).event, 'operations.alert');
+  for (let index = 0; index < 20; index += 1) await alerting.check();
+  const restarted = createMonitoringService({ ...options, env: { ALERT_REPEAT_HOURS: '24', ALERT_QUEUE_BACKLOG: '1' } });
+  await restarted.check();
+  assert.equal(emails.length, 1);
+
+  data.generationJobs.length = 0;
+  assert.equal((await alerting.check()).event, 'operations.recovered');
+  for (let index = 0; index < 20; index += 1) await restarted.check();
+  assert.equal(emails.length, 2);
+  assert.match(emails[0].subject, /运维告警/);
+  assert.match(emails[1].subject, /运维恢复/);
+});
+
+test('monitoring test email is sent once per deployment even across service instances', async () => {
+  const now = new Date().toISOString();
+  const data = {
+    users: [{ id: 'system-1', role: 'system', email: 'operator@example.com' }], generationJobs: [],
+    auditLogs: [
+      { id: 'backup-ok', action: 'backup_completed', targetType: 'backup', createdAt: now },
+      { id: 'restore-ok', action: 'mysql_restore_drill_completed', targetType: 'backup', createdAt: now },
+    ],
+  };
+  const locks = new Set();
+  const db = {
+    read: (collection) => data[collection] || [],
+    async consumeRateLimit(key) {
+      if (locks.has(key)) return { allowed: false, count: 2, resetAt: Date.now() + 1000 };
+      locks.add(key);
+      return { allowed: true, count: 1, resetAt: Date.now() + 1000 };
+    },
+  };
+  const emails = [];
+  const options = { db, env: { RAILWAY_DEPLOYMENT_ID: 'deployment-1' }, emailSender: async (message) => emails.push(message) };
+  const first = createMonitoringService(options);
+  const second = createMonitoringService(options);
+  const results = await Promise.all([first.testOnce(), second.testOnce(), first.testOnce()]);
+  assert.equal(results.filter((item) => item.delivered).length, 1);
+  assert.equal(emails.length, 1);
+  assert.match(emails[0].subject, /运维测试：TEST/);
+});
