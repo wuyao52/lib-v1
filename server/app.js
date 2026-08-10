@@ -130,7 +130,7 @@ export async function createApp(options = {}) {
     sendEmailCode: options.sendEmailCode || createEmailSenderFromEnv(),
     generateImageCaptcha: options.generateImageCaptcha,
     systemUserEmails,
-    securityEvent: async (req, action, metadata = {}) => db.mutate((data) => data.auditLogs.push({ id: metadata.userId || req.user?.id || null, action, targetType: 'security', targetId: null, ipAddress: String(req.ip || '').slice(0, 100), userAgent: String(req.get('user-agent') || '').slice(0, 300), metadata: { requestId: req.requestId || null, ...metadata }, createdAt: new Date().toISOString() })),
+    securityEvent: async (req, action, metadata = {}) => db.mutate((data) => data.auditLogs.push({ id: randomUUID(), userId: metadata.userId || req.user?.id || null, action, targetType: 'security', targetId: null, ipAddress: String(req.ip || '').slice(0, 100), userAgent: String(req.get('user-agent') || '').slice(0, 300), metadata: { requestId: req.requestId || null, ...metadata }, createdAt: new Date().toISOString() })),
   });
   const encryptionKey = options.encryptionKey ?? process.env.APP_ENCRYPTION_KEY;
   const vault = createSecretVault(encryptionKey || (process.env.NODE_ENV === 'production' ? '' : 'local-development-encryption-key-change-me'));
