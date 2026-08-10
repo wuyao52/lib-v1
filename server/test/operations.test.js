@@ -7,6 +7,7 @@ import { createApp } from '../app.js';
 import { JsonDatabase } from '../store.js';
 import { createEncryptedBackup, createFreshEncryptedBackup, decodeEncryptedBackup, restoreEncryptedBackup } from '../backup.js';
 import { runMaintenance } from '../maintenance.js';
+import { runBackupDrill } from '../backup-drill.js';
 
 const backupKey = 'independent-backup-encryption-key-for-tests';
 
@@ -53,6 +54,34 @@ test('fresh backups refresh every MySQL collection before encryption', async () 
   const payload = decodeEncryptedBackup(document, backupKey);
   assert.deepEqual(calls, [['users', 'projects']]);
   assert.equal(payload.collections.users[0].id, 'fresh-user');
+});
+
+test('backup drill stores, downloads and restores every collection in isolation', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ads-backup-drill-source-'));
+  const db = await new JsonDatabase(join(directory, 'source.json')).init();
+  await db.mutate((data) => {
+    data.users.push({ id: 'drill-user', username: 'drill', email: 'drill@example.com' });
+    data.projects.push({ id: 'drill-project', userId: 'drill-user', title: 'Drill' });
+  });
+  const objects = new Map();
+  const phases = [];
+  const result = await runBackupDrill({
+    db,
+    encryptionKey: backupKey,
+    now: new Date('2026-08-10T02:00:00.000Z'),
+    storage: {
+      provider: 'test-storage',
+      put: async ({ key, bytes }) => objects.set(key, Buffer.from(bytes)),
+      get: async (key) => objects.get(key),
+    },
+    onPhase: (phase) => phases.push(phase),
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.verifiedCollections, Object.keys(db.data).length);
+  assert.equal(result.collectionCounts.users, 1);
+  assert.equal(result.collectionCounts.projects, 1);
+  assert.deepEqual(phases, ['snapshot_encrypted', 'object_uploaded', 'object_downloaded', 'isolated_restore_completed']);
+  assert.equal(objects.has(result.objectKey), true);
 });
 
 test('maintenance respects a shared database lock', async () => {

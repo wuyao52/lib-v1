@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { createApp } from './app.js';
+import { runBackupDrill } from './backup-drill.js';
 
 const port = Number(process.env.PORT || 8787);
 const allowedOrigins = String(process.env.APP_ORIGINS || 'http://localhost:3000,http://127.0.0.1:3000')
@@ -7,7 +8,15 @@ const allowedOrigins = String(process.env.APP_ORIGINS || 'http://localhost:3000,
   .map((value) => value.trim())
   .filter(Boolean);
 
-const { app } = await createApp({ allowedOrigins, serveFrontend: true });
+const { app, db, assetStorage } = await createApp({ allowedOrigins, serveFrontend: true });
 app.listen(port, '0.0.0.0', () => {
   console.log(`AI Drama Studio server listening on http://127.0.0.1:${port}`);
 });
+
+if (String(process.env.BACKUP_DRILL_ON_START || '').toLowerCase() === 'true') {
+  const startedAt = Date.now();
+  const onPhase = (phase, details = {}) => console.log('Backup drill phase:', JSON.stringify({ phase, elapsedMs: Date.now() - startedAt, ...details }));
+  runBackupDrill({ db, storage: assetStorage, encryptionKey: process.env.BACKUP_ENCRYPTION_KEY, onPhase })
+    .then((result) => console.log('Backup drill completed:', JSON.stringify(result)))
+    .catch((error) => console.error('Backup drill failed:', JSON.stringify({ name: error?.name || 'Error', code: error?.code || '', message: String(error?.message || 'Unknown error').slice(0, 300) })));
+}
