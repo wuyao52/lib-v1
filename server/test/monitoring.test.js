@@ -74,3 +74,30 @@ test('monitoring alerts on a failed backup and recovers after a successful drill
   assert.equal(recovered.event, 'operations.recovered');
   assert.equal(calls.length, 2);
 });
+
+test('monitoring delivers the same redacted alert to webhook and system-user email once', async () => {
+  const webhookCalls = [];
+  const emails = [];
+  const now = new Date().toISOString();
+  const db = { read: (collection) => {
+    if (collection === 'users') return [{ id: 'system-1', role: 'system', email: 'operator@example.com' }, { id: 'user-1', role: 'user', email: 'user@example.com' }];
+    if (collection === 'auditLogs') return [{ id: 'backup-ok', action: 'backup_completed', targetType: 'backup', createdAt: now }];
+    return [{ id: 'queued-1', status: 'queued', createdAt: now }];
+  } };
+  const service = createMonitoringService({
+    db,
+    env: { ALERT_WEBHOOK_URL: 'https://alerts.example.test/operations', ALERT_WEBHOOK_SECRET: 'monitoring-webhook-secret-at-least-24', ALERT_QUEUE_BACKLOG: '1' },
+    fetchImpl: async (_url, options) => { webhookCalls.push(JSON.parse(options.body)); return new Response('{}', { status: 202 }); },
+    emailSender: async (message) => emails.push(message),
+  });
+  const result = await service.check();
+  assert.deepEqual(result.delivery.channels, ['webhook', 'email']);
+  assert.equal(service.configured, true);
+  assert.deepEqual(service.channels, { webhook: true, email: true });
+  assert.deepEqual(emails.map((item) => item.to), ['operator@example.com']);
+  assert.equal(emails[0].subject.includes('QUEUE_BACKLOG'), true);
+  assert.equal(JSON.stringify(emails).includes('user@example.com'), false);
+  assert.equal(webhookCalls.length, 1);
+  assert.equal((await service.check()).changed, false);
+  assert.equal(emails.length, 1);
+});

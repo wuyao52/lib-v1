@@ -1,5 +1,5 @@
 import { cleanupStoredBackups, createFreshEncryptedBackup, recordBackupEvent } from './backup.js';
-import { cleanupExpiredAssets } from './assets.js';
+import { cleanupExpiredAssets, migrateLegacyAssets } from './assets.js';
 
 const HOUR = 60 * 60 * 1000;
 const intEnv = (name, fallback, min, max) => {
@@ -13,7 +13,8 @@ export async function runMaintenance({ db, storage, generatedMedia, now = new Da
     const lock = await db.consumeRateLimit('maintenance:global-lock', 1, lockMinutes * 60 * 1000, now.getTime());
     if (!lock.allowed) return { skipped: true, reason: 'MAINTENANCE_LOCKED', ranAt: now.toISOString() };
   }
-  const results = { ranAt: now.toISOString(), assets: null, media: null, backup: null };
+  const results = { ranAt: now.toISOString(), assetMigration: null, assets: null, media: null, backup: null };
+  results.assetMigration = await migrateLegacyAssets({ db, assetStorage: storage });
   results.assets = await cleanupExpiredAssets({ db, assetStorage: storage, retentionDays: intEnv('ASSET_RETENTION_DAYS', 30, 1, 36500) });
   results.media = generatedMedia ? await generatedMedia.cleanup() : { deleted: 0 };
   const key = String(process.env.BACKUP_ENCRYPTION_KEY || '');

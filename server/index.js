@@ -8,7 +8,7 @@ const allowedOrigins = String(process.env.APP_ORIGINS || 'http://localhost:3000,
   .map((value) => value.trim())
   .filter(Boolean);
 
-const { app, db, assetStorage } = await createApp({ allowedOrigins, serveFrontend: true });
+const { app, db, monitoring, assetStorage } = await createApp({ allowedOrigins, serveFrontend: true });
 app.listen(port, '0.0.0.0', () => {
   console.log(`AI Drama Studio server listening on http://127.0.0.1:${port}`);
 });
@@ -19,4 +19,10 @@ if (String(process.env.BACKUP_DRILL_ON_START || '').toLowerCase() === 'true') {
   runBackupDrill({ db, storage: assetStorage, encryptionKey: process.env.BACKUP_ENCRYPTION_KEY, onPhase })
     .then((result) => console.log('Backup drill completed:', JSON.stringify(result)))
     .catch((error) => console.error('Backup drill failed:', JSON.stringify({ name: error?.name || 'Error', code: error?.code || '', message: String(error?.message || 'Unknown error').slice(0, 300) })));
+}
+
+if (String(process.env.ALERT_TEST_ON_START || '').toLowerCase() === 'true') {
+  monitoring.test()
+    .then((result) => console.log('Monitoring test completed:', JSON.stringify(result)))
+    .catch((error) => console.error('Monitoring test failed:', JSON.stringify({ name: error?.name || 'Error', code: error?.code || '', message: String(error?.message || 'Unknown error').slice(0, 300) })));
 }

@@ -33,20 +33,37 @@ function operationSnapshot(db, env = process.env, now = Date.now()) {
   return { alerts, backlog, failed, total: recent.length, failureRate: Number(failureRate.toFixed(4)), backup: { lastSuccessAt: latestBackup?.createdAt || null, lastFailureAt: latestFailure?.createdAt || null } };
 }
 
-export function createMonitoringService({ db, fetchImpl = fetch, env = process.env } = {}) {
+export function createMonitoringService({ db, fetchImpl = fetch, env = process.env, emailSender = null } = {}) {
   const endpoint = publicHttpsUrl(env.ALERT_WEBHOOK_URL);
   const secret = String(env.ALERT_WEBHOOK_SECRET || '');
   const intervalMs = Math.max(60_000, (Number.parseInt(env.MONITORING_INTERVAL_MINUTES || '5', 10) || 5) * 60_000);
   let lastFingerprint = null;
   let timer = null;
 
+  const emailRecipients = () => {
+    const configured = String(env.ALERT_EMAIL_RECIPIENTS || '').split(',').map((item) => item.trim().toLowerCase()).filter(Boolean);
+    const systemUsers = (db.read('users') || []).filter((user) => user.role === 'system').map((user) => String(user.email || '').trim().toLowerCase()).filter(Boolean);
+    return [...new Set([...configured, ...systemUsers])];
+  };
+
   const dispatch = async (event, payload) => {
-    if (!endpoint || secret.length < 24) return { delivered: false, reason: 'NOT_CONFIGURED' };
-    const body = JSON.stringify({ id: randomUUID(), event, occurredAt: nowIso(), service: 'ai-drama-studio', ...payload });
-    const signature = createHmac('sha256', secret).update(body).digest('hex');
-    const response = await fetchImpl(endpoint, { method: 'POST', headers: { 'content-type': 'application/json', 'x-ai-drama-signature': `sha256=${signature}`, 'x-ai-drama-event': event }, body });
-    if (!response.ok) throw new Error(`alert webhook returned HTTP ${response.status}`);
-    return { delivered: true };
+    const envelope = { id: randomUUID(), event, occurredAt: nowIso(), service: 'ai-drama-studio', ...payload };
+    const channels = [];
+    if (endpoint && secret.length >= 24) {
+      const body = JSON.stringify(envelope);
+      const signature = createHmac('sha256', secret).update(body).digest('hex');
+      const response = await fetchImpl(endpoint, { method: 'POST', headers: { 'content-type': 'application/json', 'x-ai-drama-signature': `sha256=${signature}`, 'x-ai-drama-event': event }, body });
+      if (!response.ok) throw new Error(`alert webhook returned HTTP ${response.status}`);
+      channels.push('webhook');
+    }
+    const recipients = emailSender ? emailRecipients() : [];
+    if (recipients.length) {
+      const codes = (payload.operations?.alerts || []).map((item) => item.code).join(', ') || 'RECOVERED';
+      const text = [`服务：ai-drama-studio`, `事件：${event}`, `时间：${envelope.occurredAt}`, `状态：${codes}`, '', '请登录系统管理控制台查看脱敏指标和任务标识。'].join('\n');
+      await Promise.all(recipients.map((to) => emailSender({ to, subject: `[AI Drama Studio] 运维告警：${codes}`, text })));
+      channels.push('email');
+    }
+    return channels.length ? { delivered: true, channels, recipients: recipients.length } : { delivered: false, reason: 'NOT_CONFIGURED' };
   };
 
   const check = async () => {
@@ -66,9 +83,11 @@ export function createMonitoringService({ db, fetchImpl = fetch, env = process.e
 
   return {
     check,
+    test: () => dispatch('operations.test', { operations: operationSnapshot(db, env) }),
     start() { if (!timer) { timer = setInterval(() => void check().catch((error) => console.error('Monitoring notification failed:', error.message)), intervalMs); timer.unref?.(); } return intervalMs; },
     stop() { if (timer) clearInterval(timer); timer = null; },
-    configured: Boolean(endpoint && secret.length >= 24),
+    configured: Boolean((endpoint && secret.length >= 24) || (emailSender && emailRecipients().length)),
+    channels: { webhook: Boolean(endpoint && secret.length >= 24), email: Boolean(emailSender && emailRecipients().length) },
     intervalMs,
   };
 }

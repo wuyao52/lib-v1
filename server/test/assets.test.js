@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { createApp } from '../app.js';
-import { cleanupExpiredAssets } from '../assets.js';
+import { cleanupExpiredAssets, migrateLegacyAssets } from '../assets.js';
+import { JsonDatabase } from '../store.js';
 
 const PNG_BYTES = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
 const PNG_DATA_URL = `data:image/png;base64,${PNG_BYTES.toString('base64')}`;
@@ -250,4 +251,35 @@ test('expired unreferenced assets are cleaned while active, referenced and faile
   assert.deepEqual(data.assets.map((asset) => asset.id), [
     'referenced', 'fresh', 'delete-fails', 'active-history',
   ]);
+});
+
+test('maintenance migrates legacy database image bytes before clearing their payload', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ads-legacy-migration-'));
+  const db = await new JsonDatabase(join(directory, 'database.json')).init();
+  const bytes = Buffer.from(PNG_BYTES);
+  await db.mutate((data) => data.assets.push({
+    id: 'legacy-migrate', userId: 'user-migrate', sha256: createHash('sha256').update(bytes).digest('hex'),
+    mimeType: 'image/png', dataBase64: bytes.toString('base64'), objectKey: null, storageProvider: 'database', byteSize: bytes.length, createdAt: new Date().toISOString(),
+  }));
+  const objects = new Map();
+  const result = await migrateLegacyAssets({ db, assetStorage: { provider: 'test-oss', put: async ({ key, bytes: value }) => objects.set(key, Buffer.from(value)) } });
+  assert.deepEqual(result, { migrated: 1, failed: 0 });
+  assert.equal(db.read('assets')[0].dataBase64, null);
+  assert.equal(db.read('assets')[0].storageProvider, 'test-oss');
+  assert.deepEqual(objects.get(db.read('assets')[0].objectKey), bytes);
+});
+
+test('failed legacy migration retains the only database copy', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ads-legacy-migration-failure-'));
+  const db = await new JsonDatabase(join(directory, 'database.json')).init();
+  await db.mutate((data) => data.assets.push({
+    id: 'legacy-retained', userId: 'user-retained', sha256: createHash('sha256').update(PNG_BYTES).digest('hex'),
+    mimeType: 'image/png', dataBase64: PNG_BYTES.toString('base64'), objectKey: null, storageProvider: 'database', byteSize: PNG_BYTES.length, createdAt: new Date().toISOString(),
+  }));
+  const errors = [];
+  const result = await migrateLegacyAssets({ db, assetStorage: { provider: 'test-oss', put: async () => { throw new Error('upload failed'); } }, onError: (...args) => errors.push(args) });
+  assert.deepEqual(result, { migrated: 0, failed: 1 });
+  assert.equal(db.read('assets')[0].dataBase64, PNG_BYTES.toString('base64'));
+  assert.equal(db.read('assets')[0].objectKey, null);
+  assert.equal(errors.length, 1);
 });

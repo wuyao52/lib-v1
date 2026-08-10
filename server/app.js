@@ -109,7 +109,6 @@ export async function createApp(options = {}) {
   );
   const assetStorage = options.assetStorage === undefined ? createObjectStorageFromEnv() : options.assetStorage;
   const generatedMedia = createGeneratedMediaService({ db, storage: assetStorage, fetchImpl: options.fetchImpl });
-  const monitoring = createMonitoringService({ db, fetchImpl: options.fetchImpl, env: process.env });
   const maintenance = options.maintenance === false ? null : startMaintenanceScheduler({ db, storage: assetStorage, generatedMedia });
   const paymentService = createPaymentService({ db, fetchImpl: options.fetchImpl, env: process.env, config: options.paymentConfig });
   const systemUserEmails = new Set(String(process.env.SYSTEM_USER_EMAILS || '')
@@ -123,12 +122,18 @@ export async function createApp(options = {}) {
       });
     });
   }
+  const emailSender = options.sendEmailCode || createEmailSenderFromEnv(process.env, { fetchImpl: options.fetchImpl });
+  const emailConfigured = Boolean(
+    (String(process.env.RESEND_API_KEY || '').trim() && String(process.env.EMAIL_FROM || '').trim())
+    || (String(process.env.SMTP_HOST || '').trim() && String(process.env.SMTP_USER || '').trim() && String(process.env.SMTP_PASS || '') && String(process.env.SMTP_FROM || process.env.SMTP_USER || '').trim()),
+  );
+  const monitoring = createMonitoringService({ db, fetchImpl: options.fetchImpl, env: process.env, emailSender: emailConfigured ? emailSender : null });
   const app = express();
   if (options.monitoring !== false) monitoring.start();
   const allowedOrigins = new Set(options.allowedOrigins || ['http://localhost:3000', 'http://127.0.0.1:3000']);
   const auth = createAuthService(db, {
     secureCookies: options.secureCookies ?? process.env.NODE_ENV === 'production',
-    sendEmailCode: options.sendEmailCode || createEmailSenderFromEnv(),
+    sendEmailCode: emailSender,
     generateImageCaptcha: options.generateImageCaptcha,
     systemUserEmails,
     securityEvent: async (req, action, metadata = {}) => db.mutate((data) => data.auditLogs.push({ id: randomUUID(), userId: metadata.userId || req.user?.id || null, action, targetType: 'security', targetId: null, ipAddress: String(req.ip || '').slice(0, 100), userAgent: String(req.get('user-agent') || '').slice(0, 300), metadata: { requestId: req.requestId || null, ...metadata }, createdAt: new Date().toISOString() })),
@@ -203,7 +208,7 @@ export async function createApp(options = {}) {
       }));
     }
     const ok = checks.database === 'ok' && checks.objectStorage !== 'error';
-    return res.status(ok ? 200 : 503).json({ ok, service: 'ai-drama-studio', checks, monitoring: { configured: monitoring.configured, intervalMs: monitoring.intervalMs } });
+    return res.status(ok ? 200 : 503).json({ ok, service: 'ai-drama-studio', checks, monitoring: { configured: monitoring.configured, channels: monitoring.channels, intervalMs: monitoring.intervalMs } });
   });
   const authRouter = express.Router();
   const authRateLimiter = createRateLimiter({ db, limit: 12, windowMs: 60_000 });
@@ -283,5 +288,5 @@ export async function createApp(options = {}) {
     res.status(500).json({ error: 'INTERNAL_ERROR', message: '服务器内部错误' });
   });
 
-  return { app, db, auth, videoQueue, maintenance, assetStorage };
+  return { app, db, auth, videoQueue, maintenance, monitoring, assetStorage };
 }

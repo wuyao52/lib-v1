@@ -1,5 +1,38 @@
 # AI Drama Studio - AI短剧生成工作台
 
+## Production operations
+
+The web and scheduled maintenance processes share one deployment artifact and
+select their entry point through `PROCESS_MODE`:
+
+```env
+PROCESS_MODE=web
+PROCESS_MODE=maintenance
+PROCESS_MODE=mysql-restore-drill
+```
+
+Run `maintenance` as a dedicated Railway Cron service with schedule
+`0 2 * * *` (02:00 UTC, 10:00 Asia/Shanghai). The job migrates legacy MySQL
+Base64 assets to the configured object storage before clearing the database
+copy, removes expired unreferenced assets and generated media, and creates an
+encrypted database backup. A failed object upload leaves the original MySQL
+asset untouched. The same job can be run once with `npm run maintenance:once`.
+
+Use `npm run backup:mysql-drill` or the `mysql-restore-drill` process mode for
+a full restore exercise. It restores the newest encrypted object-storage
+backup into a randomly named temporary MySQL database, compares every restored
+collection, starts the application against that database, requires an HTTP 200
+health response, and then drops the temporary database. It never restores over
+the production database.
+
+Operational alerts use `ALERT_WEBHOOK_URL`, the configured Resend/SMTP mail
+transport, or both. Mail recipients are the current system users plus optional
+comma-separated `ALERT_EMAIL_RECIPIENTS`. Set `ALERT_TEST_ON_START=true` for a
+single production delivery test, confirm `Monitoring test completed` in the
+service log, and remove the variable immediately so later restarts do not send
+duplicate tests. `/api/health` reports enabled channels without exposing
+addresses, credentials, application data, or prompt contents.
+
 一个基于无限画布的 AI 短剧生成工作台，支持使用文字、图片和视频生成 AI 短剧。
 
 ## 当前架构

@@ -123,6 +123,37 @@ export async function cleanupExpiredAssets({
   return { deleted: deletedIds.length, failed: failedAssets.length, deletedIds, failedAssets };
 }
 
+export async function migrateLegacyAssets({ db, assetStorage, onError = console.error } = {}) {
+  if (!assetStorage) return { migrated: 0, failed: 0 };
+  const candidates = db.read('assets').filter((asset) => asset.dataBase64 && !asset.objectKey);
+  let migrated = 0;
+  let failed = 0;
+  for (const asset of candidates) {
+    try {
+      const bytes = Buffer.from(asset.dataBase64, 'base64');
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      if (!bytes.length || (asset.sha256 && asset.sha256 !== sha256) || !ALLOWED_IMAGE_TYPES.has(String(asset.mimeType || '').toLowerCase())) {
+        throw new Error('Legacy asset integrity validation failed');
+      }
+      const objectKey = objectKeyFor(asset.userId, sha256, asset.mimeType);
+      await assetStorage.put({ key: objectKey, bytes, mimeType: asset.mimeType });
+      await db.mutate((data) => {
+        const stored = data.assets.find((item) => item.id === asset.id && !item.objectKey);
+        if (!stored) return;
+        stored.sha256 = sha256;
+        stored.objectKey = objectKey;
+        stored.storageProvider = assetStorage.provider;
+        stored.dataBase64 = null;
+      });
+      migrated += 1;
+    } catch (error) {
+      failed += 1;
+      onError(`Failed to migrate legacy asset ${asset.id}:`, error);
+    }
+  }
+  return { migrated, failed };
+}
+
 export function registerAssetRoutes(router, { db, requireAuth, assetStorage = null, assetSigningKey }) {
   const signingKey = String(assetSigningKey || '');
   if (signingKey.length < 24) throw new Error('素材签名密钥必须至少包含 24 个字符');

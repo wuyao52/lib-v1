@@ -58,3 +58,16 @@ test('Resend configuration and API failures return sanitized errors', async () =
     (error) => error.code === 'EMAIL_DELIVERY_FAILED' && !error.message.includes('re_secret_value'),
   );
 });
+
+test('Resend sends operational alerts without using the verification-code template', async () => {
+  const requests = [];
+  const sender = createEmailSenderFromEnv(
+    { RESEND_API_KEY: 're_test', EMAIL_FROM: 'alerts@example.com' },
+    { fetchImpl: async (url, options) => { requests.push({ url, body: JSON.parse(options.body) }); return new Response('{}', { status: 202 }); } },
+  );
+  await sender({ to: 'system@example.com', subject: '[AI Drama Studio] 运维告警：BACKUP_FAILED', text: '服务异常，请查看系统控制台。' });
+  assert.equal(requests[0].url, 'https://api.resend.com/emails');
+  assert.equal(requests[0].body.to, 'system@example.com');
+  assert.equal(requests[0].body.subject.includes('BACKUP_FAILED'), true);
+  assert.equal(JSON.stringify(requests[0]).includes('验证码'), false);
+});

@@ -9,7 +9,15 @@ function emailError(message, code, cause) {
   return error;
 }
 
-function createMessage({ email, code, purpose, expiresInMinutes }) {
+function createMessage(details) {
+  const { email, code, purpose, expiresInMinutes } = details;
+  if (details.subject) {
+    return {
+      to: details.to || email,
+      subject: String(details.subject).slice(0, 180),
+      text: String(details.text || '').slice(0, 20_000),
+    };
+  }
   const action = purpose === 'register' ? '注册' : '登录';
   return {
     to: email,
