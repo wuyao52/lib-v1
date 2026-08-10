@@ -87,6 +87,8 @@ export default function NodePropertiesPanel() {
                   </div>
                   <video src={data.generatedContent} poster={data.thumbnail} controls preload="metadata" className="aspect-video w-full rounded bg-black" />
                   <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+                    <div className="col-span-2"><dt className="text-dark-500">视频组件 ID</dt><dd className="mt-0.5 break-all font-mono text-[10px] text-dark-200">{node.id}</dd></div>
+                    {data.generationMeta?.taskId && <div className="col-span-2"><dt className="text-dark-500">生成任务 ID</dt><dd className="mt-0.5 break-all font-mono text-[10px] text-dark-200">{data.generationMeta.taskId}</dd></div>}
                     <div><dt className="text-dark-500">时长</dt><dd className="mt-0.5 text-dark-200">{data.duration || '-'} 秒</dd></div>
                     <div><dt className="text-dark-500">模型</dt><dd className="mt-0.5 truncate text-dark-200" title={data.generationMeta?.modelName || configuredVideoModel.name}>{data.generationMeta?.modelName || configuredVideoModel.name || configuredVideoModel.modelId || '-'}</dd></div>
                     <div><dt className="text-dark-500">风格</dt><dd className="mt-0.5 text-dark-200">{data.settings?.style || '默认'}</dd></div>
