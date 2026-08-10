@@ -66,8 +66,11 @@ test('user API configs are encrypted, isolated, and proxied without exposing cre
   assert.equal(upstreamCalls.at(-1).apiKey, secretKey);
 
   assert.equal((await request(`/api/user-api-configs/${created.id}`, otherCookie, { method: 'DELETE' })).status, 404);
-  assert.equal((await request(`/api/user-api-configs/${created.id}`, ownerCookie, { method: 'DELETE' })).status, 204);
-  assert.equal(db.read('userApiConfigs').length, 0);
+  const disabled = await request(`/api/user-api-configs/${created.id}`, ownerCookie, { method: 'DELETE' });
+  assert.equal(disabled.status, 200);
+  assert.equal((await disabled.json()).disabled, true);
+  assert.equal(db.read('userApiConfigs')[0].enabled, false);
+  assert.equal((await request(`/api/user-ai/${created.id}/v1/models`, ownerCookie)).status, 410);
 });
 
 test('user API configs reject private-network upstreams', async (t) => {
