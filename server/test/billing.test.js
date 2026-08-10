@@ -101,7 +101,7 @@ test('system APIs, pricing, balances and managed gateway enforce roles and billi
   assert.equal(JSON.stringify(insufficientBody).includes('当前余额'), false);
   assert.equal(JSON.stringify(insufficientBody).includes('需要'), false);
 
-  await context.request(`/api/admin/users/${normal.user.id}/balance`, admin.cookie, { method: 'POST', body: JSON.stringify({ amountCents: 1000 }) });
+  await context.request(`/api/admin/users/${normal.user.id}/balance`, admin.cookie, { method: 'POST', body: JSON.stringify({ amountCents: 1000, currentPassword: 'correct-horse' }) });
   const success = await context.request(`/api/system-ai/${createdApi.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'ok', duration: 5 }) });
   assert.equal(success.status, 200);
   const generationCall = context.upstreamCalls.find((call) => call.body?.includes('"prompt":"ok"'));
@@ -172,7 +172,7 @@ test('system APIs, pricing, balances and managed gateway enforce roles and billi
   billing = await (await context.request('/api/billing/me', normal.cookie)).json();
   assert.equal(billing.balanceCents, 800);
 
-  await context.request(`/api/admin/users/${normal.user.id}/balance`, admin.cookie, { method: 'POST', body: JSON.stringify({ amountCents: -650 }) });
+  await context.request(`/api/admin/users/${normal.user.id}/balance`, admin.cookie, { method: 'POST', body: JSON.stringify({ amountCents: -650, currentPassword: 'correct-horse' }) });
   const concurrent = await Promise.all(['concurrent-a', 'concurrent-b'].map((prompt) => context.request(`/api/system-ai/${createdApi.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt, duration: 15 }) })));
   assert.deepEqual(concurrent.map((response) => response.status).sort(), [200, 402]);
   billing = await (await context.request('/api/billing/me', normal.cookie)).json();
@@ -197,6 +197,31 @@ test('recharge approval is single-use and credits the requested user', async (t)
   assert.equal(duplicate.status, 409);
 });
 
+test('sensitive admin balance and role changes require the current system password', async (t) => {
+  const context = await setup();
+  t.after(() => context.server.close());
+  const target = await context.register('sensitive-target');
+  const admin = await context.register('sensitive-admin');
+  await context.db.mutate((data) => { data.users.find((item) => item.id === admin.user.id).role = 'system'; });
+
+  const deniedBalance = await context.request(`/api/admin/users/${target.user.id}/balance`, admin.cookie, {
+    method: 'POST', body: JSON.stringify({ amountCents: 500, currentPassword: 'incorrect-password' }),
+  });
+  assert.equal(deniedBalance.status, 401);
+  assert.equal(context.db.read('users').find((item) => item.id === target.user.id).balanceCents, 0);
+  const deniedRole = await context.request(`/api/admin/users/${target.user.id}/role`, admin.cookie, {
+    method: 'PATCH', body: JSON.stringify({ role: 'system', currentPassword: 'incorrect-password' }),
+  });
+  assert.equal(deniedRole.status, 401);
+  assert.equal(context.db.read('users').find((item) => item.id === target.user.id).role, 'user');
+
+  const accepted = await context.request(`/api/admin/users/${target.user.id}/balance`, admin.cookie, {
+    method: 'POST', body: JSON.stringify({ amountCents: 500, currentPassword: 'correct-horse' }),
+  });
+  assert.equal(accepted.status, 200);
+  assert.equal(context.db.read('users').find((item) => item.id === target.user.id).balanceCents, 500);
+});
+
 test('managed video requests use the persistent queue protocol and expose an admin overview', async (t) => {
   const context = await setup({ videoQueue: true, videoQueueAutoStart: false });
   t.after(() => context.server.close());
@@ -210,7 +235,7 @@ test('managed video requests use the persistent queue protocol and expose an adm
   await context.request('/api/admin/pricing', admin.cookie, {
     method: 'POST', body: JSON.stringify({ apiId: api.id, modelId: 'video-model', displayName: '队列视频', category: 'video', billingUnit: 'second', unitPriceCents: 10, allowedDurationsSec: [5] }),
   });
-  await context.request(`/api/admin/users/${normal.user.id}/balance`, admin.cookie, { method: 'POST', body: JSON.stringify({ amountCents: 100 }) });
+  await context.request(`/api/admin/users/${normal.user.id}/balance`, admin.cookie, { method: 'POST', body: JSON.stringify({ amountCents: 100, currentPassword: 'correct-horse' }) });
 
   const queuedResponse = await context.request(`/api/system-ai/${api.id}/v1/videos`, normal.cookie, {
     method: 'POST',
