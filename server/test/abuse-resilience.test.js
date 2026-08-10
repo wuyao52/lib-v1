@@ -13,11 +13,11 @@ test('repeated admin balance requests with the same idempotency key adjust funds
   const register = async (username) => { const email = `${username}@example.com`; await fetch(`${origin}/api/auth/email-code`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, purpose: 'register' }) }); const response = await fetch(`${origin}/api/auth/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username, email, password: 'abuse-resilience-password', verificationCode: codes.get(email) }) }); return { user: (await response.json()).user, cookie: response.headers.get('set-cookie').split(';')[0] }; };
   const admin = await register('abuse-admin'); const target = await register('abuse-target');
   await db.mutate((data) => { data.users.find((user) => user.id === admin.user.id).role = 'system'; });
-  const request = () => fetch(`${origin}/api/admin/users/${target.user.id}/balance`, { method: 'POST', headers: { cookie: admin.cookie, 'content-type': 'application/json', 'idempotency-key': 'balance-click-storm-key-0001' }, body: JSON.stringify({ amountCents: 250, description: 'click storm proof' }) });
+  const request = () => fetch(`${origin}/api/admin/users/${target.user.id}/balance`, { method: 'POST', headers: { cookie: admin.cookie, 'content-type': 'application/json', 'idempotency-key': 'balance-click-storm-key-0001' }, body: JSON.stringify({ amountCents: 250, description: 'click storm proof', currentPassword: 'abuse-resilience-password' }) });
   const responses = await Promise.all(Array.from({ length: 12 }, request));
   assert.equal(responses.every((response) => response.status === 200), true);
   assert.equal(db.read('users').find((user) => user.id === target.user.id).balanceCents, 250);
   assert.equal(db.read('balanceTransactions').filter((item) => item.userId === target.user.id && item.type === 'admin_adjustment').length, 1);
-  const invalidKey = await fetch(`${origin}/api/admin/users/${target.user.id}/balance`, { method: 'POST', headers: { cookie: admin.cookie, 'content-type': 'application/json', 'idempotency-key': 'bad' }, body: JSON.stringify({ amountCents: 100 }) });
+  const invalidKey = await fetch(`${origin}/api/admin/users/${target.user.id}/balance`, { method: 'POST', headers: { cookie: admin.cookie, 'content-type': 'application/json', 'idempotency-key': 'bad' }, body: JSON.stringify({ amountCents: 100, currentPassword: 'abuse-resilience-password' }) });
   assert.equal(invalidKey.status, 400);
 });
