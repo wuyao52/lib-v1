@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 const ACTIVE_STATUSES = new Set(['submitting', 'processing', 'cancel_requested']);
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
-const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
+const historyRetentionMs = () => intFromEnv('GENERATION_HISTORY_RETENTION_DAYS', 90, 3, 3650) * 24 * 60 * 60 * 1000;
 
 const intFromEnv = (name, fallback, minimum, maximum) => {
   const parsed = Number(process.env[name]);
@@ -197,7 +197,7 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
     const historyRecord = durableResult.url ? {
         id: randomUUID(), userId: job.userId, projectId: job.projectId || '', nodeId: job.nodeId || null,
         type: 'video', prompt: job.prompt || '', url: durableResult.url, thumbnail: durableResult.thumbnail || null,
-        createdAt: completedAt, expiresAt: new Date(Date.parse(completedAt) + THREE_DAYS_MS).toISOString(),
+        createdAt: completedAt, expiresAt: new Date(Date.parse(completedAt) + historyRetentionMs()).toISOString(),
       } : null;
     if (db.finalizeGenerationJob) return db.finalizeGenerationJob(jobId, patch, historyRecord);
     return db.mutate((data) => {
@@ -436,7 +436,7 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
 
   if (db.recoverExpiredGenerationJobs) await db.recoverExpiredGenerationJobs();
   await db.mutate((data) => {
-    const historyCutoff = Date.now() - THREE_DAYS_MS;
+    const historyCutoff = Date.now() - historyRetentionMs();
     data.generationJobs.forEach((job) => {
       if (!db.recoverExpiredGenerationJobs && job.status === 'submitting') {
         job.status = 'queued';
@@ -451,7 +451,7 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
         data.generationHistory.push({
           id: randomUUID(), userId: job.userId, projectId: job.projectId || '', nodeId: job.nodeId || null,
           type: 'video', prompt: job.prompt || '', url: job.resultUrl, thumbnail: job.thumbnail || null,
-          createdAt: completedAt, expiresAt: new Date(Date.parse(completedAt) + THREE_DAYS_MS).toISOString(),
+          createdAt: completedAt, expiresAt: new Date(Date.parse(completedAt) + historyRetentionMs()).toISOString(),
         });
       }
     });
