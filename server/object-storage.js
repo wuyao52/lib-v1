@@ -1,4 +1,5 @@
-import { DeleteObjectCommand, GetObjectCommand, HeadBucketCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 
 const providers = [
@@ -64,7 +65,24 @@ export function createObjectStorageFromEnv(env = process.env, { clientFactory = 
   return {
     provider: provider.id,
     async health() {
-      await client.send(new HeadBucketCommand({ Bucket: config.bucket }));
+      const key = `healthchecks/${randomUUID()}.txt`;
+      const expected = Buffer.from('ok');
+      let created = false;
+      try {
+        await client.send(new PutObjectCommand({
+          Bucket: config.bucket,
+          Key: key,
+          Body: expected,
+          ContentType: 'text/plain',
+        }));
+        created = true;
+        const response = await client.send(new GetObjectCommand({ Bucket: config.bucket, Key: key }));
+        if (!response.Body) throw new Error('Object storage health check returned an empty body');
+        const actual = Buffer.from(await response.Body.transformToByteArray());
+        if (!actual.equals(expected)) throw new Error('Object storage health check returned unexpected content');
+      } finally {
+        if (created) await client.send(new DeleteObjectCommand({ Bucket: config.bucket, Key: key }));
+      }
       return true;
     },
     async put({ key, bytes, mimeType }) {
