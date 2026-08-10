@@ -248,7 +248,7 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
         if (providerTaskId && await cancelUpstream({ ...current, providerTaskId })) {
           await refundJob(job.id, { code: 'USER_CANCELLED', message: '用户取消生成' }, 'cancelled');
         } else if (providerTaskId) {
-          await updateJob(job.id, { status: 'processing', providerTaskId, nextPollAt: Date.now() + 5000, leaseOwner: workerId, leaseUntil: Date.now() + config.leaseDurationMs });
+          await updateJob(job.id, { status: 'processing', providerTaskId, submittedAt: job.submittedAt || nowIso(), nextPollAt: Date.now() + 5000, leaseOwner: workerId, leaseUntil: Date.now() + config.leaseDurationMs });
         } else {
           await refundJob(job.id, { code: 'USER_CANCELLED', message: '用户取消生成' }, 'cancelled');
         }
@@ -264,7 +264,7 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
       } else {
         const providerTaskId = taskIdOf(body);
         if (!providerTaskId) await refundJob(job.id, { code: 'UPSTREAM_TASK_ID_MISSING', message: '服务商未返回视频任务 ID' });
-        else await updateJob(job.id, { status: 'processing', providerTaskId, progress: Number(payloadOf(body)?.progress || 0), nextPollAt: Date.now() + 5000, leaseOwner: workerId, leaseUntil: Date.now() + config.leaseDurationMs });
+        else await updateJob(job.id, { status: 'processing', providerTaskId, submittedAt: job.submittedAt || nowIso(), progress: Number(payloadOf(body)?.progress || 0), nextPollAt: Date.now() + 5000, leaseOwner: workerId, leaseUntil: Date.now() + config.leaseDurationMs });
       }
     } catch (error) {
       const attemptCount = Number(job.attemptCount || 0) + 1;
@@ -335,7 +335,7 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
         else {
           claimed = [];
           await db.mutate((data) => data.generationJobs.forEach((job) => {
-            if (ids.has(job.id) && job.status === 'queued') { job.status = 'submitting'; job.updatedAt = nowIso(); claimed.push({ ...job }); }
+            if (ids.has(job.id) && job.status === 'queued') { job.status = 'submitting'; job.submittedAt ||= nowIso(); job.updatedAt = nowIso(); claimed.push({ ...job }); }
           }));
         }
         claimed.forEach((job) => void submitJob(job));
@@ -357,7 +357,7 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
       resultUrl: null, thumbnail: null, errorCode: null, errorMessage: null, chargeCents,
       billingReference, projectId: String(client.projectId || '').slice(0, 100) || null,
       nodeId: String(client.nodeId || '').slice(0, 100) || null, prompt: String(requestBody.prompt || '').slice(0, 10000),
-      attemptCount: 0, nextPollAt: 0, createdAt: timestamp, updatedAt: timestamp, completedAt: null,
+      attemptCount: 0, nextPollAt: 0, createdAt: timestamp, submittedAt: null, updatedAt: timestamp, completedAt: null,
       leaseOwner: null, leaseUntil: 0,
     };
     let enqueueError = null;
