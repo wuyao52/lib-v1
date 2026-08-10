@@ -50,6 +50,12 @@ export interface SceneNodeData {
   error?: string;
   thumbnail?: string;
   mediaSource?: 'uploaded' | 'generated';
+  generationMeta?: {
+    modelId?: string;
+    modelName?: string;
+    provider?: string;
+    completedAt?: string;
+  };
   progress?: any;  // 简化类型，支持数字或对象
   [key: string]: any;  // 添加索引签名
 }
