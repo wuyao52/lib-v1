@@ -22,7 +22,7 @@ if (String(process.env.BACKUP_DRILL_ON_START || '').toLowerCase() === 'true') {
 }
 
 if (String(process.env.ALERT_TEST_ON_START || '').toLowerCase() === 'true') {
-  monitoring.test()
+  monitoring.testOnce()
     .then((result) => console.log('Monitoring test completed:', JSON.stringify(result)))
     .catch((error) => console.error('Monitoring test failed:', JSON.stringify({ name: error?.name || 'Error', code: error?.code || '', message: String(error?.message || 'Unknown error').slice(0, 300) })));
 }
