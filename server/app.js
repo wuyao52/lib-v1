@@ -67,11 +67,12 @@ function collectionsForRequest(pathname) {
   return [...common, ...(byScope[scope] || [])];
 }
 
-function createRateLimiter({ db, limit = 10, windowMs = 60_000 } = {}) {
+function createRateLimiter({ db, limit = 10, windowMs = 60_000, includeIdentity = true } = {}) {
   return async (req, res, next) => {
     const identity = req.body?.email || req.body?.identifier || req.body?.username || '';
     const scope = `${req.baseUrl || ''}${req.path || ''}`;
-    const key = createHash('sha256').update(`${scope}:${req.ip}:${String(identity).toLowerCase()}`).digest('hex');
+    const keyIdentity = includeIdentity ? String(identity).toLowerCase() : 'all';
+    const key = createHash('sha256').update(`${scope}:${req.ip}:${keyIdentity}`).digest('hex');
     const now = Date.now();
     try {
       let bucket;
@@ -198,9 +199,12 @@ export async function createApp(options = {}) {
   });
   const authRouter = express.Router();
   const authRateLimiter = createRateLimiter({ db, limit: 12, windowMs: 60_000 });
+  // Limit all code sends from one IP as well as each email address. This prevents
+  // a rotating-address request flood from becoming an SMTP abuse vector.
+  const emailCodeIpRateLimiter = createRateLimiter({ db, limit: 6, windowMs: 60_000, includeIdentity: false });
   authRouter.use('/login', authRateLimiter);
   authRouter.use('/register', authRateLimiter);
-  authRouter.use('/email-code', authRateLimiter);
+  authRouter.use('/email-code', emailCodeIpRateLimiter, authRateLimiter);
   authRouter.use('/captcha', authRateLimiter);
   authRouter.use('/reset-password', authRateLimiter);
   auth.registerRoutes(authRouter);
