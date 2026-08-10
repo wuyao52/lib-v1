@@ -1201,6 +1201,7 @@ function launchGenerationTask(
           modelId: effectiveModel.modelId,
           modelName: effectiveModel.name,
           provider: effectiveModel.provider,
+          taskId: String(result.data.metadata?.taskId || ''),
           completedAt: new Date().toISOString(),
         },
         mediaSource: isImage ? 'generated' : execution.sourceNode.data.mediaSource,
