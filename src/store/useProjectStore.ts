@@ -1197,6 +1197,12 @@ function launchGenerationTask(
       get().updateNodeData(execution.targetNodeId, {
         status: 'completed', progress: 100, error: undefined, generationMessage: undefined,
         generatedContent: result.data.url,
+        generationMeta: {
+          modelId: effectiveModel.modelId,
+          modelName: effectiveModel.name,
+          provider: effectiveModel.provider,
+          completedAt: new Date().toISOString(),
+        },
         mediaSource: isImage ? 'generated' : execution.sourceNode.data.mediaSource,
         thumbnail: result.data.thumbnail,
         ...(execution.generateInPlace
