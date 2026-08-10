@@ -90,7 +90,7 @@ OSS_REGION=cn-hangzhou
 OSS_ACCESS_KEY_ID=RAM 用户的 AccessKey ID
 OSS_ACCESS_KEY_SECRET=RAM 用户的 AccessKey Secret
 OSS_BUCKET=ai-drama-assets
-# 可留空；默认使用 https://s3.cn-hangzhou.aliyuncs.com
+# 可留空；默认使用 https://oss-cn-hangzhou.aliyuncs.com
 OSS_ENDPOINT=
 ```
 

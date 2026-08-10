@@ -193,7 +193,15 @@ export async function createApp(options = {}) {
   app.get('/api/health', async (_req, res) => {
     const checks = { database: 'ok', objectStorage: assetStorage ? 'ok' : 'not_configured', queue: videoQueue ? 'ok' : 'disabled' };
     try { if (db.ping) await db.ping(); } catch { checks.database = 'error'; }
-    try { if (assetStorage?.health) await assetStorage.health(); } catch { checks.objectStorage = 'error'; }
+    try { if (assetStorage?.health) await assetStorage.health(); } catch (error) {
+      checks.objectStorage = 'error';
+      console.error('Object storage health check failed:', JSON.stringify({
+        provider: assetStorage?.provider || 'unknown',
+        name: String(error?.name || 'Error').slice(0, 80),
+        code: String(error?.code || error?.Code || '').slice(0, 100),
+        status: Number(error?.$metadata?.httpStatusCode || 0) || null,
+      }));
+    }
     const ok = checks.database === 'ok' && checks.objectStorage !== 'error';
     return res.status(ok ? 200 : 503).json({ ok, service: 'ai-drama-studio', checks, monitoring: { configured: monitoring.configured, intervalMs: monitoring.intervalMs } });
   });

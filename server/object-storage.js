@@ -24,8 +24,8 @@ const providers = [
       const region = String(env.OSS_REGION).trim();
       return {
         region,
-        // OSS exposes an S3-compatible endpoint. Keep the bucket private; the app serves signed access itself.
-        endpoint: String(env.OSS_ENDPOINT || `https://s3.${region}.aliyuncs.com`).trim(),
+        // The AWS SDK uses virtual-host addressing on OSS's regional endpoint.
+        endpoint: String(env.OSS_ENDPOINT || `https://oss-${region}.aliyuncs.com`).trim(),
         bucket: String(env.OSS_BUCKET).trim(),
         accessKeyId: String(env.OSS_ACCESS_KEY_ID).trim(),
         secretAccessKey: String(env.OSS_ACCESS_KEY_SECRET).trim(),
@@ -47,13 +47,14 @@ function configuredProvider(env) {
   return null;
 }
 
-export function createObjectStorageFromEnv(env = process.env) {
+export function createObjectStorageFromEnv(env = process.env, { clientFactory = (config) => new S3Client(config) } = {}) {
   const provider = configuredProvider(env);
   if (!provider) return null;
   const config = provider.createConfig(env);
-  const client = new S3Client({
+  const client = clientFactory({
     region: config.region,
     endpoint: config.endpoint,
+    forcePathStyle: false,
     credentials: {
       accessKeyId: config.accessKeyId,
       secretAccessKey: config.secretAccessKey,
