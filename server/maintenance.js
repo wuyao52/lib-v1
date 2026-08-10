@@ -1,4 +1,4 @@
-import { createEncryptedBackup } from './backup.js';
+import { createFreshEncryptedBackup } from './backup.js';
 import { cleanupExpiredAssets } from './assets.js';
 
 const HOUR = 60 * 60 * 1000;
@@ -17,7 +17,7 @@ export async function runMaintenance({ db, storage, generatedMedia, now = new Da
   results.media = generatedMedia ? await generatedMedia.cleanup() : { deleted: 0 };
   const key = String(process.env.BACKUP_ENCRYPTION_KEY || '');
   if (storage && key.length >= 24) {
-    const document = createEncryptedBackup(db, key, results.ranAt);
+    const document = await createFreshEncryptedBackup(db, key, results.ranAt);
     const objectKey = `backups/database-${results.ranAt.replace(/[:.]/g, '-')}.json`;
     await storage.put({ key: objectKey, bytes: Buffer.from(JSON.stringify(document)), mimeType: 'application/json' });
     results.backup = { objectKey, checksum: document.checksum };
