@@ -163,6 +163,11 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
       pricing = db.read('modelPricing').find((item) => item.apiId === api.id && item.modelId === modelId && item.enabled);
       if (!pricing) return res.status(403).json({ error: 'MODEL_NOT_PRICED', message: '该模型未开放或尚未定价' });
       try { chargeCents = computeCharge(pricing, requestBody); } catch (error) { return res.status(400).json({ error: error.code, message: error.message }); }
+      await db.mutate((data) => data.auditLogs.push({
+        id: randomUUID(), userId: req.user.id, action: 'managed_model_requested', targetType: 'model_pricing', targetId: pricing.id,
+        ipAddress: String(req.ip || '').slice(0, 100), userAgent: String(req.get('user-agent') || '').slice(0, 300),
+        metadata: { requestId: req.requestId || null, apiId: api.id, modelId: pricing.modelId, category: pricing.category, chargeCents, durationSec: Number(requestBody?.seconds ?? requestBody?.duration ?? 0) || null }, createdAt: nowIso(),
+      }));
       const willUseVideoQueue = pathname === '/v1/videos' && pricing?.category === 'video' && videoQueue;
       if (req.user.role !== 'system' && chargeCents > 0 && !willUseVideoQueue) {
         transactionId = randomUUID();
