@@ -44,7 +44,11 @@ export function createMonitoringService({ db, fetchImpl = fetch, env = process.e
   const check = async () => {
     const snapshot = operationSnapshot(db, env);
     const fingerprint = JSON.stringify(snapshot.alerts);
-    if (fingerprint === lastFingerprint) return { changed: false, snapshot };
+    const fingerprintKey = createHmac('sha256', 'monitoring-alert-fingerprint').update(fingerprint).digest('hex');
+    if (db.consumeRateLimit) {
+      const lock = await db.consumeRateLimit(`monitoring:alert:${fingerprintKey}`, 1, Math.max(intervalMs * 2, 60_000));
+      if (!lock.allowed) return { changed: false, snapshot, shared: true };
+    } else if (fingerprint === lastFingerprint) return { changed: false, snapshot };
     const event = snapshot.alerts.length ? 'operations.alert' : 'operations.recovered';
     const delivery = await dispatch(event, { operations: snapshot });
     lastFingerprint = fingerprint;
