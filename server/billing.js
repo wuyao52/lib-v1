@@ -132,6 +132,13 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
     await db.mutate((data) => data.auditLogs.push(record));
     return record;
   };
+  const requireCurrentPassword = async (req, res, action, targetType, targetId) => {
+    const user = db.read('users').find((item) => item.id === req.user.id);
+    if (user && await verifyPassword(String(req.body?.currentPassword || ''), user.passwordHash)) return true;
+    await audit(req, `${action}_denied`, targetType, targetId);
+    res.status(401).json({ error: 'PASSWORD_INVALID', message: '请先输入当前系统账号密码以确认此敏感操作' });
+    return false;
+  };
   router.get('/video-queue', (_req, res) => res.json(videoQueue ? videoQueue.overview() : {
     counts: { queued: 0, submitting: 0, processing: 0, completed: 0, failed: 0 },
     config: null, recent: [],
@@ -210,6 +217,7 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
     const role = String(req.body.role || '');
     if (!['user', 'system'].includes(role)) return res.status(400).json({ error: 'INVALID_ROLE', message: '角色无效' });
     if (req.params.id === req.user.id && role !== 'system') return res.status(400).json({ error: 'SELF_DEMOTION_FORBIDDEN', message: '不能取消自己的系统用户权限' });
+    if (!(await requireCurrentPassword(req, res, 'user_role_updated', 'user', req.params.id))) return;
     let updated;
     await db.mutate((data) => {
       const user = data.users.find((item) => item.id === req.params.id);
@@ -223,6 +231,7 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
   router.post('/users/:id/balance', async (req, res) => {
     const amountCents = integer(req.body.amountCents);
     if (!Number.isInteger(amountCents) || amountCents === 0 || Math.abs(amountCents) > 10_000_000) return res.status(400).json({ error: 'INVALID_AMOUNT', message: '调整金额无效' });
+    if (!(await requireCurrentPassword(req, res, 'user_balance_adjusted', 'user', req.params.id))) return;
     const suppliedKey = String(req.get('idempotency-key') || '').trim();
     if (suppliedKey && !/^[A-Za-z0-9_-]{16,100}$/.test(suppliedKey)) return res.status(400).json({ error: 'INVALID_IDEMPOTENCY_KEY', message: '幂等键无效' });
     const referenceId = suppliedKey ? `admin-balance:${req.user.id}:${req.params.id}:${suppliedKey}` : null;
