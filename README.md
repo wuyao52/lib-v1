@@ -33,6 +33,12 @@ service log, and remove the variable immediately so later restarts do not send
 duplicate tests. `/api/health` reports enabled channels without exposing
 addresses, credentials, application data, or prompt contents.
 
+Alert delivery is transition-based: an initially healthy service is silent,
+the first unhealthy state is delivered immediately, an unchanged alert is
+reminded at most once per `ALERT_REPEAT_HOURS` (24 hours by default), and a
+recovery is delivered once. `ALERT_TEST_ON_START` is additionally locked to
+one test message per Railway deployment, even if its container restarts.
+
 `GET /api/health` checks the live database, object storage and queue. The
 deeper `GET /api/health/operations` probe returns HTTP 503 when queue pressure,
 backup freshness or restore-drill freshness is outside policy, without
