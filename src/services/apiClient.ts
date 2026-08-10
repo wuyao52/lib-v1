@@ -9,13 +9,24 @@ export class ApiError extends Error {
   }
 }
 
+const inFlightAdminBalanceRequests = new Map<string, Promise<unknown>>();
+
 export async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const isAdminBalanceAdjustment = options.method === 'POST' && /^\/api\/admin\/users\/[^/]+\/balance$/.test(path);
+  const requestKey = isAdminBalanceAdjustment ? `${path}:${String(options.body || '')}` : '';
+  const existing = requestKey ? inFlightAdminBalanceRequests.get(requestKey) : undefined;
+  if (existing) return existing as Promise<T>;
+  const idempotencyKey = isAdminBalanceAdjustment && !new Headers(options.headers).has('Idempotency-Key')
+    ? (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`)
+    : null;
+  const request = (async () => {
   const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
   const response = await fetch(path, {
     ...options,
     credentials: 'include',
     headers: {
       ...(options.body && !isFormData ? { 'Content-Type': 'application/json' } : {}),
+      ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
       ...options.headers,
     },
   });
@@ -30,4 +41,10 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
     throw new ApiError('服务端 API 返回异常，请检查后端部署或 Netlify API 代理配置', response.status);
   }
   return payload as T;
+  })();
+  if (requestKey) {
+    inFlightAdminBalanceRequests.set(requestKey, request);
+    try { return await request; } finally { inFlightAdminBalanceRequests.delete(requestKey); }
+  }
+  return request;
 }
