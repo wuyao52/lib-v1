@@ -241,5 +241,5 @@ test('managed video requests use the persistent queue protocol and expose an adm
   assert.equal(context.db.read('balanceTransactions').filter((item) => item.type === 'model_refund' && item.referenceId === queued.id).length, 1);
   const overview = await (await context.request('/api/admin/video-queue', admin.cookie)).json();
   assert.equal(overview.counts.processing, 0);
-  assert.equal(overview.config.userConcurrency, 20);
+  assert.equal(overview.config.userConcurrency, 4);
 });
