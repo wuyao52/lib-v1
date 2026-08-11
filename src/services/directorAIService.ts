@@ -2,7 +2,7 @@ import type { AIModelConfig, DramaProject } from '@/types';
 import type { DirectorShot, StoryboardPlan } from '@/types/director';
 import type { UserSkill } from '@/types/skill';
 
-export type DirectorDurationMode = 'ai' | 'manual';
+export type DirectorDurationMode = 'ai' | 'manual' | 'fixed-shot';
 
 export interface GenerateAIStoryboardInput {
   project: DramaProject;
@@ -10,6 +10,7 @@ export interface GenerateAIStoryboardInput {
   voice: string;
   durationMode: DirectorDurationMode;
   manualDurationSec?: number;
+  fixedShotDurationSec?: number;
   skills: UserSkill[];
   selectedBatchIndexes?: number[];
   selectedSourceSegmentIds?: string[];
@@ -55,6 +56,7 @@ const asTextArray = (value: unknown) => Array.isArray(value)
   : [];
 
 const clampDuration = (value: unknown) => Math.min(15, Math.max(5, Math.round(Number(value) || 5)));
+export const normalizeFixedShotDuration = (value: unknown) => clampDuration(value);
 
 const METADATA_SECTION_PATTERN = /^(?:剧本信息|基本信息|项目信息|项目说明|创作说明|故事信息|故事大纲|剧情大纲|故事梗概|剧情梗概|内容梗概|人物形象|人物设定|角色设定|人物小传|角色小传|人物介绍|角色介绍|人物关系|角色关系|世界观|背景设定|美术设定|视觉设定|风格设定|创作背景|主题|核心主题|受众定位|制作信息|备注|附录)(?:\s*[:：].*)?$/i;
 const BODY_SECTION_PATTERN = /^(?:剧本正文|剧情正文|故事正文|正文内容|分场剧本|分场正文|分集正文|场次正文|正文)(?:\s*[:：]\s*(.*))?$/i;
@@ -316,7 +318,10 @@ export function normalizeAIStoryboard(raw: any, input: Omit<GenerateAIStoryboard
     };
   });
 
-  if (input.durationMode === 'manual') shots = fitManualTotal(shots, input.manualDurationSec || 30);
+  if (input.durationMode === 'fixed-shot') {
+    const fixedDuration = normalizeFixedShotDuration(input.fixedShotDurationSec);
+    shots = shots.map((shot) => ({ ...shot, targetDurationSec: fixedDuration }));
+  } else if (input.durationMode === 'manual') shots = fitManualTotal(shots, input.manualDurationSec || 30);
 
   const totalDuration = shots.reduce((sum, shot) => sum + shot.targetDurationSec, 0);
   const sceneIds = [...new Set(shots.map((shot) => shot.sceneId))];
@@ -372,10 +377,13 @@ export function mergeRegeneratedStoryboardShots(current: StoryboardPlan, replace
 
 function buildMessages(input: GenerateAIStoryboardInput, segments: StorySourceSegment[], batchIndex: number, batchCount: number, previousEndState: string, retryMissingIds: string[] = [], retryInvalidJson = false, retryFidelityIssue = '') {
   const requestedDuration = Math.min(600, Math.max(10, Math.round(input.manualDurationSec || 30)));
+  const fixedShotDuration = normalizeFixedShotDuration(input.fixedShotDurationSec);
   const parsedScript = parseDirectorScript(input.story);
   const batchCharacterRatio = segments.reduce((sum, segment) => sum + segment.text.length, 0) / Math.max(1, parsedScript.shootableText.length);
   const directorContext = parsedScript.contextText.slice(0, 6000);
-  const durationInstruction = input.durationMode === 'manual'
+  const durationInstruction = input.durationMode === 'fixed-shot'
+    ? `用户指定每个分镜固定为 ${fixedShotDuration} 秒。必须按这个时间预算拆分可见节拍，每个 shot 的 targetDurationSec 必须严格填写 ${fixedShotDuration}；不得通过改变时长省略、合并或新增剧情。`
+    : input.durationMode === 'manual'
     ? `用户指定全片总时长 ${requestedDuration} 秒，本批建议分配约 ${Math.max(5, Math.round(requestedDuration * batchCharacterRatio))} 秒；先保证内容完整覆盖，最终程序会在 5–15 秒边界内统一校准。`
     : '根据本批全部可见叙事节拍推荐每镜头时长，禁止为了缩短输出而省略情节。';
   const skillInstructions = input.skills.length
@@ -387,7 +395,7 @@ function buildMessages(input: GenerateAIStoryboardInput, segments: StorySourceSe
   return [
     {
       role: 'system',
-      content: `你是一名短剧导演和 Seedance 2.0 分镜规划师。当前任务是严格忠实处理剧本第 ${batchIndex + 1}/${batchCount} 批，输出 JSON。\n\n原文忠实度是最高优先级：\n1. 只允许拍摄当前 [source-xxx] 原文明示的事件。禁止新增原文没有的人物、动作、反应、对白、道具、环境事件、建立镜头、转场或结局；不得改变事件顺序、因果和人物关系。\n2. 每个镜头必须提供 sourceEvidence：从原文逐字复制的 2–40 个连续字符，能够证明 narrativeJob 确实来自原文。禁止把同一证据用于无关的新剧情。\n3. 本批建议不超过 ${maximumShots} 个镜头；只有原文确有额外的独立可见节拍且能提供不同的顺序证据时，最多允许 ${evidenceBackedMaximumShots} 个。不得为了丰富画面擅自增加反应镜头或空镜。\n4. 一个镜头只承担一个原文明示的可见任务，并停在原文对应的明确状态。对白可保留原句，禁止改写出新信息。\n5. 若上一镜交接状态存在，同场景必须从该状态继续，不得重置人物位置、道具状态、屏幕方向、镜头和光线；原文明确进入新场景时才允许有意切镜。\n6. 每镜头 5–15 秒。后续原文写入 reservedForLater，prompt 只写当前证据支持的内容。\n7. 每个 source ID 必须出现在 sourceSegmentIds；顶层 coveredSourceIds 列出本批 ID。只输出 JSON，不要 Markdown、解释或尾随文字。顶层字段：coveredSourceIds, recommendedTotalDurationSec, durationRecommendationReason, storySummary, storyPromise, finalOutcome, shots。每个 shot 字段：sourceSegmentIds, sourceEvidence, sceneId, title, narrativeJob, feltIntent, arcPosition, targetDurationSec, generationMode, camera, lighting, performance, audio, plannedEndState, continuityLocks, reservedForLater, prompt。${skillInstructions}`,
+      content: `你是一名短剧导演和 Seedance 2.0 分镜规划师。当前任务是严格忠实处理剧本第 ${batchIndex + 1}/${batchCount} 批，输出 JSON。\n\n原文忠实度是最高优先级：\n1. 只允许拍摄当前 [source-xxx] 原文明示的事件。禁止新增原文没有的人物、动作、反应、对白、道具、环境事件、建立镜头、转场或结局；不得改变事件顺序、因果和人物关系。\n2. 每个镜头必须提供 sourceEvidence：从原文逐字复制的 2–40 个连续字符，能够证明 narrativeJob 确实来自原文。禁止把同一证据用于无关的新剧情。\n3. 本批建议不超过 ${maximumShots} 个镜头；只有原文确有额外的独立可见节拍且能提供不同的顺序证据时，最多允许 ${evidenceBackedMaximumShots} 个。不得为了丰富画面擅自增加反应镜头或空镜。\n4. 一个镜头只承担一个原文明示的可见任务，并停在原文对应的明确状态。对白可保留原句，禁止改写出新信息。\n5. 若上一镜交接状态存在，同场景必须从该状态继续，不得重置人物位置、道具状态、屏幕方向、镜头和光线；原文明确进入新场景时才允许有意切镜。\n6. ${input.durationMode === 'fixed-shot' ? `每镜头必须严格为 ${fixedShotDuration} 秒` : '每镜头 5–15 秒'}。后续原文写入 reservedForLater，prompt 只写当前证据支持的内容。\n7. 每个 source ID 必须出现在 sourceSegmentIds；顶层 coveredSourceIds 列出本批 ID。只输出 JSON，不要 Markdown、解释或尾随文字。顶层字段：coveredSourceIds, recommendedTotalDurationSec, durationRecommendationReason, storySummary, storyPromise, finalOutcome, shots。每个 shot 字段：sourceSegmentIds, sourceEvidence, sceneId, title, narrativeJob, feltIntent, arcPosition, targetDurationSec, generationMode, camera, lighting, performance, audio, plannedEndState, continuityLocks, reservedForLater, prompt。${skillInstructions}`,
     },
     {
       role: 'user',
@@ -426,11 +434,14 @@ function buildNdjsonMessages(
 ): ChatMessage[] {
   const parsedScript = parseDirectorScript(input.story);
   const directorContext = parsedScript.contextText.slice(0, 6000);
+  const durationInstruction = input.durationMode === 'fixed-shot'
+    ? `每个镜头的 targetDurationSec 必须严格为 ${normalizeFixedShotDuration(input.fixedShotDurationSec)} 秒。`
+    : '每个镜头时长必须在 5–15 秒。';
   const completedJobs = completedShots.map((shot, index) => `${index + 1}. ${shot.narrativeJob} -> ${shot.plannedEndState}`).join('\n');
   return [
     {
       role: 'system',
-      content: `你是严格忠实原文的短剧导演。服务商输出长度很小，因此必须使用 NDJSON：每行一个完整 JSON 对象，不要 Markdown 或数组外壳。\n第一行输出 {"type":"meta","storySummary":"...","storyPromise":"...","finalOutcome":"...","durationRecommendationReason":"..."}。\n随后每行输出一个镜头：{"type":"shot","sourceSegmentIds":["source-001"],"sourceEvidence":"从原文逐字复制2-40字","sceneId":"scene-01","title":"...","narrativeJob":"...","feltIntent":"...","arcPosition":"open","targetDurationSec":7,"generationMode":"text-to-video","camera":"...","lighting":"...","performance":"...","audio":"...","plannedEndState":"...","continuityLocks":["..."],"reservedForLater":["..."],"prompt":"..."}。\n只允许原文明示的事件，禁止新增人物、动作、反应、对白、道具、空镜、转场或结局；不得改变顺序和因果。本批建议不超过 ${recommendedMaxShots(segments)} 个镜头，仅在每镜都有不同的顺序原文证据时最多允许 ${validatedMaxShots(segments)} 个；一个镜头一个原文节拍，5–15 秒。若有上一镜交接，同场景必须连续。\n只有本批全部原文完成后，最后单独输出 {"type":"complete","coveredSourceIds":["..."]}。输出额度不足时优先完整闭合当前行，不要提前输出 complete。`,
+      content: `你是严格忠实原文的短剧导演。服务商输出长度很小，因此必须使用 NDJSON：每行一个完整 JSON 对象，不要 Markdown 或数组外壳。\n第一行输出 {"type":"meta","storySummary":"...","storyPromise":"...","finalOutcome":"...","durationRecommendationReason":"..."}。\n随后每行输出一个镜头：{"type":"shot","sourceSegmentIds":["source-001"],"sourceEvidence":"从原文逐字复制2-40字","sceneId":"scene-01","title":"...","narrativeJob":"...","feltIntent":"...","arcPosition":"open","targetDurationSec":7,"generationMode":"text-to-video","camera":"...","lighting":"...","performance":"...","audio":"...","plannedEndState":"...","continuityLocks":["..."],"reservedForLater":["..."],"prompt":"..."}。\n只允许原文明示的事件，禁止新增人物、动作、反应、对白、道具、空镜、转场或结局；不得改变顺序和因果。本批建议不超过 ${recommendedMaxShots(segments)} 个镜头，仅在每镜都有不同的顺序原文证据时最多允许 ${validatedMaxShots(segments)} 个；一个镜头一个原文节拍，${durationInstruction} 若有上一镜交接，同场景必须连续。\n只有本批全部原文完成后，最后单独输出 {"type":"complete","coveredSourceIds":["..."]}。输出额度不足时优先完整闭合当前行，不要提前输出 complete。`,
     },
     {
       role: 'user',
