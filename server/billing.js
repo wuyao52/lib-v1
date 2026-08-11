@@ -127,7 +127,7 @@ export function registerBillingRoutes(router, { db, requireAuth }) {
   });
 }
 
-export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImpl, resolveHost, videoQueue = null, backupStorage = null, backupEncryptionKey = '' }) {
+export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImpl, resolveHost, videoQueue = null, backupStorage = null, backupEncryptionKey = '', monitoring = null, requestMetrics = null }) {
   router.use(requireSystem);
   let backupDrillRunning = false;
   let storageUsageCache = null;
@@ -168,10 +168,12 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
       }
       const cacheMs = 5 * 60 * 1000;
       if (!storageUsageCache || Date.now() - storageUsageCache.generatedAtMs >= cacheMs) {
-        const usage = summarizeStoredObjects(await backupStorage.list(''));
-        storageUsageCache = { ...usage, generatedAt: nowIso(), generatedAtMs: Date.now() };
+        const [objects, database] = await Promise.all([backupStorage.list(''), typeof db.storageStats === 'function' ? db.storageStats() : null]);
+        const usage = summarizeStoredObjects(objects);
+        storageUsageCache = { ...usage, database, generatedAt: nowIso(), generatedAtMs: Date.now() };
       }
       const warningBytes = Math.max(0, Number(process.env.OBJECT_STORAGE_WARNING_BYTES || 0));
+      const databaseWarningBytes = Math.max(0, Number(process.env.ALERT_DATABASE_WARNING_BYTES || 0));
       return res.json({
         configured: true,
         provider: backupStorage.provider,
@@ -179,8 +181,11 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
         objects: storageUsageCache.objects,
         bytes: storageUsageCache.bytes,
         groups: storageUsageCache.groups,
+        database: storageUsageCache.database,
         warning: warningBytes > 0 && storageUsageCache.bytes >= warningBytes,
         warningBytes: warningBytes || null,
+        databaseWarning: databaseWarningBytes > 0 && Number(storageUsageCache.database?.bytes || 0) >= databaseWarningBytes,
+        databaseWarningBytes: databaseWarningBytes || null,
       });
     } catch (error) { return next(error); }
   });
@@ -211,6 +216,7 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
     const archivedJobIds = new Set(db.read('generatedMedia').map((item) => item.jobId));
     return res.json({
       generatedAt: nowIso(), windowHours: 24,
+      http: requestMetrics?.snapshot?.() || null,
       queue: videoQueue ? videoQueue.overview().counts : { queued: 0, submitting: 0, processing: 0, completed: 0, failed: 0 },
       recent: {
         total: recent.length, completed: completed.length,
@@ -255,12 +261,14 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
     const latestBackupFailure = backupEvents.filter((item) => ['backup_failed', 'backup_drill_failed'].includes(item.action)).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
     const backupStale = !latestBackup || now - Date.parse(latestBackup.createdAt) >= backupMaxAgeHours * 60 * 60 * 1000;
     const backupFailed = latestBackupFailure && (!latestBackup || latestBackupFailure.createdAt > latestBackup.createdAt);
+    const capacityAlerts = (monitoring?.snapshot?.().alerts || []).filter((item) => item.code === 'DATABASE_CAPACITY_WARNING' || item.code === 'OBJECT_STORAGE_CAPACITY_WARNING');
     const alerts = [
       ...(backlog.length >= queueThreshold ? [{ code: 'QUEUE_BACKLOG', severity: 'warning', count: backlog.length, threshold: queueThreshold }] : []),
       ...(recent.length && failureRate >= failureThreshold ? [{ code: 'GENERATION_FAILURE_RATE', severity: 'warning', count: failed, total: recent.length, rate: Number(failureRate.toFixed(4)), threshold: failureThreshold }] : []),
       ...(delayed.length ? [{ code: 'PROCESSING_DELAYED', severity: 'warning', count: delayed.length, thresholdMinutes: Math.round(delayedThresholdMs / 60_000) }] : []),
       ...(backupFailed ? [{ code: 'BACKUP_FAILED', severity: 'critical', count: 1, occurredAt: latestBackupFailure.createdAt }] : []),
       ...(backupStale ? [{ code: 'BACKUP_STALE', severity: 'critical', count: 1, thresholdHours: backupMaxAgeHours, lastSuccessAt: latestBackup?.createdAt || null }] : []),
+      ...capacityAlerts.map((item) => ({ ...item, severity: 'warning', count: 1 })),
     ];
     return res.json({
       generatedAt: nowIso(), windowHours: 24, healthy: alerts.length === 0, alerts, delayed,
