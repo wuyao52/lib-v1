@@ -36,6 +36,27 @@ const migrations = [
       ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
     },
   },
+  {
+    version: 3,
+    name: 'storage_orphan_quarantine',
+    async up({ query }) {
+      await query(`CREATE TABLE IF NOT EXISTS storage_quarantine (
+        id CHAR(36) PRIMARY KEY,
+        original_key VARCHAR(1024) NOT NULL,
+        quarantine_key VARCHAR(1024) NOT NULL UNIQUE,
+        object_size BIGINT NOT NULL,
+        object_type VARCHAR(32) NOT NULL,
+        status VARCHAR(24) NOT NULL,
+        quarantined_by CHAR(36) NULL,
+        quarantined_at VARCHAR(35) NOT NULL,
+        delete_after VARCHAR(35) NOT NULL,
+        restored_at VARCHAR(35) NULL,
+        deleted_at VARCHAR(35) NULL,
+        error_code VARCHAR(100) NULL,
+        INDEX storage_quarantine_status_delete_idx (status, delete_after)
+      ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
+    },
+  },
 ];
 
 export async function runSchemaMigrations(pool) {
@@ -66,7 +87,10 @@ export async function runSchemaMigrations(pool) {
       if (applied.has(migration.version)) continue;
       await migration.up({ query, ensureColumn });
       await query('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)', [migration.version, migration.name, new Date().toISOString()]);
+      applied.add(migration.version);
     }
+    const expectedVersion = migrations.at(-1)?.version || 0;
+    return { ready: applied.has(expectedVersion), currentVersion: Math.max(0, ...applied), expectedVersion };
   } finally {
     if (lockHeld) await query("SELECT RELEASE_LOCK('ai_drama_schema_migrations')").catch(() => undefined);
     if (connection !== pool) connection.release();
