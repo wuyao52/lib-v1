@@ -1,5 +1,6 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import { summarizeStoredObjects } from './object-storage.js';
+import { latestInfrastructureCapacity } from './infrastructure-capacity.js';
 
 const nowIso = () => new Date().toISOString();
 
@@ -32,6 +33,9 @@ function operationSnapshot(db, env = process.env, now = Date.now(), capacity = {
   const restoreDrillFailed = latestRestoreFailure && (!latestRestoreDrill || latestRestoreFailure.createdAt > latestRestoreDrill.createdAt);
   const databaseThreshold = Math.max(0, Number(env.ALERT_DATABASE_WARNING_BYTES || 0));
   const objectStorageThreshold = Math.max(0, Number(env.OBJECT_STORAGE_WARNING_BYTES || 0));
+  const infrastructure = latestInfrastructureCapacity(db, env, now);
+  const infrastructureThreshold = Math.min(100, Math.max(1, Number(env.ALERT_INFRA_VOLUME_USAGE_PERCENT || 85)));
+  const infrastructureRequired = String(env.INFRA_CAPACITY_REPORT_REQUIRED || '').toLowerCase() === 'true';
   const alerts = [
     ...(backlog >= queueThreshold ? [{ code: 'QUEUE_BACKLOG', count: backlog, threshold: queueThreshold }] : []),
     ...(recent.length && failureRate >= failureThreshold ? [{ code: 'GENERATION_FAILURE_RATE', count: failed, total: recent.length, rate: Number(failureRate.toFixed(4)), threshold: failureThreshold }] : []),
@@ -41,12 +45,14 @@ function operationSnapshot(db, env = process.env, now = Date.now(), capacity = {
     ...(restoreDrillStale ? [{ code: 'RESTORE_DRILL_STALE', thresholdHours: restoreDrillMaxAgeHours, lastSuccessAt: latestRestoreDrill?.createdAt || null }] : []),
     ...(databaseThreshold > 0 && Number(capacity.database?.bytes || 0) >= databaseThreshold ? [{ code: 'DATABASE_CAPACITY_WARNING', bytes: capacity.database.bytes, threshold: databaseThreshold }] : []),
     ...(objectStorageThreshold > 0 && Number(capacity.objectStorage?.bytes || 0) >= objectStorageThreshold ? [{ code: 'OBJECT_STORAGE_CAPACITY_WARNING', bytes: capacity.objectStorage.bytes, threshold: objectStorageThreshold }] : []),
+    ...(infrastructure && infrastructure.usagePercent >= infrastructureThreshold ? [{ code: 'INFRA_VOLUME_CAPACITY_WARNING', usagePercent: infrastructure.usagePercent, threshold: infrastructureThreshold }] : []),
+    ...(infrastructureRequired && (!infrastructure || infrastructure.stale) ? [{ code: 'INFRA_CAPACITY_REPORT_STALE', lastReportedAt: infrastructure?.reportedAt || null, thresholdMinutes: infrastructure?.staleMinutes || Number(env.INFRA_CAPACITY_STALE_MINUTES || 30) }] : []),
   ];
   return {
     alerts, backlog, failed, total: recent.length, failureRate: Number(failureRate.toFixed(4)),
     backup: { lastSuccessAt: latestBackup?.createdAt || null, lastFailureAt: latestFailure?.createdAt || null },
     restoreDrill: { lastSuccessAt: latestRestoreDrill?.createdAt || null, lastFailureAt: latestRestoreFailure?.createdAt || null },
-    capacity,
+    capacity: { ...capacity, infrastructure },
   };
 }
 
