@@ -101,10 +101,13 @@ test('manual total duration is sent to the text model', async () => {
 test('fixed single-shot duration is enforced in the prompt and normalized plan', async () => {
   const service = await loadDirectorAIService();
   const originalFetch = globalThis.fetch;
-  let userMessage = '';
+  const requests = [];
+  let callCount = 0;
   globalThis.fetch = async (_url, options) => {
-    userMessage = JSON.parse(options.body).messages[1].content;
-    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(rawPlan) } }] }), { status: 200 });
+    requests.push(JSON.parse(options.body));
+    callCount += 1;
+    const corrected = { ...rawPlan, shots: rawPlan.shots.map((shot) => ({ ...shot, targetDurationSec: 10 })) };
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(callCount === 1 ? rawPlan : corrected) } }] }), { status: 200 });
   };
   try {
     const plan = await service.generateAIStoryboard({
@@ -115,9 +118,38 @@ test('fixed single-shot duration is enforced in the prompt and normalized plan',
       fixedShotDurationSec: 10,
       skills: [],
     });
-    assert.match(userMessage, /每个分镜固定为 10 秒/);
+    assert.equal(callCount, 2);
+    assert.match(requests[0].messages[0].content, /每镜头必须严格为 10 秒/);
+    assert.match(requests[0].messages[1].content, /每个分镜固定为 10 秒/);
+    assert.match(requests[1].messages[1].content, /这些镜头返回了其他时长/);
     assert.deepEqual(plan.shots.map((shot) => shot.targetDurationSec), [10, 10]);
     assert.equal(plan.targetDurationSec, 20);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('fixed single-shot duration rejects a model that ignores the constraint twice', async () => {
+  const service = await loadDirectorAIService();
+  const originalFetch = globalThis.fetch;
+  let callCount = 0;
+  globalThis.fetch = async () => {
+    callCount += 1;
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(rawPlan) } }] }), { status: 200 });
+  };
+  try {
+    await assert.rejects(
+      service.generateAIStoryboard({
+        project,
+        story: '这是一个足够长的完整测试剧本，人物在房间里发现一封信并决定面对过去。',
+        voice: 'naturalist',
+        durationMode: 'fixed-shot',
+        fixedShotDurationSec: 10,
+        skills: [],
+      }),
+      /未使用用户指定的固定 10 秒/,
+    );
+    assert.equal(callCount, 2);
   } finally {
     globalThis.fetch = originalFetch;
   }
