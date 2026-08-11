@@ -20,7 +20,7 @@ test('maintenance removes expired operational rows while retaining active and re
     data.auditLogs.push({ id: 'old-audit', createdAt: oldAudit }, { id: 'recent-audit', createdAt: recentAudit });
   });
   const result = await runMaintenance({ db, storage: null, generatedMedia: { cleanup: async () => ({ deleted: 0 }) }, now });
-  assert.deepEqual(result.operationalData.removed, { sessions: 1, emailVerifications: 1, imageCaptchas: 1, rateLimits: 1, auditLogs: 1 });
+  assert.deepEqual(result.operationalData.removed, { sessions: 1, emailVerifications: 1, imageCaptchas: 1, rateLimits: 1, auditLogs: 1, requestMetricBuckets: 0 });
   assert.deepEqual(db.read('sessions').map((item) => item.id), ['active-session']);
   assert.deepEqual(db.read('auditLogs').map((item) => item.id), ['recent-audit']);
   const stats = await db.storageStats();
