@@ -11,6 +11,8 @@ export type DirectorClipStatus = 'queued' | 'generating' | 'completed' | 'error'
 export interface DirectorClipGeneration {
   clipId: string;
   status: DirectorClipStatus;
+  previousClipId?: string;
+  continuityMode?: 'asset-only' | 'provider-continuation';
   videoUrl?: string;
   thumbnail?: string;
   error?: string;
@@ -22,16 +24,40 @@ interface GenerateDirectorVideosOptions {
   signal: AbortSignal;
   onUpdate: (update: DirectorClipGeneration) => void;
   assets: DirectorAsset[];
+  clipIds?: string[];
 }
 
 export const clampDirectorClipDuration = (duration: number) => Math.min(15, Math.max(5, Number(duration) || 5));
+
+export const directorClipIdempotencyKey = (projectId: string, planId: string, clipId: string) =>
+  `director:${projectId}:${planId}:${clipId}`;
+
+export const canGenerateNextDirectorClip = (result: DirectorClipGeneration) => result.status === 'completed';
+
+export function estimateDirectorVideoCostCents(plan: StoryboardPlan, model: AIModelConfig): number | null {
+  const unitPrice = Number(model.unitPriceCents);
+  if (!Number.isFinite(unitPrice) || unitPrice < 0) return null;
+  const unit = model.billingUnit || 'request';
+  if (unit === 'second') return Math.ceil(plan.shots.reduce((sum, shot) => sum + clampDirectorClipDuration(shot.targetDurationSec), 0) * unitPrice);
+  return Math.ceil(plan.shots.length * unitPrice);
+}
+
+export function summarizeDirectorClipResults(results: DirectorClipGeneration[], total: number) {
+  const failed = results.filter((item) => item.status === 'error');
+  return {
+    completed: results.filter((item) => item.status === 'completed').length,
+    failed: failed.length,
+    pending: Math.max(0, total - results.length),
+    failedClipIds: failed.map((item) => item.clipId),
+  };
+}
 
 export function resolveDirectorVideoModel(project: DramaProject): AIModelConfig | null {
   const candidates = [project.settings.multiModel?.videoModel, project.settings.aiModel];
   return candidates.find((model): model is AIModelConfig => Boolean((model?.managed || model?.credentialManaged || model?.apiKey) && model.baseUrl && model.modelId)) || null;
 }
 
-function generationSettings(project: DramaProject, model: AIModelConfig, shot: DirectorShot, assets: DirectorAsset[]) {
+function generationSettings(project: DramaProject, model: AIModelConfig, plan: StoryboardPlan, shot: DirectorShot, assets: DirectorAsset[]) {
   const images = getDirectorAssetReferenceImages(assets);
   const duration = normalizeModelDuration(shot.targetDurationSec, videoDurationRules(model), 5, 15);
   return {
@@ -41,11 +67,12 @@ function generationSettings(project: DramaProject, model: AIModelConfig, shot: D
     seconds: duration,
     style: project.settings.defaultStyle,
     _client: { projectId: project.id, nodeId: `${project.id}-${shot.clipId}` },
+    _idempotencyKey: directorClipIdempotencyKey(project.id, plan.projectId, shot.clipId),
     ...(images.length ? { images } : {}),
   };
 }
 
-export async function generateDirectorVideos({ plan, project, signal, onUpdate, assets }: GenerateDirectorVideosOptions) {
+export async function generateDirectorVideos({ plan, project, signal, onUpdate, assets, clipIds }: GenerateDirectorVideosOptions) {
   const configuredModel = resolveDirectorVideoModel(project);
   if (!configuredModel) throw new Error('请先在模型设置中配置可用的视频模型、API 地址和 API Key');
   const model = await refreshManagedModel(configuredModel);
@@ -55,19 +82,30 @@ export async function generateDirectorVideos({ plan, project, signal, onUpdate, 
   const assetContext = compileDirectorAssetContext(assets);
   const results: DirectorClipGeneration[] = [];
 
-  for (const shot of plan.shots) {
+  const selectedIds = clipIds?.length ? new Set(clipIds) : null;
+  const shots = selectedIds ? plan.shots.filter((shot) => selectedIds.has(shot.clipId)) : plan.shots;
+  for (let index = 0; index < shots.length; index += 1) {
+    const shot = shots[index];
     if (signal.aborted) break;
-    onUpdate({ clipId: shot.clipId, status: 'generating' });
+    const previousClipId = index > 0 ? shots[index - 1].clipId : undefined;
+    onUpdate({ clipId: shot.clipId, status: 'generating', previousClipId, continuityMode: 'asset-only' });
     const prompt = `${shot.prompt}\n\n资产连续性合同（不得擅自改变）：\n${assetContext}`;
-    const response = await service.generateVideo(prompt, generationSettings(project, model, shot, assets), signal);
+    const response = await service.generateVideo(prompt, generationSettings(project, model, plan, shot, assets), signal);
     if (signal.aborted) break;
 
     const update: DirectorClipGeneration = response.success && response.data?.url
-      ? { clipId: shot.clipId, status: 'completed', videoUrl: response.data.url, thumbnail: response.data.thumbnail }
-      : { clipId: shot.clipId, status: 'error', error: response.error || '视频生成失败' };
+      ? { clipId: shot.clipId, status: 'completed', previousClipId, continuityMode: 'asset-only', videoUrl: response.data.url, thumbnail: response.data.thumbnail }
+      : { clipId: shot.clipId, status: 'error', previousClipId, continuityMode: 'asset-only', error: response.error || '视频生成失败' };
     results.push(update);
     onUpdate(update);
+    if (!canGenerateNextDirectorClip(update)) break;
   }
 
+  const summary = summarizeDirectorClipResults(results, shots.length);
+  if (summary.failed || summary.pending) {
+    const error = new Error(`短剧批量生成未完整完成：成功 ${summary.completed}/${shots.length}，失败 ${summary.failed}，未执行 ${summary.pending}`);
+    Object.assign(error, { code: 'DIRECTOR_PARTIAL_FAILURE', results, summary });
+    throw error;
+  }
   return results;
 }
