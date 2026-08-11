@@ -467,8 +467,15 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
     setError('');
     setIsComposing(true);
     try {
-      const result = await apiRequest<{ composition: { url: string } }>('/api/director/compose', { method: 'POST', body: JSON.stringify({ projectId: project.id, clipUrls: ordered.map((clip) => clip.videoUrl) }) });
-      setFinalVideoUrl(result.composition.url);
+      const result = await apiRequest<{ job: { id: string } }>('/api/director/compose', { method: 'POST', body: JSON.stringify({ projectId: project.id, clipUrls: ordered.map((clip) => clip.videoUrl) }) });
+      let job: { status: string; progress: number; resultUrl?: string; error?: string } | null = null;
+      for (let attempt = 0; attempt < 120; attempt += 1) {
+        job = (await apiRequest<{ job: typeof job }>(`/api/director/compose/${encodeURIComponent(result.job.id)}`)).job;
+        if (job.status === 'completed' || job.status === 'failed') break;
+        await wait(1000);
+      }
+      if (!job || job.status !== 'completed' || !job.resultUrl) throw new Error(job?.error || '短剧合成超时');
+      setFinalVideoUrl(job.resultUrl);
       setNotice('最终短剧已合成并写入生成历史');
     } catch (composeError) {
       setError(composeError instanceof Error ? composeError.message : '短剧合成失败');
