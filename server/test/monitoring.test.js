@@ -227,3 +227,22 @@ test('monitoring alerts on live database and object-storage capacity then recove
   assert.equal(recovered.snapshot.alerts.length, 0);
   assert.equal(emails.length, 2);
 });
+
+test('monitoring alerts on externally reported volume usage and stale telemetry', async () => {
+  const now = Date.now();
+  const data = {
+    users: [], generationJobs: [],
+    auditLogs: [
+      { id: 'backup', action: 'backup_completed', targetType: 'backup', createdAt: new Date(now).toISOString() },
+      { id: 'restore', action: 'mysql_restore_drill_completed', targetType: 'backup', createdAt: new Date(now).toISOString() },
+      { id: 'capacity', action: 'infrastructure_capacity_reported', targetType: 'capacity', targetId: 'railway-mysql', metadata: { usedBytes: 460, totalBytes: 500, usagePercent: 92, reportedAt: new Date(now).toISOString() }, createdAt: new Date(now).toISOString() },
+    ],
+  };
+  const db = { read: (collection) => data[collection] || [], mutate: async (operation) => operation(data) };
+  const high = createMonitoringService({ db, env: { ALERT_INFRA_VOLUME_USAGE_PERCENT: '85', INFRA_CAPACITY_REPORT_REQUIRED: 'true' } });
+  assert.deepEqual(high.snapshot().alerts.map((item) => item.code), ['INFRA_VOLUME_CAPACITY_WARNING']);
+  data.auditLogs[2].metadata = { ...data.auditLogs[2].metadata, usedBytes: 200, usagePercent: 40, reportedAt: new Date(now - 31 * 60 * 1000).toISOString() };
+  data.auditLogs[2].createdAt = data.auditLogs[2].metadata.reportedAt;
+  const stale = createMonitoringService({ db, env: { INFRA_CAPACITY_REPORT_REQUIRED: 'true', INFRA_CAPACITY_STALE_MINUTES: '30' } });
+  assert.deepEqual(stale.snapshot().alerts.map((item) => item.code), ['INFRA_CAPACITY_REPORT_STALE']);
+});
