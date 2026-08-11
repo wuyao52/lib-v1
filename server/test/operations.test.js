@@ -133,6 +133,14 @@ test('health checks report object-storage failure and admin metrics stay role pr
   const health = await fetch(`${baseUrl}/api/health`);
   assert.equal(health.status, 503);
   assert.deepEqual((await health.json()).checks, { database: 'ok', objectStorage: 'error', queue: 'disabled' });
+  const ready = await fetch(`${baseUrl}/api/health/ready`);
+  assert.equal(ready.status, 200);
+  assert.equal((await ready.json()).checks.schema, 'ok');
+  db.migrationStatus = () => ({ ready: false, currentVersion: 1, expectedVersion: 2, provider: 'test' });
+  const pendingMigration = await fetch(`${baseUrl}/api/health/ready`);
+  assert.equal(pendingMigration.status, 503);
+  assert.deepEqual((await pendingMigration.json()).checks, { database: 'ok', schema: 'pending', queue: 'disabled' });
+  delete db.migrationStatus;
 
   const operationsBefore = await fetch(`${baseUrl}/api/health/operations`);
   assert.equal(operationsBefore.status, 503);
@@ -260,6 +268,7 @@ test('storage cleanup requires preview and password, preserves referenced media 
     provider: 'test-oss', health: async () => true,
     list: async () => [...objects.entries()].map(([key, item]) => ({ key, size: item.bytes.length, lastModified: item.lastModified })),
     delete: async (key) => objects.delete(key),
+    move: async (source, destination) => { const item = objects.get(source); if (!item) throw new Error('missing source'); objects.set(destination, item); objects.delete(source); },
   };
   const { app, db } = await createApp({
     databasePath: join(directory, 'database.json'), secureCookies: false, videoQueue: false, maintenance: false, assetStorage: storage,
@@ -291,4 +300,22 @@ test('storage cleanup requires preview and password, preserves referenced media 
   assert.equal(objects.has('generated-videos/user/orphan.mp4'), true);
   const repeated = await fetch(`${origin}/api/admin/storage-cleanup/execute`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ previewId: preview.previewId, currentPassword: 'strong-password' }) });
   assert.equal(repeated.status, 409);
+
+  const quarantinePreviewResponse = await fetch(`${origin}/api/admin/storage-quarantine/preview`, { headers: { cookie } });
+  assert.equal(quarantinePreviewResponse.status, 200);
+  const quarantinePreview = await quarantinePreviewResponse.json();
+  assert.equal(quarantinePreview.summary.candidates, 1);
+  assert.equal(JSON.stringify(quarantinePreview).includes('orphan.mp4'), false);
+  const quarantined = await fetch(`${origin}/api/admin/storage-quarantine/execute`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ previewId: quarantinePreview.previewId, currentPassword: 'strong-password' }) });
+  assert.equal(quarantined.status, 200);
+  assert.deepEqual(await quarantined.json(), { quarantined: 1, failed: 0, bytes: 5 });
+  assert.equal(objects.has('generated-videos/user/orphan.mp4'), false);
+  assert.equal([...objects.keys()].some((key) => key.startsWith('quarantine/orphans/')), true);
+  const recordsResponse = await fetch(`${origin}/api/admin/storage-quarantine`, { headers: { cookie } });
+  const records = await recordsResponse.json();
+  assert.equal(records.records.length, 1);
+  assert.equal(JSON.stringify(records).includes('generated-videos/user/orphan.mp4'), false);
+  const restored = await fetch(`${origin}/api/admin/storage-quarantine/${records.records[0].id}/restore`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ currentPassword: 'strong-password' }) });
+  assert.equal(restored.status, 200);
+  assert.equal(objects.has('generated-videos/user/orphan.mp4'), true);
 });
