@@ -60,6 +60,7 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
   const [finalVideoUrl, setFinalVideoUrl] = useState<string | null>(null);
   const storyboardController = useRef<AbortController | null>(null);
   const videoController = useRef<AbortController | null>(null);
+  const acceptanceResolvers = useRef(new Map<string, (update: DirectorClipGeneration) => void>());
   const scriptFileInput = useRef<HTMLInputElement | null>(null);
   const scriptDragDepth = useRef(0);
   const restoredProjectId = useRef<string | null>(null);
@@ -345,7 +346,7 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
     return ids;
   };
 
-  const updateClipGeneration = (update: DirectorClipGeneration) => {
+  const updateClipGeneration = (update: DirectorClipGeneration): void | Promise<DirectorClipGeneration> => {
     setClipGenerations((current) => ({ ...current, [update.clipId]: update }));
     if (!plan) return;
     const nodeId = `${plan.projectId}-${update.clipId}`;
@@ -356,6 +357,9 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
       setPreviewClipId((current) => current || update.clipId);
     } else {
       updateNodeData(nodeId, { type: 'video', status: 'error', progress: 0, error: update.error, content: update.error || '视频生成失败' });
+    }
+    if (update.status === 'completed' && update.accepted === false) {
+      return new Promise((resolve) => acceptanceResolvers.current.set(update.clipId, resolve));
     }
   };
 
@@ -422,6 +426,8 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
 
   const stopVideoGeneration = () => {
     videoController.current?.abort();
+    acceptanceResolvers.current.forEach((resolve, clipId) => resolve({ clipId, status: 'completed', accepted: false }));
+    acceptanceResolvers.current.clear();
     setClipGenerations((current) => Object.fromEntries(Object.entries(current).map(([clipId, item]) => (
       item.status === 'queued' || item.status === 'generating' ? [clipId, { clipId, status: 'error', error: '生成已停止' }] : [clipId, item]
     ))));
@@ -449,7 +455,10 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
 
   const acceptPreviewClip = () => {
     if (!previewClip) return;
-    setClipGenerations((current) => ({ ...current, [previewClip.clipId]: { ...current[previewClip.clipId], accepted: true } }));
+    const accepted = { ...clipGenerations[previewClip.clipId], accepted: true };
+    setClipGenerations((current) => ({ ...current, [previewClip.clipId]: accepted }));
+    acceptanceResolvers.current.get(previewClip.clipId)?.(accepted);
+    acceptanceResolvers.current.delete(previewClip.clipId);
     setNotice(`已验收 ${previewClip.clipId}`);
   };
 
