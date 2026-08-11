@@ -592,11 +592,6 @@ export class MySqlDatabase {
     const operation = this.writeQueue.then(async () => {
       const existing = this.data.generationJobs.find((item) => item.id === job.id && item.userId === job.userId);
       if (existing) { result = { inserted: false, error: null, job: existing }; return; }
-      const pending = this.data.generationJobs.filter((item) => item.userId === job.userId && !terminalStatuses.has(item.status)).length;
-      if (pending >= maxPendingPerUser) { result.error = 'VIDEO_QUEUE_USER_LIMIT'; return; }
-      const user = this.data.users.find((item) => item.id === job.userId);
-      if (!user) { result.error = 'USER_NOT_FOUND'; return; }
-      if (Number(job.chargeCents || 0) > Number(user.balanceCents || 0)) { result.error = 'INSUFFICIENT_BALANCE'; return; }
       const charge = Number(job.chargeCents || 0) > 0 ? {
         id: randomUUID(), userId: job.userId, amountCents: -Number(job.chargeCents), type: 'model_usage',
         description: `${job.modelId} 视频队列调用`, referenceId: job.billingReference, createdBy: null, createdAt: new Date().toISOString(),
@@ -604,14 +599,31 @@ export class MySqlDatabase {
       const connection = await this.pool.getConnection();
       try {
         await connection.beginTransaction();
+        const [users] = await connection.query('SELECT balance_cents AS balanceCents FROM users WHERE id = ? FOR UPDATE', [job.userId]);
+        if (!users.length) { result.error = 'USER_NOT_FOUND'; await connection.rollback(); return; }
+        const spec = TABLES.generationJobs;
+        const [existingRows] = await connection.query(`${spec.select} WHERE id = ? AND user_id = ? LIMIT 1`, [job.id, job.userId]);
+        if (existingRows.length) {
+          const stored = spec.parse(existingRows[0]);
+          await connection.commit();
+          if (!this.data.generationJobs.some((item) => item.id === stored.id)) this.data.generationJobs.push(stored);
+          result = { inserted: false, error: null, job: stored };
+          return;
+        }
+        const terminal = [...terminalStatuses];
+        const placeholders = terminal.map(() => '?').join(',');
+        const [pendingRows] = await connection.query(`SELECT COUNT(*) AS pending FROM generation_jobs WHERE user_id = ? AND status NOT IN (${placeholders})`, [job.userId, ...terminal]);
+        if (Number(pendingRows[0]?.pending || 0) >= maxPendingPerUser) { result.error = 'VIDEO_QUEUE_USER_LIMIT'; await connection.rollback(); return; }
+        const currentBalance = Number(users[0].balanceCents || 0);
+        if (Number(job.chargeCents || 0) > currentBalance) { result.error = 'INSUFFICIENT_BALANCE'; await connection.rollback(); return; }
         if (charge) {
-          const [balanceUpdate] = await connection.query('UPDATE users SET balance_cents = balance_cents - ? WHERE id = ? AND balance_cents >= ?', [job.chargeCents, job.userId, job.chargeCents]);
-          if (!balanceUpdate.affectedRows) { await connection.rollback(); result.error = 'INSUFFICIENT_BALANCE'; return; }
+          await connection.query('UPDATE users SET balance_cents = ? WHERE id = ?', [currentBalance - Number(job.chargeCents), job.userId]);
           await connection.query(TABLES.balanceTransactions.insert, [[TABLES.balanceTransactions.values(charge)]]);
         }
         await connection.query(TABLES.generationJobs.insert, [[TABLES.generationJobs.values(job)]]);
         await connection.commit();
-        if (charge) { user.balanceCents = Number(user.balanceCents || 0) - Number(job.chargeCents); this.data.balanceTransactions.push(charge); }
+        const cachedUser = this.data.users.find((item) => item.id === job.userId);
+        if (charge) { if (cachedUser) cachedUser.balanceCents = currentBalance - Number(job.chargeCents); this.data.balanceTransactions.push(charge); }
         this.data.generationJobs.push(job);
         result = { inserted: true, error: null };
       } catch (error) {
@@ -919,6 +931,11 @@ export class MySqlDatabase {
   async ping() {
     await this.pool.query('SELECT 1');
     return true;
+  }
+
+  async storageStats() {
+    const [rows] = await this.pool.query('SELECT COALESCE(SUM(data_length + index_length), 0) AS bytes, COALESCE(SUM(table_rows), 0) AS rows FROM information_schema.tables WHERE table_schema = DATABASE()');
+    return { provider: 'mysql', bytes: Number(rows[0]?.bytes || 0), rows: Number(rows[0]?.rows || 0) };
   }
 
   async close() {
