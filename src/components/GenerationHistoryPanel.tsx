@@ -59,7 +59,7 @@ export default function GenerationHistoryPanel({ onClose }: { onClose: () => voi
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
       <button className="absolute inset-0 bg-black/70" onClick={onClose} aria-label="关闭" />
-      <section className="relative flex max-h-[80vh] w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-dark-600 bg-dark-800 shadow-2xl">
+      <section data-testid="generation-history" className="relative flex max-h-[80vh] w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-dark-600 bg-dark-800 shadow-2xl">
         <header className="flex items-center justify-between border-b border-dark-600 px-4 py-3">
           <h2 className="flex items-center gap-2 text-sm font-semibold text-white"><History className="h-4 w-4 text-primary-400" />最近 3 天生成历史</h2>
           <button onClick={onClose} className="p-2 text-dark-400 hover:text-white" title="关闭"><X className="h-4 w-4" /></button>
