@@ -289,4 +289,6 @@ test('storage cleanup requires preview and password, preserves referenced media 
   assert.equal(objects.has('healthchecks/recent.txt'), true);
   assert.equal(objects.has('assets/user/kept.png'), true);
   assert.equal(objects.has('generated-videos/user/orphan.mp4'), true);
+  const repeated = await fetch(`${origin}/api/admin/storage-cleanup/execute`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ previewId: preview.previewId, currentPassword: 'strong-password' }) });
+  assert.equal(repeated.status, 409);
 });
