@@ -23,6 +23,7 @@ import { createResourceGuard } from './resource-guard.js';
 import { startMaintenanceScheduler } from './maintenance.js';
 import { createPaymentService, registerPaymentRoutes } from './payments.js';
 import { createMonitoringService } from './monitoring.js';
+import { createRequestMetrics } from './request-metrics.js';
 
 const currentDir = fileURLToPath(new URL('.', import.meta.url));
 
@@ -127,7 +128,7 @@ export async function createApp(options = {}) {
     (String(process.env.RESEND_API_KEY || '').trim() && String(process.env.EMAIL_FROM || '').trim())
     || (String(process.env.SMTP_HOST || '').trim() && String(process.env.SMTP_USER || '').trim() && String(process.env.SMTP_PASS || '') && String(process.env.SMTP_FROM || process.env.SMTP_USER || '').trim()),
   );
-  const monitoring = createMonitoringService({ db, fetchImpl: options.fetchImpl, env: process.env, emailSender: emailConfigured ? emailSender : null });
+  const monitoring = createMonitoringService({ db, storage: assetStorage, fetchImpl: options.fetchImpl, env: process.env, emailSender: emailConfigured ? emailSender : null });
   const app = express();
   if (options.monitoring !== false) monitoring.start();
   const allowedOrigins = new Set(options.allowedOrigins || ['http://localhost:3000', 'http://127.0.0.1:3000']);
@@ -149,6 +150,7 @@ export async function createApp(options = {}) {
     db, vault, fetchImpl: options.fetchImpl, autoStart: options.videoQueueAutoStart !== false, generatedMedia,
   });
   const resourceGuard = options.resourceGuard || createResourceGuard({ db });
+  const requestMetrics = options.requestMetrics || createRequestMetrics();
 
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
@@ -166,6 +168,11 @@ export async function createApp(options = {}) {
   });
   app.use(auth.authenticate);
   app.use('/api', (req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
+  app.use((req, res, next) => {
+    const startedAt = Date.now();
+    res.once('finish', () => requestMetrics.record({ path: req.path, status: res.statusCode, durationMs: Date.now() - startedAt }));
+    next();
+  });
   app.use(async (req, res, next) => {
     if (!req.path.startsWith('/api/system-ai/') && !req.path.startsWith('/api/user-ai/')) return next();
     if (!req.user) return next();
@@ -223,6 +230,7 @@ export async function createApp(options = {}) {
         queue: alerts.some((code) => code === 'QUEUE_BACKLOG' || code === 'GENERATION_FAILURE_RATE') ? 'error' : 'ok',
         backup: alerts.some((code) => code === 'BACKUP_FAILED' || code === 'BACKUP_STALE') ? 'error' : 'ok',
         restoreDrill: alerts.some((code) => code === 'RESTORE_DRILL_FAILED' || code === 'RESTORE_DRILL_STALE') ? 'error' : 'ok',
+        capacity: alerts.some((code) => code === 'DATABASE_CAPACITY_WARNING' || code === 'OBJECT_STORAGE_CAPACITY_WARNING') ? 'error' : 'ok',
       },
     });
   });
@@ -269,6 +277,8 @@ export async function createApp(options = {}) {
   registerAdminRoutes(adminRouter, {
     db, requireSystem: auth.requireSystem, vault, fetchImpl: options.fetchImpl, resolveHost: options.resolveHost, videoQueue,
     backupStorage: assetStorage, backupEncryptionKey: options.backupEncryptionKey ?? process.env.BACKUP_ENCRYPTION_KEY,
+    monitoring,
+    requestMetrics,
   });
   app.use('/api/admin', adminRouter);
   const systemAiRouter = express.Router();
@@ -304,5 +314,5 @@ export async function createApp(options = {}) {
     res.status(500).json({ error: 'INTERNAL_ERROR', message: '服务器内部错误' });
   });
 
-  return { app, db, auth, videoQueue, maintenance, monitoring, assetStorage };
+  return { app, db, auth, videoQueue, maintenance, monitoring, assetStorage, requestMetrics };
 }
