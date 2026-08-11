@@ -56,6 +56,8 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
   const [previewClipId, setPreviewClipId] = useState<string | null>(null);
   const [showAssetPreparation, setShowAssetPreparation] = useState(false);
   const [directorAssets, setDirectorAssets] = useState<DirectorAsset[]>([]);
+  const [isComposing, setIsComposing] = useState(false);
+  const [finalVideoUrl, setFinalVideoUrl] = useState<string | null>(null);
   const storyboardController = useRef<AbortController | null>(null);
   const videoController = useRef<AbortController | null>(null);
   const scriptFileInput = useRef<HTMLInputElement | null>(null);
@@ -97,6 +99,7 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
     setPlan(session.plan);
     setDirectorAssets(session.assets);
     setClipGenerations(session.clips || {});
+    setFinalVideoUrl(session.finalVideoUrl || null);
     setNotice('已恢复上次导演会话，可继续未完成镜头');
   }, [isOpen, project]);
 
@@ -107,7 +110,7 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
       const session = {
         id: existing?.id || `director-${plan.projectId}`,
         story, voice, durationMode, manualDurationSec, fixedShotDurationSec, plan,
-        assets: directorAssets, clips: clipGenerations,
+        assets: directorAssets, clips: clipGenerations, finalVideoUrl: finalVideoUrl || undefined,
         status: isGeneratingDrama ? 'generating' : Object.values(clipGenerations).some((clip) => clip.status === 'error') ? 'partial' : Object.values(clipGenerations).length && Object.values(clipGenerations).every((clip) => clip.status === 'completed') ? 'completed' : 'draft',
         updatedAt: existing?.updatedAt || '',
       } as DirectorSession;
@@ -116,7 +119,7 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
       updateProjectSettings({ directorSession: { ...session, updatedAt: new Date().toISOString() } });
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [isOpen, project, plan, story, voice, durationMode, manualDurationSec, fixedShotDurationSec, directorAssets, clipGenerations, isGeneratingDrama, updateProjectSettings]);
+  }, [isOpen, project, plan, story, voice, durationMode, manualDurationSec, fixedShotDurationSec, directorAssets, clipGenerations, finalVideoUrl, isGeneratingDrama, updateProjectSettings]);
 
   useEffect(() => {
     setSelectedBatchIndexes(sourceBatches.map((batch) => batch.index));
@@ -444,6 +447,36 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
     if (next) setPreviewClipId(next.clipId);
   };
 
+  const acceptPreviewClip = () => {
+    if (!previewClip) return;
+    setClipGenerations((current) => ({ ...current, [previewClip.clipId]: { ...current[previewClip.clipId], accepted: true } }));
+    setNotice(`已验收 ${previewClip.clipId}`);
+  };
+
+  const composeShortDrama = async () => {
+    if (!plan || isComposing) return;
+    const ordered = plan.shots.map((shot) => clipGenerations[shot.clipId]);
+    if (ordered.some((clip) => clip?.status !== 'completed' || !clip.videoUrl)) {
+      setError('所有分镜视频完成后才能合成短剧');
+      return;
+    }
+    if (ordered.some((clip) => !clip.accepted)) {
+      setError('请逐镜预览并验收全部视频后再合成');
+      return;
+    }
+    setError('');
+    setIsComposing(true);
+    try {
+      const result = await apiRequest<{ composition: { url: string } }>('/api/director/compose', { method: 'POST', body: JSON.stringify({ projectId: project.id, clipUrls: ordered.map((clip) => clip.videoUrl) }) });
+      setFinalVideoUrl(result.composition.url);
+      setNotice('最终短剧已合成并写入生成历史');
+    } catch (composeError) {
+      setError(composeError instanceof Error ? composeError.message : '短剧合成失败');
+    } finally {
+      setIsComposing(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-[320] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
       <div className="w-full max-w-6xl max-h-[92vh] bg-dark-900 border border-dark-600 rounded-lg shadow-2xl overflow-hidden flex flex-col">
@@ -482,7 +515,8 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
               {plan && <>
                 <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-medium">AI 导演方案</h3><p className="text-xs text-dark-400 mt-1">{plan.durationRecommendationReason}</p></div><div className="flex items-center gap-2">{selectedShotIds.length > 0 && <button type="button" onClick={() => void regenerateSelectedShots()} disabled={isGenerating} className="h-8 px-2.5 rounded-md bg-primary-600 hover:bg-primary-500 disabled:opacity-50 text-xs flex items-center gap-1.5"><RefreshCw className="w-3.5 h-3.5" />重出选中 ({selectedShotIds.length})</button>}<button type="button" onClick={() => setSelectedShotIds(selectedShotIds.length === plan.shots.length ? [] : plan.shots.map((shot) => shot.clipId))} disabled={isGenerating} className="h-8 px-2.5 rounded-md border border-dark-700 bg-dark-800 hover:bg-dark-700 disabled:opacity-50 text-xs">{selectedShotIds.length === plan.shots.length ? '取消全选' : '全选镜头'}</button><button type="button" onClick={() => void copyPlan()} disabled={isGenerating} className="h-8 px-2.5 rounded-md border border-dark-700 bg-dark-800 hover:bg-dark-700 disabled:opacity-50 text-xs flex items-center gap-1.5"><Copy className="w-3.5 h-3.5" />复制全部</button></div></div>
                 <div className="grid md:grid-cols-3 gap-3 text-sm"><div className="bg-dark-800 border border-dark-700 rounded-md p-3"><p className="text-dark-500 text-xs">故事承诺</p><p className="mt-1">{plan.storyPromise}</p></div><div className="bg-dark-800 border border-dark-700 rounded-md p-3"><p className="text-dark-500 text-xs">最终结果</p><p className="mt-1">{plan.finalOutcome}</p></div><div className="bg-dark-800 border border-dark-700 rounded-md p-3"><p className="text-dark-500 text-xs">当前总时长</p><p className="mt-1">{totalDurationSec} 秒</p></div></div>
-                {previewClip && <div className="border border-dark-700 rounded-md overflow-hidden bg-black"><video key={previewClip.clipId} src={previewClip.videoUrl} controls autoPlay onEnded={playNextClip} className="w-full aspect-video bg-black" /><div className="h-11 px-3 flex items-center gap-2 overflow-x-auto bg-dark-950">{completedClips.map((clip, index) => <button key={clip.clipId} onClick={() => setPreviewClipId(clip.clipId)} className={`h-7 px-2 rounded-md text-xs flex items-center gap-1.5 shrink-0 ${previewClip.clipId === clip.clipId ? 'bg-primary-600 text-white' : 'bg-dark-800 text-dark-300 hover:text-white'}`}><Play className="w-3 h-3" />{index + 1}</button>)}</div></div>}
+                {previewClip && <div className="border border-dark-700 rounded-md overflow-hidden bg-black"><video key={previewClip.clipId} src={previewClip.videoUrl} controls autoPlay onEnded={playNextClip} className="w-full aspect-video bg-black" /><div className="h-11 px-3 flex items-center gap-2 overflow-x-auto bg-dark-950">{completedClips.map((clip, index) => <button key={clip.clipId} onClick={() => setPreviewClipId(clip.clipId)} className={`h-7 px-2 rounded-md text-xs flex items-center gap-1.5 shrink-0 ${previewClip.clipId === clip.clipId ? 'bg-primary-600 text-white' : 'bg-dark-800 text-dark-300 hover:text-white'}`}><Play className="w-3 h-3" />{index + 1}</button>)}<button type="button" onClick={acceptPreviewClip} disabled={previewClip.accepted} className="ml-auto h-7 px-2 rounded-md bg-green-600 hover:bg-green-500 disabled:opacity-50 text-xs shrink-0">{previewClip.accepted ? '已验收' : '验收当前镜头'}</button></div></div>}
+                {finalVideoUrl && <div className="border border-green-500/40 rounded-md overflow-hidden bg-black"><video src={finalVideoUrl} controls className="w-full aspect-video bg-black" /><p className="px-3 py-2 text-xs text-green-300">最终短剧已归档，可在生成历史中查看</p></div>}
                 <div className="space-y-3">{plan.shots.map((shot) => {
                   const generation = clipGenerations[shot.clipId];
                   const isSelected = selectedShotIds.includes(shot.clipId);
@@ -492,7 +526,7 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
             </div>}
           </section>
         </div>
-        {plan && !isGenerating && <footer className="min-h-16 px-5 py-3 border-t border-dark-700 flex flex-wrap items-center justify-between gap-3"><p className="text-xs text-dark-400">{plan.shots.length} 段 · 共 {totalDurationSec} 秒 · 已完成 {completedClips.length}/{plan.shots.length}</p><div className="flex items-center gap-2">{isGeneratingDrama ? <button onClick={stopVideoGeneration} className="h-10 px-4 rounded-md border border-red-500/40 text-red-300 hover:bg-red-500/10 flex items-center gap-2"><Square className="w-4 h-4" />停止生成</button> : <><button onClick={() => void generateShortDrama(failedClipIds)} disabled={!failedClipIds.length || !directorAssets.length} className="h-10 px-3 rounded-md border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 disabled:opacity-40 flex items-center gap-2" title="只重试失败镜头"><RefreshCw className="w-4 h-4" />重试失败 {failedClipIds.length ? `(${failedClipIds.length})` : ''}</button><button onClick={openAssetPreparation} className="h-10 px-4 rounded-md bg-green-600 hover:bg-green-500 flex items-center gap-2"><Clapperboard className="w-4 h-4" />一键生成短剧</button></>}<button onClick={() => { addShotsToCanvas(false); onClose(); }} disabled={isGeneratingDrama} className="h-10 px-4 rounded-md bg-primary-600 hover:bg-primary-500 disabled:opacity-50 flex items-center gap-2"><Plus className="w-4 h-4" />仅加入分镜</button></div></footer>}
+        {plan && !isGenerating && <footer className="min-h-16 px-5 py-3 border-t border-dark-700 flex flex-wrap items-center justify-between gap-3"><p className="text-xs text-dark-400">{plan.shots.length} 段 · 共 {totalDurationSec} 秒 · 已完成 {completedClips.length}/{plan.shots.length}</p><div className="flex items-center gap-2">{isGeneratingDrama ? <button onClick={stopVideoGeneration} className="h-10 px-4 rounded-md border border-red-500/40 text-red-300 hover:bg-red-500/10 flex items-center gap-2"><Square className="w-4 h-4" />停止生成</button> : <><button onClick={() => void generateShortDrama(failedClipIds)} disabled={!failedClipIds.length || !directorAssets.length} className="h-10 px-3 rounded-md border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 disabled:opacity-40 flex items-center gap-2" title="只重试失败镜头"><RefreshCw className="w-4 h-4" />重试失败 {failedClipIds.length ? `(${failedClipIds.length})` : ''}</button><button onClick={openAssetPreparation} className="h-10 px-4 rounded-md bg-green-600 hover:bg-green-500 flex items-center gap-2"><Clapperboard className="w-4 h-4" />一键生成短剧</button></>}<button onClick={() => void composeShortDrama()} disabled={isComposing || completedClips.length !== plan.shots.length || !plan.shots.every((shot) => clipGenerations[shot.clipId]?.accepted)} className="h-10 px-3 rounded-md border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 disabled:opacity-40 flex items-center gap-2" title="验收全部镜头后合成最终短剧">{isComposing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Clapperboard className="w-4 h-4" />}合成最终短剧</button><button onClick={() => { addShotsToCanvas(false); onClose(); }} disabled={isGeneratingDrama} className="h-10 px-4 rounded-md bg-primary-600 hover:bg-primary-500 disabled:opacity-50 flex items-center gap-2"><Plus className="w-4 h-4" />仅加入分镜</button></div></footer>}
       </div>
       {showAssetPreparation && plan && <DirectorAssetPreparation project={project} assets={directorAssets} videoModelAvailable={Boolean(resolveDirectorVideoModel(project))} onChange={setDirectorAssets} onClose={() => setShowAssetPreparation(false)} onConfirm={() => void generateShortDrama()} />}
     </div>
