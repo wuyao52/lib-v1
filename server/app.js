@@ -7,6 +7,7 @@ import { JsonDatabase } from './store.js';
 import { MySqlDatabase } from './mysql-store.js';
 import { createAuthService } from './auth.js';
 import { registerDirectorRoutes } from './director.js';
+import { registerDirectorMediaRoutes } from './director-media.js';
 import { registerSkillRoutes } from './skills.js';
 import { createEmailSenderFromEnv } from './email.js';
 import { registerProjectRoutes } from './projects.js';
@@ -287,6 +288,7 @@ export async function createApp(options = {}) {
   app.use('/api/payments', paymentRouter);
   const directorRouter = express.Router();
   registerDirectorRoutes(directorRouter, { db, requireAuth: auth.requireAuth });
+  registerDirectorMediaRoutes(directorRouter, { db, requireAuth: auth.requireAuth, storage: assetStorage });
   app.use('/api/director', directorRouter);
   const skillRouter = express.Router();
   registerSkillRoutes(skillRouter, { db, requireAuth: auth.requireAuth });
