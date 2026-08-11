@@ -98,6 +98,31 @@ test('manual total duration is sent to the text model', async () => {
   }
 });
 
+test('fixed single-shot duration is enforced in the prompt and normalized plan', async () => {
+  const service = await loadDirectorAIService();
+  const originalFetch = globalThis.fetch;
+  let userMessage = '';
+  globalThis.fetch = async (_url, options) => {
+    userMessage = JSON.parse(options.body).messages[1].content;
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(rawPlan) } }] }), { status: 200 });
+  };
+  try {
+    const plan = await service.generateAIStoryboard({
+      project,
+      story: '这是一个足够长的完整测试剧本，人物在房间里发现一封信并决定面对过去。',
+      voice: 'naturalist',
+      durationMode: 'fixed-shot',
+      fixedShotDurationSec: 10,
+      skills: [],
+    });
+    assert.match(userMessage, /每个分镜固定为 10 秒/);
+    assert.deepEqual(plan.shots.map((shot) => shot.targetDurationSec), [10, 10]);
+    assert.equal(plan.targetDurationSec, 20);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('invalid JSON and missing text model fail explicitly', async () => {
   const service = await loadDirectorAIService();
   const originalFetch = globalThis.fetch;
