@@ -24,6 +24,7 @@ import { startMaintenanceScheduler } from './maintenance.js';
 import { createPaymentService, registerPaymentRoutes } from './payments.js';
 import { createMonitoringService } from './monitoring.js';
 import { createRequestMetrics } from './request-metrics.js';
+import { verifyCapacityReport } from './infrastructure-capacity.js';
 
 const currentDir = fileURLToPath(new URL('.', import.meta.url));
 
@@ -60,7 +61,7 @@ function collectionsForRequest(pathname) {
     auth: ['emailVerifications', 'imageCaptchas'], health: ['generationJobs', 'auditLogs'], director: [], skills: ['skills'], projects: ['projects'],
     assets: ['assets', 'projects'], 'generated-media': ['generatedMedia'], 'generation-history': ['generationHistory'],
     billing: ['balanceTransactions', 'rechargeRequests'], catalog: ['systemApis', 'modelPricing'],
-    admin: ['systemApis', 'modelPricing', 'balanceTransactions', 'rechargeRequests', 'generationJobs', 'generatedMedia', 'auditLogs', 'paymentOrders', 'paymentEvents'],
+    admin: ['systemApis', 'modelPricing', 'balanceTransactions', 'rechargeRequests', 'generationJobs', 'generatedMedia', 'storageQuarantine', 'auditLogs', 'paymentOrders', 'paymentEvents'],
     'system-ai': ['systemApis', 'modelPricing', 'balanceTransactions', 'generationJobs'],
     'user-api-configs': ['userApiConfigs'], 'user-ai': ['userApiConfigs'],
     payments: ['paymentOrders', 'paymentEvents', 'balanceTransactions'],
@@ -173,6 +174,29 @@ export async function createApp(options = {}) {
     res.once('finish', () => requestMetrics.record({ path: req.path, status: res.statusCode, durationMs: Date.now() - startedAt }));
     next();
   });
+
+  app.post('/api/monitoring/capacity', async (req, res, next) => {
+    try {
+      const result = verifyCapacityReport({
+        secret: options.infrastructureCapacitySecret ?? process.env.INFRA_CAPACITY_REPORT_SECRET,
+        timestamp: req.get('x-capacity-timestamp'), signature: req.get('x-capacity-signature'), rawBody: req.rawBody,
+      });
+      if (!result.ok) return res.status(result.error === 'CAPACITY_REPORT_NOT_CONFIGURED' ? 503 : 401).json({ error: result.error });
+      const replayKey = createHash('sha256').update(`capacity:${req.get('x-capacity-signature')}`).digest('hex');
+      let replayAllowed = true;
+      if (db.consumeRateLimit) {
+        const replay = await db.consumeRateLimit(replayKey, 1, 10 * 60 * 1000);
+        replayAllowed = replay.allowed;
+      } else await db.mutate((data) => {
+        const existing = data.rateLimits.find((item) => item.id === replayKey && item.resetAt > Date.now());
+        if (existing) replayAllowed = false;
+        else data.rateLimits.push({ id: replayKey, count: 1, resetAt: Date.now() + 10 * 60 * 1000 });
+      });
+      if (!replayAllowed) return res.status(409).json({ error: 'CAPACITY_REPORT_REPLAYED' });
+      await db.mutate((data) => data.auditLogs.push({ id: randomUUID(), userId: null, action: 'infrastructure_capacity_reported', targetType: 'capacity', targetId: result.report.source, ipAddress: String(req.ip || '').slice(0, 100), userAgent: 'capacity-reporter', metadata: result.report, createdAt: result.report.reportedAt }));
+      return res.status(202).json({ accepted: true, reportedAt: result.report.reportedAt });
+    } catch (error) { return next(error); }
+  });
   app.use(async (req, res, next) => {
     if (!req.path.startsWith('/api/system-ai/') && !req.path.startsWith('/api/user-ai/')) return next();
     if (!req.user) return next();
@@ -217,6 +241,18 @@ export async function createApp(options = {}) {
     const ok = checks.database === 'ok' && checks.objectStorage !== 'error';
     return res.status(ok ? 200 : 503).json({ ok, service: 'ai-drama-studio', checks, monitoring: { configured: monitoring.configured, channels: monitoring.channels, intervalMs: monitoring.intervalMs } });
   });
+  app.get('/api/health/ready', async (_req, res) => {
+    const schema = db.migrationStatus?.() || { ready: true, currentVersion: null, expectedVersion: null, provider: db.kind || 'unknown' };
+    const checks = { database: 'ok', schema: schema.ready ? 'ok' : 'pending', queue: videoQueue ? (videoQueue.isAccepting?.() ? 'ok' : 'draining') : 'disabled' };
+    try { if (db.ping) await db.ping(); } catch { checks.database = 'error'; }
+    const ok = checks.database === 'ok' && checks.schema === 'ok' && !['draining', 'error'].includes(checks.queue);
+    return res.status(ok ? 200 : 503).json({
+      ok, service: 'ai-drama-studio',
+      release: String(process.env.RAILWAY_DEPLOYMENT_ID || process.env.APP_RELEASE || '').trim() || null,
+      commit: String(process.env.RAILWAY_GIT_COMMIT_SHA || process.env.APP_RELEASE_COMMIT || '').trim() || null,
+      checks, schema,
+    });
+  });
   app.get('/api/health/operations', (_req, res) => {
     const snapshot = monitoring.snapshot();
     const alerts = snapshot.alerts.map((item) => item.code);
@@ -230,7 +266,7 @@ export async function createApp(options = {}) {
         queue: alerts.some((code) => code === 'QUEUE_BACKLOG' || code === 'GENERATION_FAILURE_RATE') ? 'error' : 'ok',
         backup: alerts.some((code) => code === 'BACKUP_FAILED' || code === 'BACKUP_STALE') ? 'error' : 'ok',
         restoreDrill: alerts.some((code) => code === 'RESTORE_DRILL_FAILED' || code === 'RESTORE_DRILL_STALE') ? 'error' : 'ok',
-        capacity: alerts.some((code) => code === 'DATABASE_CAPACITY_WARNING' || code === 'OBJECT_STORAGE_CAPACITY_WARNING') ? 'error' : 'ok',
+        capacity: alerts.some((code) => ['DATABASE_CAPACITY_WARNING', 'OBJECT_STORAGE_CAPACITY_WARNING', 'INFRA_VOLUME_CAPACITY_WARNING', 'INFRA_CAPACITY_REPORT_STALE'].includes(code)) ? 'error' : 'ok',
       },
     });
   });
