@@ -22,6 +22,7 @@ const EMPTY_DATABASE = {
   userApiConfigs: [],
   paymentOrders: [],
   paymentEvents: [],
+  storageQuarantine: [],
 };
 
 const TABLES = {
@@ -356,6 +357,27 @@ const TABLES = {
     insert: 'INSERT INTO generated_media (id, user_id, job_id, object_key, mime_type, byte_size, source_url, created_at, expires_at) VALUES ?',
     values: (row) => [row.id, row.userId, row.jobId, row.objectKey, row.mimeType, row.byteSize, row.sourceUrl || null, row.createdAt, row.expiresAt],
   },
+  storageQuarantine: {
+    table: 'storage_quarantine',
+    create: `CREATE TABLE IF NOT EXISTS storage_quarantine (
+      id CHAR(36) PRIMARY KEY,
+      original_key VARCHAR(1024) NOT NULL,
+      quarantine_key VARCHAR(1024) NOT NULL UNIQUE,
+      object_size BIGINT NOT NULL,
+      object_type VARCHAR(32) NOT NULL,
+      status VARCHAR(24) NOT NULL,
+      quarantined_by CHAR(36) NULL,
+      quarantined_at VARCHAR(35) NOT NULL,
+      delete_after VARCHAR(35) NOT NULL,
+      restored_at VARCHAR(35) NULL,
+      deleted_at VARCHAR(35) NULL,
+      error_code VARCHAR(100) NULL,
+      INDEX storage_quarantine_status_delete_idx (status, delete_after)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+    select: 'SELECT id, original_key AS originalKey, quarantine_key AS quarantineKey, object_size AS objectSize, object_type AS objectType, status, quarantined_by AS quarantinedBy, quarantined_at AS quarantinedAt, delete_after AS deleteAfter, restored_at AS restoredAt, deleted_at AS deletedAt, error_code AS errorCode FROM storage_quarantine',
+    insert: 'INSERT INTO storage_quarantine (id, original_key, quarantine_key, object_size, object_type, status, quarantined_by, quarantined_at, delete_after, restored_at, deleted_at, error_code) VALUES ?',
+    values: (row) => [row.id, row.originalKey, row.quarantineKey, row.objectSize, row.objectType, row.status, row.quarantinedBy || null, row.quarantinedAt, row.deleteAfter, row.restoredAt || null, row.deletedAt || null, row.errorCode || null],
+  },
   auditLogs: {
     table: 'audit_logs',
     create: `CREATE TABLE IF NOT EXISTS audit_logs (
@@ -398,6 +420,7 @@ export class MySqlDatabase {
     });
     this.data = structuredClone(EMPTY_DATABASE);
     this.writeQueue = Promise.resolve();
+    this.schemaState = { ready: false, currentVersion: 0, expectedVersion: 0 };
   }
 
   async init() {
@@ -408,7 +431,7 @@ export class MySqlDatabase {
       reset_at BIGINT NOT NULL,
       INDEX rate_limits_reset_idx (reset_at)
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
-    await runSchemaMigrations(this.pool);
+    this.schemaState = await runSchemaMigrations(this.pool);
     for (const [collection, spec] of Object.entries(TABLES)) {
       const [rows] = await this.pool.query(spec.select);
       this.data[collection] = spec.parse ? rows.map(spec.parse) : rows;
@@ -702,6 +725,22 @@ export class MySqlDatabase {
     await operation;
   }
 
+  async releaseGenerationJobLeases(workerId) {
+    const operation = this.writeQueue.then(async () => {
+      await this.pool.query(`UPDATE generation_jobs SET
+        status = CASE WHEN status = 'submitting' THEN 'queued' ELSE status END,
+        lease_owner = NULL, lease_until = 0,
+        next_poll_at = CASE WHEN status = 'processing' THEN 0 ELSE next_poll_at END,
+        updated_at = ?
+        WHERE lease_owner = ? AND status IN ('submitting', 'processing', 'cancel_requested')`, [new Date().toISOString(), workerId]);
+      const spec = TABLES.generationJobs;
+      const [rows] = await this.pool.query(spec.select);
+      this.data.generationJobs = rows.map(spec.parse);
+    });
+    this.writeQueue = operation.catch(() => undefined);
+    await operation;
+  }
+
   async finalizeGenerationJob(jobId, patch, historyRecord = null) {
     let updated = null;
     const operation = this.writeQueue.then(async () => {
@@ -910,6 +949,10 @@ export class MySqlDatabase {
   async ping() {
     await this.pool.query('SELECT 1');
     return true;
+  }
+
+  migrationStatus() {
+    return { ...this.schemaState, provider: 'mysql' };
   }
 
   async storageStats() {
