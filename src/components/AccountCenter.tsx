@@ -344,9 +344,10 @@ function OperationsView({ metrics, operationsAlerts, securityAlerts, storageUsag
 }
 
 function StorageCleanupView({ preview, onPreview, onExecute, currentPassword }: { preview: StorageCleanupPreview | null; onPreview: () => Promise<void>; onExecute: () => Promise<void>; currentPassword: string }) {
+  const formatCleanupBytes = (bytes: number) => bytes >= 1024 ** 2 ? `${(bytes / 1024 ** 2).toFixed(1)} MB` : `${Math.max(0, Math.round(bytes / 1024))} KB`;
   return <section>
     <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="flex items-center gap-2 text-sm font-medium text-white"><Trash2 className="h-4 w-4 text-amber-400" />对象存储安全清理</h3><p className="mt-1 text-xs text-dark-400">仅处理超过保留期的 healthchecks 临时对象；资产、视频、备份和数据库引用不会删除。</p></div><button onClick={() => void onPreview()} className="border border-dark-600 px-3 py-2 text-xs text-dark-200 hover:border-primary-500">生成清理预览</button></div>
-    {preview && <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-y border-dark-700 py-3 text-xs text-dark-300"><span>候选 {preview.summary.candidates} 个 · {formatBytes(preview.summary.candidateBytes)} · 引用保护 {preview.summary.referenced} 个 · 保留 {preview.policy.retentionHours} 小时</span><button disabled={!currentPassword || preview.summary.candidates === 0} onClick={() => void onExecute()} className="border border-red-500/40 px-3 py-2 text-red-300 disabled:border-dark-600 disabled:text-dark-600">确认清理</button></div>}
+    {preview && <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-y border-dark-700 py-3 text-xs text-dark-300"><span>候选 {preview.summary.candidates} 个 · {formatCleanupBytes(preview.summary.candidateBytes)} · 引用保护 {preview.summary.referenced} 个 · 保留 {preview.policy.retentionHours} 小时</span><button disabled={!currentPassword || preview.summary.candidates === 0} onClick={() => void onExecute()} className="border border-red-500/40 px-3 py-2 text-red-300 disabled:border-dark-600 disabled:text-dark-600">确认清理</button></div>}
   </section>;
 }
 
