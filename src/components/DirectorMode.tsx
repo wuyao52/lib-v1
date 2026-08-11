@@ -38,6 +38,7 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
   const [voice, setVoice] = useState('naturalist');
   const [durationMode, setDurationMode] = useState<DirectorDurationMode>('ai');
   const [manualDurationSec, setManualDurationSec] = useState(60);
+  const [fixedShotDurationSec, setFixedShotDurationSec] = useState(10);
   const [plan, setPlan] = useState<StoryboardPlan | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationStage, setGenerationStage] = useState('');
@@ -73,7 +74,8 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
   const configuredDurationRules = videoDurationRules(configuredVideoModel);
   const normalizeShotDuration = (duration: number) => Math.round(normalizeModelDuration(duration, configuredDurationRules, 5, 15));
   const normalizePlanForModel = (sourcePlan: StoryboardPlan): StoryboardPlan => {
-    const shots = sourcePlan.shots.map((shot) => ({ ...shot, targetDurationSec: normalizeShotDuration(shot.targetDurationSec) }));
+    const fixedDuration = normalizeShotDuration(fixedShotDurationSec);
+    const shots = sourcePlan.shots.map((shot) => ({ ...shot, targetDurationSec: durationMode === 'fixed-shot' ? fixedDuration : normalizeShotDuration(shot.targetDurationSec) }));
     return { ...sourcePlan, shots, targetDurationSec: shots.reduce((sum, shot) => sum + shot.targetDurationSec, 0) };
   };
 
@@ -91,6 +93,7 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
     setVoice(session.voice);
     setDurationMode(session.durationMode);
     setManualDurationSec(session.manualDurationSec);
+    setFixedShotDurationSec(session.fixedShotDurationSec || 10);
     setPlan(session.plan);
     setDirectorAssets(session.assets);
     setClipGenerations(session.clips || {});
@@ -103,7 +106,7 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
       const existing = project.settings.directorSession as DirectorSession | undefined;
       const session = {
         id: existing?.id || `director-${plan.projectId}`,
-        story, voice, durationMode, manualDurationSec, plan,
+        story, voice, durationMode, manualDurationSec, fixedShotDurationSec, plan,
         assets: directorAssets, clips: clipGenerations,
         status: isGeneratingDrama ? 'generating' : Object.values(clipGenerations).some((clip) => clip.status === 'error') ? 'partial' : Object.values(clipGenerations).length && Object.values(clipGenerations).every((clip) => clip.status === 'completed') ? 'completed' : 'draft',
         updatedAt: existing?.updatedAt || '',
@@ -113,7 +116,7 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
       updateProjectSettings({ directorSession: { ...session, updatedAt: new Date().toISOString() } });
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [isOpen, project, plan, story, voice, durationMode, manualDurationSec, directorAssets, clipGenerations, isGeneratingDrama, updateProjectSettings]);
+  }, [isOpen, project, plan, story, voice, durationMode, manualDurationSec, fixedShotDurationSec, directorAssets, clipGenerations, isGeneratingDrama, updateProjectSettings]);
 
   useEffect(() => {
     setSelectedBatchIndexes(sourceBatches.map((batch) => batch.index));
@@ -147,6 +150,7 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
         voice,
         durationMode,
         manualDurationSec: durationMode === 'manual' ? manualDurationSec : undefined,
+        fixedShotDurationSec: durationMode === 'fixed-shot' ? normalizeShotDuration(fixedShotDurationSec) : undefined,
         skills: skills.filter((skill) => selectedSkillIds.includes(skill.id)),
         selectedBatchIndexes,
         signal: controller.signal,
@@ -205,7 +209,8 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
         project,
         story,
         voice,
-        durationMode: 'ai',
+        durationMode,
+        fixedShotDurationSec: durationMode === 'fixed-shot' ? normalizeShotDuration(fixedShotDurationSec) : undefined,
         skills: skills.filter((skill) => selectedSkillIds.includes(skill.id)),
         selectedSourceSegmentIds: [...affectedSourceIds],
         signal: controller.signal,
@@ -459,7 +464,7 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
 
             <label className="block"><span className="text-xs text-dark-300">导演声音</span><select value={voice} onChange={(event) => setVoice(event.target.value)} className="mt-2 w-full h-10 px-3 bg-dark-950 border border-dark-700 rounded-lg text-sm">{voiceOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
 
-            <div><span className="text-xs text-dark-300">总时长</span><div className="mt-2 grid grid-cols-2 h-10 rounded-md border border-dark-700 overflow-hidden" role="group" aria-label="总时长模式"><button type="button" onClick={() => setDurationMode('ai')} className={durationMode === 'ai' ? 'bg-primary-600 text-white text-sm' : 'bg-dark-950 text-dark-300 text-sm hover:bg-dark-800'}>AI 推荐</button><button type="button" onClick={() => setDurationMode('manual')} className={durationMode === 'manual' ? 'bg-primary-600 text-white text-sm' : 'bg-dark-950 text-dark-300 text-sm hover:bg-dark-800'}>手动指定</button></div>{durationMode === 'manual' && <label className="mt-3 flex items-center justify-between gap-3"><span className="text-xs text-dark-400">目标秒数</span><input aria-label="目标总时长（秒）" type="number" min={10} max={600} value={manualDurationSec} onChange={(event) => setManualDurationSec(Math.min(600, Math.max(10, Number(event.target.value) || 10)))} className="w-28 h-9 px-3 bg-dark-950 border border-dark-700 rounded-md text-sm" /></label>}</div>
+            <div><span className="text-xs text-dark-300">时长模式</span><div className="mt-2 grid grid-cols-3 h-10 rounded-md border border-dark-700 overflow-hidden" role="group" aria-label="时长模式"><button type="button" onClick={() => setDurationMode('ai')} className={durationMode === 'ai' ? 'bg-primary-600 text-white text-sm' : 'bg-dark-950 text-dark-300 text-sm hover:bg-dark-800'}>AI 推荐</button><button type="button" onClick={() => setDurationMode('manual')} className={durationMode === 'manual' ? 'bg-primary-600 text-white text-sm' : 'bg-dark-950 text-dark-300 text-sm hover:bg-dark-800'}>总时长</button><button type="button" onClick={() => setDurationMode('fixed-shot')} className={durationMode === 'fixed-shot' ? 'bg-primary-600 text-white text-sm' : 'bg-dark-950 text-dark-300 text-sm hover:bg-dark-800'}>固定单镜</button></div>{durationMode === 'manual' && <label className="mt-3 flex items-center justify-between gap-3"><span className="text-xs text-dark-400">目标总时长</span><input aria-label="目标总时长（秒）" type="number" min={10} max={600} value={manualDurationSec} onChange={(event) => setManualDurationSec(Math.min(600, Math.max(10, Number(event.target.value) || 10)))} className="w-28 h-9 px-3 bg-dark-950 border border-dark-700 rounded-md text-sm" /></label>}{durationMode === 'fixed-shot' && <label className="mt-3 flex items-center justify-between gap-3"><span className="text-xs text-dark-400">每个分镜</span><VideoDurationControl value={fixedShotDurationSec} onChange={(duration) => setFixedShotDurationSec(normalizeShotDuration(duration))} rules={configuredDurationRules} fallbackMin={5} fallbackMax={15} compact ariaLabel="固定单分镜时长" /></label>}</div>
 
             {story.trim().length >= 20 && <fieldset><div className="mb-2 text-xs text-dark-300">生成批次</div><div className="mb-2 grid grid-cols-2 gap-2"><button type="button" onClick={() => setSelectedBatchIndexes(sourceBatches.map((batch) => batch.index))} disabled={isGenerating || selectedBatchIndexes.length === sourceBatches.length} className="h-9 px-2 rounded-md border border-dark-600 bg-dark-800 text-xs text-dark-200 hover:border-primary-500 hover:bg-primary-500/10 disabled:opacity-40 flex items-center justify-center gap-1.5"><CheckSquare2 className="w-3.5 h-3.5" />全选批次</button><button type="button" onClick={() => setSelectedBatchIndexes([])} disabled={isGenerating || selectedBatchIndexes.length === 0} className="h-9 px-2 rounded-md border border-dark-600 bg-dark-800 text-xs text-dark-200 hover:border-red-500/60 hover:bg-red-500/10 disabled:opacity-40 flex items-center justify-center gap-1.5"><Square className="w-3.5 h-3.5" />取消全选</button></div><div className="max-h-40 space-y-1.5 overflow-y-auto pr-1">{sourceBatches.map((batch) => { const selected = selectedBatchIndexes.includes(batch.index); const firstId = batch.segments[0]?.id; const lastId = batch.segments[batch.segments.length - 1]?.id; const preview = batch.segments.map((segment) => segment.text).join(' ').slice(0, 46); return <label key={batch.index} className={`flex items-start gap-2 rounded-md border px-2.5 py-2 text-xs cursor-pointer ${selected ? 'border-primary-500/50 bg-primary-500/10 text-dark-200' : 'border-dark-700 bg-dark-950 text-dark-400'}`}><input type="checkbox" checked={selected} disabled={isGenerating} onChange={() => setSelectedBatchIndexes((current) => current.includes(batch.index) ? current.filter((index) => index !== batch.index) : [...current, batch.index].sort((a, b) => a - b))} className="mt-0.5 accent-primary-500" /><span className="min-w-0"><span className="block text-primary-300">批次 {batch.index + 1} · {firstId}{firstId !== lastId ? `–${lastId}` : ''}</span><span className="mt-0.5 block truncate">{preview}</span></span></label>; })}</div></fieldset>}
 
