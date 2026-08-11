@@ -2,16 +2,18 @@ import { type DragEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, CheckCircle2, CheckSquare2, Clapperboard, Copy, FileText, Loader2, Play, Plus, RefreshCw, Square, Upload, X } from 'lucide-react';
 import { apiRequest } from '@/services/apiClient';
 import { generateAIStoryboard, getStoryboardSourceBatches, mergeRegeneratedStoryboardShots, parseDirectorScript, type DirectorDurationMode } from '@/services/directorAIService';
-import { generateDirectorVideos, resolveDirectorVideoModel, type DirectorClipGeneration } from '@/services/directorVideoService';
+import { estimateDirectorVideoCostCents, generateDirectorVideos, resolveDirectorVideoModel, type DirectorClipGeneration } from '@/services/directorVideoService';
 import { copyDirectorText, formatStoryboardForClipboard, readDirectorScriptFile } from '@/services/directorDocumentService';
-import { createInitialDirectorAssets } from '@/services/directorAssetService';
+import { createInitialDirectorAssets, materializeDirectorAssets } from '@/services/directorAssetService';
 import useProjectStore from '@/store/useProjectStore';
-import type { StoryboardPlan } from '@/types/director';
+import type { DirectorSession, StoryboardPlan } from '@/types/director';
 import type { DirectorAsset } from '@/types/directorAsset';
 import type { UserSkill } from '@/types/skill';
 import DirectorAssetPreparation from '@/components/DirectorAssetPreparation';
 import VideoDurationControl from '@/components/VideoDurationControl';
 import { normalizeModelDuration, videoDurationRules } from '@/services/modelDuration';
+import { refreshManagedModel } from '@/services/managedModelCatalog';
+import { useAuth } from '@/auth/AuthContext';
 
 interface DirectorModeProps {
   isOpen: boolean;
@@ -30,7 +32,8 @@ const wait = (milliseconds: number) => new Promise((resolve) => setTimeout(resol
 const planDuration = (plan: StoryboardPlan | null) => plan?.shots.reduce((sum, shot) => sum + shot.targetDurationSec, 0) || 0;
 
 export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
-  const { project, addNode, onConnect, updateNodeData } = useProjectStore();
+  const { project, addNode, onConnect, updateNodeData, updateProjectSettings } = useProjectStore();
+  const { refresh: refreshUser } = useAuth();
   const [story, setStory] = useState('');
   const [voice, setVoice] = useState('naturalist');
   const [durationMode, setDurationMode] = useState<DirectorDurationMode>('ai');
@@ -56,11 +59,13 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
   const videoController = useRef<AbortController | null>(null);
   const scriptFileInput = useRef<HTMLInputElement | null>(null);
   const scriptDragDepth = useRef(0);
+  const restoredProjectId = useRef<string | null>(null);
 
   const completedClips = useMemo(() => plan?.shots
     .map((shot) => clipGenerations[shot.clipId])
     .filter((clip): clip is DirectorClipGeneration & { videoUrl: string } => clip?.status === 'completed' && Boolean(clip.videoUrl)) || [], [plan, clipGenerations]);
   const previewClip = completedClips.find((clip) => clip.clipId === previewClipId) || completedClips[0];
+  const failedClipIds = useMemo(() => plan?.shots.map((shot) => shot.clipId).filter((clipId) => clipGenerations[clipId]?.status === 'error') || [], [plan, clipGenerations]);
   const totalDurationSec = planDuration(plan);
   const parsedScript = useMemo(() => parseDirectorScript(story), [story]);
   const sourceBatches = useMemo(() => getStoryboardSourceBatches(story), [story]);
@@ -76,6 +81,39 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
     if (!isOpen) return;
     apiRequest<{ skills: UserSkill[] }>('/api/skills').then((result) => setSkills(result.skills)).catch(() => setSkills([]));
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || !project || restoredProjectId.current === project.id) return;
+    restoredProjectId.current = project.id;
+    const session = project.settings.directorSession;
+    if (!session) return;
+    setStory(session.story);
+    setVoice(session.voice);
+    setDurationMode(session.durationMode);
+    setManualDurationSec(session.manualDurationSec);
+    setPlan(session.plan);
+    setDirectorAssets(session.assets);
+    setClipGenerations(session.clips || {});
+    setNotice('已恢复上次导演会话，可继续未完成镜头');
+  }, [isOpen, project]);
+
+  useEffect(() => {
+    if (!isOpen || !project || !plan || restoredProjectId.current !== project.id) return;
+    const timer = window.setTimeout(() => {
+      const existing = project.settings.directorSession as DirectorSession | undefined;
+      const session = {
+        id: existing?.id || `director-${plan.projectId}`,
+        story, voice, durationMode, manualDurationSec, plan,
+        assets: directorAssets, clips: clipGenerations,
+        status: isGeneratingDrama ? 'generating' : Object.values(clipGenerations).some((clip) => clip.status === 'error') ? 'partial' : Object.values(clipGenerations).length && Object.values(clipGenerations).every((clip) => clip.status === 'completed') ? 'completed' : 'draft',
+        updatedAt: existing?.updatedAt || '',
+      } as DirectorSession;
+      const comparable = (value: DirectorSession | undefined) => value ? JSON.stringify({ ...value, updatedAt: '' }) : '';
+      if (comparable(existing) === comparable(session)) return;
+      updateProjectSettings({ directorSession: { ...session, updatedAt: new Date().toISOString() } });
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [isOpen, project, plan, story, voice, durationMode, manualDurationSec, directorAssets, clipGenerations, isGeneratingDrama, updateProjectSettings]);
 
   useEffect(() => {
     setSelectedBatchIndexes(sourceBatches.map((batch) => batch.index));
@@ -320,19 +358,46 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
     setShowAssetPreparation(true);
   };
 
-  const generateShortDrama = async () => {
+  const generateShortDrama = async (requestedClipIds?: string[]) => {
     if (!plan || isGeneratingDrama) return;
     if (!resolveDirectorVideoModel(project)) return;
     setError('');
+    const configuredModel = resolveDirectorVideoModel(project);
+    if (!configuredModel) return;
+    const clipIds = requestedClipIds?.length ? requestedClipIds : plan.shots.map((shot) => shot.clipId);
+    const selectedPlan: StoryboardPlan = requestedClipIds?.length
+      ? { ...plan, shots: plan.shots.filter((shot) => clipIds.includes(shot.clipId)) }
+      : plan;
+    if (!selectedPlan.shots.length) return;
+    try {
+      const latestUser = await apiRequest<{ balanceCents: number }>('/api/billing/me');
+      const effectiveModel = await refreshManagedModel(configuredModel);
+      const estimatedCost = estimateDirectorVideoCostCents(selectedPlan, effectiveModel);
+      if (estimatedCost !== null && Number(latestUser.balanceCents || 0) < estimatedCost) {
+        setError(`余额不足：本批预计需要 ¥${(estimatedCost / 100).toFixed(2)}，当前余额 ¥${(Number(latestUser.balanceCents || 0) / 100).toFixed(2)}`);
+        return;
+      }
+    } catch (preflightError) {
+      setError(preflightError instanceof Error ? preflightError.message : '生成前检查失败');
+      return;
+    }
     setShowAssetPreparation(false);
+    let generationAssets: DirectorAsset[];
+    try {
+      generationAssets = await materializeDirectorAssets(directorAssets);
+    } catch (assetError) {
+      setError(assetError instanceof Error ? assetError.message : '资产上传失败，未开始生成');
+      return;
+    }
+    setDirectorAssets(generationAssets);
     setPreviewClipId(null);
-    setClipGenerations(Object.fromEntries(plan.shots.map((shot) => [shot.clipId, { clipId: shot.clipId, status: 'queued' }])));
+    setClipGenerations((current) => Object.fromEntries(plan.shots.map((shot) => [shot.clipId, clipIds.includes(shot.clipId) ? { clipId: shot.clipId, status: 'queued' } : current[shot.clipId] || { clipId: shot.clipId, status: 'queued' }])));
     addShotsToCanvas(true);
     const controller = new AbortController();
     videoController.current = controller;
     setIsGeneratingDrama(true);
     try {
-      await generateDirectorVideos({ plan, project, assets: directorAssets, signal: controller.signal, onUpdate: updateClipGeneration });
+      await generateDirectorVideos({ plan: selectedPlan, project, assets: generationAssets, clipIds, signal: controller.signal, onUpdate: updateClipGeneration });
       if (controller.signal.aborted) setNotice('短剧生成已停止');
     } catch (generationError) {
       if (controller.signal.aborted || (generationError instanceof Error && generationError.name === 'AbortError')) {
@@ -343,6 +408,7 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
     } finally {
       videoController.current = null;
       setIsGeneratingDrama(false);
+      void refreshUser();
     }
   };
 
@@ -421,7 +487,7 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
             </div>}
           </section>
         </div>
-        {plan && !isGenerating && <footer className="min-h-16 px-5 py-3 border-t border-dark-700 flex flex-wrap items-center justify-between gap-3"><p className="text-xs text-dark-400">{plan.shots.length} 段 · 共 {totalDurationSec} 秒 · 已完成 {completedClips.length}/{plan.shots.length}</p><div className="flex items-center gap-2">{isGeneratingDrama ? <button onClick={stopVideoGeneration} className="h-10 px-4 rounded-md border border-red-500/40 text-red-300 hover:bg-red-500/10 flex items-center gap-2"><Square className="w-4 h-4" />停止生成</button> : <button onClick={openAssetPreparation} className="h-10 px-4 rounded-md bg-green-600 hover:bg-green-500 flex items-center gap-2"><Clapperboard className="w-4 h-4" />一键生成短剧</button>}<button onClick={() => { addShotsToCanvas(false); onClose(); }} disabled={isGeneratingDrama} className="h-10 px-4 rounded-md bg-primary-600 hover:bg-primary-500 disabled:opacity-50 flex items-center gap-2"><Plus className="w-4 h-4" />仅加入分镜</button></div></footer>}
+        {plan && !isGenerating && <footer className="min-h-16 px-5 py-3 border-t border-dark-700 flex flex-wrap items-center justify-between gap-3"><p className="text-xs text-dark-400">{plan.shots.length} 段 · 共 {totalDurationSec} 秒 · 已完成 {completedClips.length}/{plan.shots.length}</p><div className="flex items-center gap-2">{isGeneratingDrama ? <button onClick={stopVideoGeneration} className="h-10 px-4 rounded-md border border-red-500/40 text-red-300 hover:bg-red-500/10 flex items-center gap-2"><Square className="w-4 h-4" />停止生成</button> : <><button onClick={() => void generateShortDrama(failedClipIds)} disabled={!failedClipIds.length || !directorAssets.length} className="h-10 px-3 rounded-md border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 disabled:opacity-40 flex items-center gap-2" title="只重试失败镜头"><RefreshCw className="w-4 h-4" />重试失败 {failedClipIds.length ? `(${failedClipIds.length})` : ''}</button><button onClick={openAssetPreparation} className="h-10 px-4 rounded-md bg-green-600 hover:bg-green-500 flex items-center gap-2"><Clapperboard className="w-4 h-4" />一键生成短剧</button></>}<button onClick={() => { addShotsToCanvas(false); onClose(); }} disabled={isGeneratingDrama} className="h-10 px-4 rounded-md bg-primary-600 hover:bg-primary-500 disabled:opacity-50 flex items-center gap-2"><Plus className="w-4 h-4" />仅加入分镜</button></div></footer>}
       </div>
       {showAssetPreparation && plan && <DirectorAssetPreparation project={project} assets={directorAssets} videoModelAvailable={Boolean(resolveDirectorVideoModel(project))} onChange={setDirectorAssets} onClose={() => setShowAssetPreparation(false)} onConfirm={() => void generateShortDrama()} />}
     </div>
