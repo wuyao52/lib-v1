@@ -27,7 +27,7 @@ interface GenerateDirectorVideosOptions {
   plan: StoryboardPlan;
   project: DramaProject;
   signal: AbortSignal;
-  onUpdate: (update: DirectorClipGeneration) => void;
+  onUpdate: (update: DirectorClipGeneration) => void | Promise<DirectorClipGeneration | void>;
   assets: DirectorAsset[];
   clipIds?: string[];
 }
@@ -38,6 +38,8 @@ export const directorClipIdempotencyKey = (projectId: string, planId: string, cl
   `director:${projectId}:${planId}:${clipId}`;
 
 export const canGenerateNextDirectorClip = (result: DirectorClipGeneration) => result.status === 'completed';
+export const canUseDirectorClipForContinuation = (result: DirectorClipGeneration) =>
+  result.status === 'completed' && result.accepted === true && Boolean(result.tailFrameUrl);
 
 export function estimateDirectorVideoCostCents(plan: StoryboardPlan, model: AIModelConfig): number | null {
   const unitPrice = Number(model.unitPriceCents);
@@ -110,12 +112,21 @@ export async function generateDirectorVideos({ plan, project, signal, onUpdate, 
       const frame = await apiRequest<{ dataUrl: string }>('/api/director/tail-frame', { method: 'POST', body: JSON.stringify({ url: update.videoUrl }), signal });
       const [materializedFrame] = await materializeReferenceImages([frame.dataUrl], signal);
       previousTailFrameUrl = materializedFrame;
-      const accepted = { ...update, accepted: true, tailFrameUrl: materializedFrame, continuityMode: 'provider-continuation' as const };
-      results[results.length - 1] = accepted;
-      onUpdate(accepted);
+      const pendingAcceptance = { ...update, accepted: false, tailFrameUrl: materializedFrame, continuityMode: 'provider-continuation' as const };
+      const acceptedResult = await onUpdate(pendingAcceptance);
+      const accepted = Boolean(acceptedResult && acceptedResult.accepted === true);
+      results[results.length - 1] = { ...pendingAcceptance, accepted };
+      previousTailFrameUrl = canUseDirectorClipForContinuation(results[results.length - 1]) ? materializedFrame : undefined;
+      if (!accepted) break;
+      onUpdate(results[results.length - 1]);
     } catch (tailError) {
       previousTailFrameUrl = undefined;
-      onUpdate({ ...update, accepted: false, continuityMode: 'asset-only', continuityWarning: `已生成，但尾帧连续性不可用：${tailError instanceof Error ? tailError.message : '尾帧提取失败'}` });
+      const pendingAcceptance = { ...update, accepted: false, continuityMode: 'asset-only' as const, continuityWarning: `已生成，但尾帧连续性不可用：${tailError instanceof Error ? tailError.message : '尾帧提取失败'}` };
+      const acceptedResult = await onUpdate(pendingAcceptance);
+      const accepted = Boolean(acceptedResult && acceptedResult.accepted === true);
+      results[results.length - 1] = { ...pendingAcceptance, accepted };
+      if (!accepted) break;
+      onUpdate(results[results.length - 1]);
     }
   }
 
