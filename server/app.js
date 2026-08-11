@@ -150,7 +150,7 @@ export async function createApp(options = {}) {
     db, vault, fetchImpl: options.fetchImpl, autoStart: options.videoQueueAutoStart !== false, generatedMedia,
   });
   const resourceGuard = options.resourceGuard || createResourceGuard({ db });
-  const requestMetrics = options.requestMetrics || createRequestMetrics();
+  const requestMetrics = options.requestMetrics || createRequestMetrics({ store: db.kind === 'mysql' ? db : null });
 
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
