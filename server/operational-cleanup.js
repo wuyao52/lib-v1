@@ -27,5 +27,8 @@ export async function cleanupOperationalData({ db, now = new Date(), auditRetent
       removed[collection] = ids.size;
     }
   });
+  removed.requestMetricBuckets = typeof db.cleanupRequestMetricBuckets === 'function'
+    ? await db.cleanupRequestMetricBuckets(nowMs - boundedDays(process.env.REQUEST_METRIC_RETENTION_DAYS, 7, 1, 90) * DAY)
+    : 0;
   return { removed, auditRetentionDays: auditDays, batchSize: limit };
 }
