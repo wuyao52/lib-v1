@@ -98,6 +98,7 @@ export interface ProjectSettings {
     videoModel: AIModelConfig;  // 视频生成模型
     imageModel: AIModelConfig;  // 图片生成模型
   };
+  directorSession?: import('./director').DirectorSession;
 }
 
 // 生成请求
