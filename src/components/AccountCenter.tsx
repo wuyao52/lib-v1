@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Activity, Archive, Check, Coins, Copy, Eye, EyeOff, Pencil, Play, Plus, RefreshCw, Shield, Trash2, Wallet, X } from 'lucide-react';
+import { Activity, Archive, Check, Cloud, Coins, Copy, Database, Eye, EyeOff, Pencil, Play, Plus, RefreshCw, Shield, Trash2, Wallet, X } from 'lucide-react';
 import { apiRequest } from '@/services/apiClient';
 import { useAuth, type AuthUser } from '@/auth/AuthContext';
 
@@ -14,7 +14,7 @@ type QueueOverview = {
   config: { globalConcurrency: number; userConcurrency: number; apiConcurrency: number; maxQueuePerUser: number } | null;
   recent: Array<{ id: string; userId: string; modelId: string; status: string; progress: number; errorCode?: string | null; createdAt: string }>;
 };
-type AdminMetrics = { recent: { total: number; completed: number; failed: number; activeUsers: number; failureRate: number; queueBacklog: number; averageQueueWaitMs: number | null } };
+type AdminMetrics = { http: { total: number; p95Ms: number | null; p99Ms: number | null; errorRate: number; serverErrorRate: number; managedAi: { total: number; errorRate: number; serverErrorRate: number } } | null; recent: { total: number; completed: number; failed: number; activeUsers: number; failureRate: number; queueBacklog: number; averageQueueWaitMs: number | null } };
 type OperationsAlerts = { healthy: boolean; alerts: Array<{ code: string; severity: string; count: number; total?: number; rate?: number; threshold?: number; thresholdMinutes?: number; thresholdHours?: number }>; delayed: Array<{ jobId: string; userId: string; apiId: string; updatedAt: string }>; backup?: { lastSuccessAt: string | null; lastFailureAt: string | null } };
 type SecurityAlerts = { alerts: { loginBruteForce: Array<{ ipAddress: string; count: number }>; privilegedActions: number; modelCalls: number } };
 type BackupOverview = {
@@ -25,6 +25,7 @@ type BackupOverview = {
   backups: Array<{ key: string; size: number; lastModified: string | null; kind: 'drill' | 'scheduled'; verification: string | null }>;
   events: Array<{ id: string; action: string; objectKey: string | null; createdAt: string }>;
 };
+type StorageUsage = { provider: string; objects: number; bytes: number; warning: boolean; warningBytes: number | null; databaseWarning: boolean; databaseWarningBytes: number | null; database: { provider: string; bytes: number; rows: number } | null; groups: Array<{ prefix: string; objects: number; bytes: number }> };
 type ProviderFlags = Record<'alipay' | 'wechat', boolean>;
 type BillingProps = { balance: number; transactions: Transaction[]; recharges: Recharge[]; amount: string; setAmount: (value: string) => void; providers: ProviderFlags; provider: 'alipay' | 'wechat'; setProvider: (value: 'alipay' | 'wechat') => void; orders: PaymentOrder[]; startPayment: () => void };
 type AdminUsersProps = { users: AuthUser[]; currentUserId?: string; recharges: Recharge[]; balanceAdjustments: Record<string, string>; setBalanceAdjustments: (value: Record<string, string>) => void; currentPassword: string; act: (job: () => Promise<unknown>, success: string) => Promise<void> };
@@ -64,6 +65,7 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
   const [operationsAlerts, setOperationsAlerts] = useState<OperationsAlerts | null>(null);
   const [securityAlerts, setSecurityAlerts] = useState<SecurityAlerts | null>(null);
   const [backupOverview, setBackupOverview] = useState<BackupOverview | null>(null);
+  const [storageUsage, setStorageUsage] = useState<StorageUsage | null>(null);
 
   const loadBackups = useCallback(async () => {
     const data = await apiRequest<BackupOverview>('/api/admin/backups');
@@ -82,7 +84,7 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
       setPaymentProviders(providerData.providers); setPaymentOrders(orderData.orders);
       return;
     }
-    const [apiData, priceData, userData, rechargeData, queueData, paymentData, metricData, operationData, securityData, backupData] = await Promise.all([
+    const [apiData, priceData, userData, rechargeData, queueData, paymentData, metricData, operationData, securityData, backupData, storageData] = await Promise.all([
       apiRequest<{ apis: SystemApi[] }>('/api/admin/system-apis'),
       apiRequest<{ pricing: Pricing[] }>('/api/admin/pricing'),
       apiRequest<{ users: AuthUser[] }>('/api/admin/users'),
@@ -93,12 +95,14 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
       apiRequest<OperationsAlerts>('/api/admin/operations-alerts'),
       apiRequest<SecurityAlerts>('/api/admin/security-alerts'),
       apiRequest<BackupOverview>('/api/admin/backups').catch(() => null),
+      apiRequest<StorageUsage>('/api/admin/storage-usage').catch(() => null),
     ]);
     setApis(apiData.apis); setPricing(priceData.pricing); setUsers(userData.users); setRecharges(rechargeData.recharges);
     setQueue(queueData);
     setPaymentOrders(paymentData.orders);
     setMetrics(metricData); setOperationsAlerts(operationData); setSecurityAlerts(securityData);
     setBackupOverview(backupData);
+    setStorageUsage(storageData);
   }, [mode]);
 
   useEffect(() => { load().catch((error) => setMessage(error.message)); }, [load]);
@@ -278,7 +282,7 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
             <div className="mt-3 divide-y divide-dark-700">{pricing.map((item) => <div key={item.id} className="py-2 flex justify-between text-sm"><span className="text-dark-200">{item.displayName} <small className="text-dark-500">{item.modelId} · {item.category}{item.category === 'video' && (item.allowedDurationsSec?.length ? ` · 仅 ${item.allowedDurationsSec.join('、')} 秒` : (item.minDurationSec || item.maxDurationSec) ? ` · ${item.minDurationSec || 1}-${item.maxDurationSec || 3600} 秒` : '')}</small></span><span className="flex items-center gap-3 text-green-400">{yuan(item.unitPriceCents)} / {item.billingUnit === 'second' ? '秒' : item.billingUnit === 'image' ? '张' : '次'}<button title="编辑" className="text-primary-400" onClick={() => { setEditingPriceId(item.id); setPriceForm({ apiId: item.apiId, modelId: item.modelId, displayName: item.displayName, category: item.category, billingUnit: item.billingUnit, priceYuan: String(item.unitPriceCents / 100), minDurationSec: String(item.minDurationSec || ''), maxDurationSec: String(item.maxDurationSec || ''), allowedDurations: (item.allowedDurationsSec || []).join(',') }); void loadModelsForPricing(item.apiId, false); }}><Pencil className="w-4 h-4" /></button><button title="删除" className="text-red-400" onClick={() => act(() => apiRequest(`/api/admin/pricing/${item.id}`, { method: 'DELETE' }), '定价已删除')}><Trash2 className="w-4 h-4" /></button></span></div>)}</div>
           </section>
 
-          <OperationsView metrics={metrics} operationsAlerts={operationsAlerts} securityAlerts={securityAlerts} />
+          <OperationsView metrics={metrics} operationsAlerts={operationsAlerts} securityAlerts={securityAlerts} storageUsage={storageUsage} />
           <BackupManagementView overview={backupOverview} currentPassword={adminPassword} onStart={startBackupDrill} onRefresh={loadBackups} setMessage={setMessage} />
           <QueueView overview={queue} users={users} />
           <AdminPaymentOrders orders={paymentOrders} users={users} currentPassword={adminPassword} act={act} />
@@ -293,19 +297,27 @@ function BillingView({ balance, transactions, recharges, amount, setAmount, prov
   return <><div className="grid md:grid-cols-[1fr_2fr] gap-5"><div><div className="text-xs text-dark-400">当前余额</div><div className="text-3xl text-white font-semibold mt-1">{yuan(balance)}</div><div className="mt-5 space-y-3"><div className="grid grid-cols-2 gap-2"><button disabled={!providers.alipay} onClick={() => setProvider('alipay')} className={`border px-3 py-2 text-sm ${provider === 'alipay' ? 'border-blue-500 bg-blue-500/10 text-blue-300' : 'border-dark-600 text-dark-300'} disabled:text-dark-600`}>支付宝</button><button disabled={!providers.wechat} onClick={() => setProvider('wechat')} className={`border px-3 py-2 text-sm ${provider === 'wechat' ? 'border-green-500 bg-green-500/10 text-green-300' : 'border-dark-600 text-dark-300'} disabled:text-dark-600`}>微信支付</button></div><input className={field} type="number" min="1" max="100000" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="充值金额（元）" /><button disabled={!providers[provider] || !Number(amount)} className="w-full bg-primary-600 py-2 text-sm text-white disabled:bg-dark-700 disabled:text-dark-500" onClick={startPayment}>前往安全支付</button>{!providers.alipay && !providers.wechat && <p className="text-xs text-amber-300">支付商户参数尚未在 Railway 配置，当前不能创建在线订单。</p>}</div></div><div><h3 className="text-sm text-white mb-2">余额流水</h3><div className="divide-y divide-dark-700">{transactions.map((item: Transaction) => <div key={item.id} className="py-2 flex justify-between text-sm"><span className="text-dark-300">{item.description}<small className="block text-dark-500">{new Date(item.createdAt).toLocaleString()}</small></span><span className={item.amountCents >= 0 ? 'text-green-400' : 'text-red-400'}>{item.amountCents >= 0 ? '+' : ''}{yuan(item.amountCents)}</span></div>)}</div></div></div><div><h3 className="text-sm text-white mb-2">在线支付订单</h3><div className="divide-y divide-dark-700">{orders.map((item: PaymentOrder) => <div key={item.id} className="py-2 flex justify-between text-sm text-dark-300"><span>{item.provider === 'alipay' ? '支付宝' : '微信支付'} · {yuan(item.amountCents)}<small className="block text-dark-500">{new Date(item.createdAt).toLocaleString()}</small></span><span>{item.status === 'paid' ? '已到账' : item.status === 'pending' ? '待支付' : item.status}</span></div>)}</div>{recharges.length > 0 && <p className="mt-3 text-xs text-dark-500">历史人工充值申请保留只读记录，共 {recharges.length} 条。</p>}</div></>;
 }
 
-function OperationsView({ metrics, operationsAlerts, securityAlerts }: { metrics: AdminMetrics | null; operationsAlerts: OperationsAlerts | null; securityAlerts: SecurityAlerts | null }) {
+function OperationsView({ metrics, operationsAlerts, securityAlerts, storageUsage }: { metrics: AdminMetrics | null; operationsAlerts: OperationsAlerts | null; securityAlerts: SecurityAlerts | null; storageUsage: StorageUsage | null }) {
+  const formatBytes = (bytes: number) => bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(2)} GB` : bytes >= 1024 ** 2 ? `${(bytes / 1024 ** 2).toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`;
   const stats = [
     ['队列积压', String(metrics?.recent.queueBacklog ?? 0)],
     ['24h 失败率', `${((metrics?.recent.failureRate ?? 0) * 100).toFixed(1)}%`],
     ['平均等待', metrics?.recent.averageQueueWaitMs == null ? '-' : `${Math.round(metrics.recent.averageQueueWaitMs / 1000)} 秒`],
     ['活跃用户', String(metrics?.recent.activeUsers ?? 0)],
+    ['API P95', metrics?.http?.p95Ms == null ? '-' : `${metrics.http.p95Ms} ms`],
+    ['AI 网关错误', `${((metrics?.http?.managedAi.errorRate ?? 0) * 100).toFixed(1)}%`],
   ];
   const labels: Record<string, string> = { QUEUE_BACKLOG: '队列积压', GENERATION_FAILURE_RATE: '生成失败率偏高', PROCESSING_DELAYED: '任务处理延迟', BACKUP_FAILED: '最近备份失败', BACKUP_STALE: '备份超过时限' };
+  const alertLabels = { ...labels, DATABASE_CAPACITY_WARNING: '数据库容量接近上限', OBJECT_STORAGE_CAPACITY_WARNING: '对象存储容量接近上限' };
   return <section className="border border-dark-600 bg-dark-900/30 p-4 rounded">
     <div className="flex items-center justify-between gap-3"><div><h3 className="flex items-center gap-2 text-sm font-medium text-white"><Activity className="h-4 w-4 text-cyan-400" />运行监测</h3><p className="mt-1 text-xs text-dark-400">每 5 秒自动刷新，仅展示聚合指标与任务标识。</p></div><span className={operationsAlerts?.healthy ? 'text-xs text-green-400' : 'text-xs text-amber-300'}>{operationsAlerts?.healthy ? '运行正常' : '需要处理告警'}</span></div>
     <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">{stats.map(([label, value]) => <div key={label} className="border border-dark-600 bg-dark-900 px-3 py-2 rounded"><p className="text-[10px] text-dark-500">{label}</p><p className="mt-1 text-lg text-white">{value}</p></div>)}</div>
-    <div className="mt-3 space-y-1 text-xs">{operationsAlerts?.alerts.length ? operationsAlerts.alerts.map((alert) => <div key={alert.code} className="flex items-center justify-between gap-3 border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-amber-200 rounded"><span>{labels[alert.code] || alert.code}</span><span>{alert.code === 'GENERATION_FAILURE_RATE' ? `${alert.count}/${alert.total} (${((alert.rate || 0) * 100).toFixed(1)}%)` : `${alert.count} 项`}</span></div>) : <p className="text-dark-400">暂无运营告警</p>}</div>
+    <div className="mt-3 space-y-1 text-xs">{operationsAlerts?.alerts.length ? operationsAlerts.alerts.map((alert) => <div key={alert.code} className="flex items-center justify-between gap-3 border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-amber-200 rounded"><span>{alertLabels[alert.code as keyof typeof alertLabels] || alert.code}</span><span>{alert.code === 'GENERATION_FAILURE_RATE' ? `${alert.count}/${alert.total} (${((alert.rate || 0) * 100).toFixed(1)}%)` : `${alert.count} 项`}</span></div>) : <p className="text-dark-400">暂无运营告警</p>}</div>
     <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-dark-400"><span>登录异常 IP：{securityAlerts?.alerts.loginBruteForce.length ?? 0}</span><span>敏感管理操作：{securityAlerts?.alerts.privilegedActions ?? 0}</span><span>系统模型调用：{securityAlerts?.alerts.modelCalls ?? 0}</span></div>
+    <div className="mt-4 grid gap-2 md:grid-cols-2">
+      <div className={`flex items-center gap-3 rounded border px-3 py-2 ${storageUsage?.databaseWarning ? 'border-amber-500/40 bg-amber-500/5' : 'border-dark-600 bg-dark-900'}`}><Database className="h-4 w-4 text-cyan-400" /><div><p className="text-[10px] text-dark-500">数据库占用</p><p className="text-sm text-white">{storageUsage?.database ? formatBytes(storageUsage.database.bytes) : '-'} <span className="text-xs text-dark-500">{storageUsage?.database?.rows ?? 0} 行</span></p></div></div>
+      <div className={`flex items-center gap-3 rounded border px-3 py-2 ${storageUsage?.warning ? 'border-amber-500/40 bg-amber-500/5' : 'border-dark-600 bg-dark-900'}`}><Cloud className="h-4 w-4 text-green-400" /><div><p className="text-[10px] text-dark-500">对象存储占用</p><p className="text-sm text-white">{storageUsage ? formatBytes(storageUsage.bytes) : '-'} <span className="text-xs text-dark-500">{storageUsage?.objects ?? 0} 个对象</span></p></div></div>
+    </div>
   </section>;
 }
 
