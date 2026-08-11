@@ -3,6 +3,7 @@ import { discoverSystemApi } from './api-discovery.js';
 import { verifyPassword } from './auth.js';
 import { runBackupDrill } from './backup-drill.js';
 import { summarizeStoredObjects } from './object-storage.js';
+import { createStorageCleanupPlan, referencedStorageKeys } from './storage-cleanup.js';
 
 const CATEGORIES = new Set(['text', 'image', 'video']);
 const BILLING_UNITS = new Set(['request', 'image', 'second']);
@@ -131,6 +132,7 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
   router.use(requireSystem);
   let backupDrillRunning = false;
   let storageUsageCache = null;
+  const cleanupPreviews = new Map();
   const audit = async (req, action, targetType, targetId, metadata = {}) => {
     const record = { id: randomUUID(), userId: req.user.id, action, targetType, targetId: targetId || null, ipAddress: String(req.ip || '').slice(0, 100), userAgent: String(req.get('user-agent') || '').slice(0, 300), metadata: { requestId: req.requestId || null, ...metadata }, createdAt: nowIso() };
     await db.mutate((data) => data.auditLogs.push(record));
@@ -187,6 +189,52 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
         databaseWarning: databaseWarningBytes > 0 && Number(storageUsageCache.database?.bytes || 0) >= databaseWarningBytes,
         databaseWarningBytes: databaseWarningBytes || null,
       });
+    } catch (error) { return next(error); }
+  });
+  router.get('/storage-cleanup/preview', async (req, res, next) => {
+    try {
+      if (!backupStorage?.list || !backupStorage?.delete) return res.status(503).json({ error: 'OBJECT_STORAGE_UNAVAILABLE', message: 'Object storage is not configured' });
+      const objects = await backupStorage.list('');
+      const plan = createStorageCleanupPlan({
+        objects,
+        referencedKeys: referencedStorageKeys(db),
+        retentionHours: Math.max(1, Number(process.env.HEALTHCHECK_OBJECT_RETENTION_HOURS || 24)),
+        maxDeletes: Math.min(1000, Math.max(1, Number(process.env.STORAGE_CLEANUP_MAX_OBJECTS || 200))),
+      });
+      const previewId = randomUUID();
+      const expiresAt = Date.now() + 5 * 60 * 1000;
+      cleanupPreviews.set(previewId, { userId: req.user.id, expiresAt, keys: plan.candidates.map((item) => item.key) });
+      for (const [id, preview] of cleanupPreviews) if (preview.expiresAt <= Date.now()) cleanupPreviews.delete(id);
+      return res.json({ previewId, expiresAt: new Date(expiresAt).toISOString(), summary: plan.summary, policy: plan.policy });
+    } catch (error) { return next(error); }
+  });
+  router.post('/storage-cleanup/execute', async (req, res, next) => {
+    try {
+      if (!(await requireCurrentPassword(req, res, 'storage_cleanup', 'object_storage', null))) return;
+      if (!backupStorage?.list || !backupStorage?.delete) return res.status(503).json({ error: 'OBJECT_STORAGE_UNAVAILABLE', message: 'Object storage is not configured' });
+      const preview = cleanupPreviews.get(String(req.body?.previewId || ''));
+      if (!preview || preview.userId !== req.user.id || preview.expiresAt <= Date.now()) return res.status(409).json({ error: 'CLEANUP_PREVIEW_EXPIRED', message: 'Cleanup preview is missing or expired; create a new preview' });
+      const objects = await backupStorage.list('');
+      const plan = createStorageCleanupPlan({
+        objects,
+        referencedKeys: referencedStorageKeys(db),
+        retentionHours: Math.max(1, Number(process.env.HEALTHCHECK_OBJECT_RETENTION_HOURS || 24)),
+        maxDeletes: Math.min(1000, Math.max(1, Number(process.env.STORAGE_CLEANUP_MAX_OBJECTS || 200))),
+      });
+      const currentKeys = plan.candidates.map((item) => item.key);
+      if (currentKeys.length !== preview.keys.length || currentKeys.some((key, index) => key !== preview.keys[index])) {
+        cleanupPreviews.delete(String(req.body.previewId));
+        return res.status(409).json({ error: 'CLEANUP_PREVIEW_CHANGED', message: 'Object storage changed; review a fresh cleanup preview' });
+      }
+      let deleted = 0; let deletedBytes = 0;
+      for (const candidate of plan.candidates) {
+        await backupStorage.delete(candidate.key);
+        deleted += 1; deletedBytes += candidate.size;
+      }
+      cleanupPreviews.delete(String(req.body.previewId));
+      storageUsageCache = null;
+      await audit(req, 'storage_cleanup_completed', 'object_storage', null, { deleted, deletedBytes, prefix: plan.policy.prefix });
+      return res.json({ deleted, deletedBytes, prefix: plan.policy.prefix });
     } catch (error) { return next(error); }
   });
   router.post('/backups/drill', async (req, res) => {
