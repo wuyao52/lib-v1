@@ -86,6 +86,7 @@ export default function Toolbar() {
             {nodeTypes.map((nodeType) => (
               <button
                 key={nodeType.type}
+                data-testid={`add-${nodeType.type}-node`}
                 onClick={() => handleAddNode(nodeType.type)}
                 className={`
                   flex items-center gap-1.5 px-3 py-1.5 rounded-lg
