@@ -5,6 +5,8 @@ import type { DirectorAsset } from '@/types/directorAsset';
 import { compileDirectorAssetContext, getDirectorAssetReferenceImages, validateDirectorAssets } from '@/services/directorAssetService';
 import { normalizeModelDuration, videoDurationRules } from '@/services/modelDuration';
 import { refreshManagedModel } from '@/services/managedModelCatalog';
+import { apiRequest } from '@/services/apiClient';
+import { materializeReferenceImages } from '@/services/assetService';
 
 export type DirectorClipStatus = 'queued' | 'generating' | 'completed' | 'error';
 
@@ -13,6 +15,9 @@ export interface DirectorClipGeneration {
   status: DirectorClipStatus;
   previousClipId?: string;
   continuityMode?: 'asset-only' | 'provider-continuation';
+  accepted?: boolean;
+  tailFrameUrl?: string;
+  continuityWarning?: string;
   videoUrl?: string;
   thumbnail?: string;
   error?: string;
@@ -57,8 +62,8 @@ export function resolveDirectorVideoModel(project: DramaProject): AIModelConfig 
   return candidates.find((model): model is AIModelConfig => Boolean((model?.managed || model?.credentialManaged || model?.apiKey) && model.baseUrl && model.modelId)) || null;
 }
 
-function generationSettings(project: DramaProject, model: AIModelConfig, plan: StoryboardPlan, shot: DirectorShot, assets: DirectorAsset[]) {
-  const images = getDirectorAssetReferenceImages(assets);
+function generationSettings(project: DramaProject, model: AIModelConfig, plan: StoryboardPlan, shot: DirectorShot, assets: DirectorAsset[], continuityImage?: string) {
+  const images = [...getDirectorAssetReferenceImages(assets), ...(continuityImage ? [continuityImage] : [])];
   const duration = normalizeModelDuration(shot.targetDurationSec, videoDurationRules(model), 5, 15);
   return {
     aspect_ratio: project.settings.aspectRatio,
@@ -81,6 +86,7 @@ export async function generateDirectorVideos({ plan, project, signal, onUpdate, 
   if (!validation.valid) throw new Error(`资产准备未完成：${validation.errors.join('；')}`);
   const assetContext = compileDirectorAssetContext(assets);
   const results: DirectorClipGeneration[] = [];
+  let previousTailFrameUrl: string | undefined;
 
   const selectedIds = clipIds?.length ? new Set(clipIds) : null;
   const shots = selectedIds ? plan.shots.filter((shot) => selectedIds.has(shot.clipId)) : plan.shots;
@@ -88,17 +94,29 @@ export async function generateDirectorVideos({ plan, project, signal, onUpdate, 
     const shot = shots[index];
     if (signal.aborted) break;
     const previousClipId = index > 0 ? shots[index - 1].clipId : undefined;
-    onUpdate({ clipId: shot.clipId, status: 'generating', previousClipId, continuityMode: 'asset-only' });
+    const continuityMode = previousTailFrameUrl ? 'provider-continuation' : 'asset-only';
+    onUpdate({ clipId: shot.clipId, status: 'generating', previousClipId, continuityMode });
     const prompt = `${shot.prompt}\n\n资产连续性合同（不得擅自改变）：\n${assetContext}`;
-    const response = await service.generateVideo(prompt, generationSettings(project, model, plan, shot, assets), signal);
+    const response = await service.generateVideo(prompt, generationSettings(project, model, plan, shot, assets, previousTailFrameUrl), signal);
     if (signal.aborted) break;
 
     const update: DirectorClipGeneration = response.success && response.data?.url
-      ? { clipId: shot.clipId, status: 'completed', previousClipId, continuityMode: 'asset-only', videoUrl: response.data.url, thumbnail: response.data.thumbnail }
-      : { clipId: shot.clipId, status: 'error', previousClipId, continuityMode: 'asset-only', error: response.error || '视频生成失败' };
+      ? { clipId: shot.clipId, status: 'completed', previousClipId, continuityMode, videoUrl: response.data.url, thumbnail: response.data.thumbnail }
+      : { clipId: shot.clipId, status: 'error', previousClipId, continuityMode, error: response.error || '视频生成失败' };
     results.push(update);
     onUpdate(update);
     if (!canGenerateNextDirectorClip(update)) break;
+    try {
+      const frame = await apiRequest<{ dataUrl: string }>('/api/director/tail-frame', { method: 'POST', body: JSON.stringify({ url: update.videoUrl }), signal });
+      const [materializedFrame] = await materializeReferenceImages([frame.dataUrl], signal);
+      previousTailFrameUrl = materializedFrame;
+      const accepted = { ...update, accepted: true, tailFrameUrl: materializedFrame, continuityMode: 'provider-continuation' as const };
+      results[results.length - 1] = accepted;
+      onUpdate(accepted);
+    } catch (tailError) {
+      previousTailFrameUrl = undefined;
+      onUpdate({ ...update, accepted: false, continuityMode: 'asset-only', continuityWarning: `已生成，但尾帧连续性不可用：${tailError instanceof Error ? tailError.message : '尾帧提取失败'}` });
+    }
   }
 
   const summary = summarizeDirectorClipResults(results, shots.length);
