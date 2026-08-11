@@ -88,7 +88,7 @@ export default function ProjectEditor() {
       {/* 顶部导航栏 */}
       <header className="relative z-50 h-14 flex items-center justify-between px-4 bg-dark-900/80 backdrop-blur-xl border-b border-dark-700/50">
         <div className="flex items-center gap-3">
-          <button onClick={closeProject} className="p-2 rounded-lg hover:bg-dark-700 text-dark-400 hover:text-white transition-colors">
+          <button data-testid="close-project" onClick={closeProject} className="p-2 rounded-lg hover:bg-dark-700 text-dark-400 hover:text-white transition-colors">
             <ArrowLeft className="w-5 h-5" />
           </button>
           <div className="w-px h-6 bg-dark-600" />
@@ -131,7 +131,7 @@ export default function ProjectEditor() {
             <Redo2 className="w-4 h-4" />
           </button>
           <div className="w-px h-6 bg-dark-600 mx-1" />
-          <button onClick={saveCurrentProject} className="p-2 rounded-lg hover:bg-dark-700 text-dark-300 hover:text-white transition-colors" title="保存 (Ctrl+S)">
+          <button data-testid="save-project" onClick={saveCurrentProject} className="p-2 rounded-lg hover:bg-dark-700 text-dark-300 hover:text-white transition-colors" title="保存 (Ctrl+S)">
             <Save className="w-4 h-4" />
           </button>
           <button onClick={exportProject} className="p-2 rounded-lg hover:bg-dark-700 text-dark-300 hover:text-white transition-colors" title="导出">
@@ -147,7 +147,7 @@ export default function ProjectEditor() {
           <button onClick={() => setShowSkillManager(true)} className="p-2 rounded-lg hover:bg-dark-700 text-dark-300 hover:text-white transition-colors" title="Skill 工作区">
             <Library className="w-4 h-4" />
           </button>
-          <button onClick={() => setShowGenerationHistory(true)} className="p-2 rounded-lg hover:bg-dark-700 text-dark-300 hover:text-white transition-colors" title="生成历史">
+          <button data-testid="open-generation-history" onClick={() => setShowGenerationHistory(true)} className="p-2 rounded-lg hover:bg-dark-700 text-dark-300 hover:text-white transition-colors" title="生成历史">
             <History className="w-4 h-4" />
           </button>
           <button onClick={toggleSettings} className="p-2 rounded-lg hover:bg-dark-700 text-dark-300 hover:text-white transition-colors" title="项目设置">
