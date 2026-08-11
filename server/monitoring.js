@@ -1,4 +1,5 @@
 import { createHmac, randomUUID } from 'node:crypto';
+import { summarizeStoredObjects } from './object-storage.js';
 
 const nowIso = () => new Date().toISOString();
 
@@ -10,7 +11,7 @@ function publicHttpsUrl(value) {
   } catch { return null; }
 }
 
-function operationSnapshot(db, env = process.env, now = Date.now()) {
+function operationSnapshot(db, env = process.env, now = Date.now(), capacity = {}) {
   const since = now - 24 * 60 * 60 * 1000;
   const recent = db.read('generationJobs').filter((job) => Date.parse(job.createdAt) >= since);
   const backlog = db.read('generationJobs').filter((job) => ['queued', 'submitting', 'processing'].includes(job.status)).length;
@@ -29,6 +30,8 @@ function operationSnapshot(db, env = process.env, now = Date.now()) {
   const backupFailed = latestFailure && (!latestBackup || latestFailure.createdAt > latestBackup.createdAt);
   const restoreDrillStale = !latestRestoreDrill || now - Date.parse(latestRestoreDrill.createdAt) >= restoreDrillMaxAgeHours * 60 * 60 * 1000;
   const restoreDrillFailed = latestRestoreFailure && (!latestRestoreDrill || latestRestoreFailure.createdAt > latestRestoreDrill.createdAt);
+  const databaseThreshold = Math.max(0, Number(env.ALERT_DATABASE_WARNING_BYTES || 0));
+  const objectStorageThreshold = Math.max(0, Number(env.OBJECT_STORAGE_WARNING_BYTES || 0));
   const alerts = [
     ...(backlog >= queueThreshold ? [{ code: 'QUEUE_BACKLOG', count: backlog, threshold: queueThreshold }] : []),
     ...(recent.length && failureRate >= failureThreshold ? [{ code: 'GENERATION_FAILURE_RATE', count: failed, total: recent.length, rate: Number(failureRate.toFixed(4)), threshold: failureThreshold }] : []),
@@ -36,15 +39,18 @@ function operationSnapshot(db, env = process.env, now = Date.now()) {
     ...(backupStale ? [{ code: 'BACKUP_STALE', thresholdHours: backupMaxAgeHours, lastSuccessAt: latestBackup?.createdAt || null }] : []),
     ...(restoreDrillFailed ? [{ code: 'RESTORE_DRILL_FAILED', occurredAt: latestRestoreFailure.createdAt }] : []),
     ...(restoreDrillStale ? [{ code: 'RESTORE_DRILL_STALE', thresholdHours: restoreDrillMaxAgeHours, lastSuccessAt: latestRestoreDrill?.createdAt || null }] : []),
+    ...(databaseThreshold > 0 && Number(capacity.database?.bytes || 0) >= databaseThreshold ? [{ code: 'DATABASE_CAPACITY_WARNING', bytes: capacity.database.bytes, threshold: databaseThreshold }] : []),
+    ...(objectStorageThreshold > 0 && Number(capacity.objectStorage?.bytes || 0) >= objectStorageThreshold ? [{ code: 'OBJECT_STORAGE_CAPACITY_WARNING', bytes: capacity.objectStorage.bytes, threshold: objectStorageThreshold }] : []),
   ];
   return {
     alerts, backlog, failed, total: recent.length, failureRate: Number(failureRate.toFixed(4)),
     backup: { lastSuccessAt: latestBackup?.createdAt || null, lastFailureAt: latestFailure?.createdAt || null },
     restoreDrill: { lastSuccessAt: latestRestoreDrill?.createdAt || null, lastFailureAt: latestRestoreFailure?.createdAt || null },
+    capacity,
   };
 }
 
-export function createMonitoringService({ db, fetchImpl = fetch, env = process.env, emailSender = null } = {}) {
+export function createMonitoringService({ db, storage = null, fetchImpl = fetch, env = process.env, emailSender = null } = {}) {
   const endpoint = publicHttpsUrl(env.ALERT_WEBHOOK_URL);
   const secret = String(env.ALERT_WEBHOOK_SECRET || '');
   const intervalMs = Math.max(60_000, (Number.parseInt(env.MONITORING_INTERVAL_MINUTES || '5', 10) || 5) * 60_000);
@@ -53,6 +59,17 @@ export function createMonitoringService({ db, fetchImpl = fetch, env = process.e
   let localRecoverySent = true;
   let localTestSent = false;
   let timer = null;
+  let capacity = {};
+
+  const refreshCapacity = async () => {
+    const [databaseResult, storageResult] = await Promise.allSettled([
+      typeof db.storageStats === 'function' ? db.storageStats() : null,
+      storage && typeof storage.list === 'function' ? storage.list('') : null,
+    ]);
+    if (databaseResult.status === 'fulfilled' && databaseResult.value) capacity.database = databaseResult.value;
+    if (storageResult.status === 'fulfilled' && storageResult.value) capacity.objectStorage = { provider: storage.provider || 'unknown', ...summarizeStoredObjects(storageResult.value) };
+    return capacity;
+  };
 
   const lock = async (namespace, value, windowMs) => {
     if (!db.consumeRateLimit) return true;
@@ -105,7 +122,8 @@ export function createMonitoringService({ db, fetchImpl = fetch, env = process.e
 
   const check = async () => {
     if (typeof db.refreshCollections === 'function') await db.refreshCollections(['generationJobs', 'auditLogs', 'users']);
-    const snapshot = operationSnapshot(db, env);
+    await refreshCapacity();
+    const snapshot = operationSnapshot(db, env, Date.now(), capacity);
     const fingerprint = createHmac('sha256', 'monitoring-alert-fingerprint').update(JSON.stringify(snapshot.alerts)).digest('hex');
     const latest = latestNotification();
 
@@ -142,13 +160,13 @@ export function createMonitoringService({ db, fetchImpl = fetch, env = process.e
     const deployment = String(env.RAILWAY_DEPLOYMENT_ID || env.APP_RELEASE || 'local');
     if (localTestSent || !(await lock('test', deployment, 30 * 24 * 60 * 60 * 1000))) return { delivered: false, reason: 'ALREADY_SENT' };
     localTestSent = true;
-    return dispatch('operations.test', { operations: operationSnapshot(db, env) });
+    return dispatch('operations.test', { operations: operationSnapshot(db, env, Date.now(), capacity) });
   };
 
   return {
     check,
-    snapshot: () => operationSnapshot(db, env),
-    test: () => dispatch('operations.test', { operations: operationSnapshot(db, env) }),
+    snapshot: () => operationSnapshot(db, env, Date.now(), capacity),
+    test: () => dispatch('operations.test', { operations: operationSnapshot(db, env, Date.now(), capacity) }),
     testOnce,
     start() { if (!timer) { timer = setInterval(() => void check().catch((error) => console.error('Monitoring notification failed:', error.message)), intervalMs); timer.unref?.(); } return intervalMs; },
     stop() { if (timer) clearInterval(timer); timer = null; },
@@ -156,5 +174,6 @@ export function createMonitoringService({ db, fetchImpl = fetch, env = process.e
     channels: { webhook: Boolean(endpoint && secret.length >= 24), email: Boolean(emailSender && emailRecipients().length) },
     intervalMs,
     repeatMs,
+    refreshCapacity,
   };
 }
