@@ -203,8 +203,8 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
       });
       const previewId = randomUUID();
       const expiresAt = Date.now() + 5 * 60 * 1000;
+      for (const [id, preview] of cleanupPreviews) if (preview.userId === req.user.id || preview.expiresAt <= Date.now()) cleanupPreviews.delete(id);
       cleanupPreviews.set(previewId, { userId: req.user.id, expiresAt, keys: plan.candidates.map((item) => item.key) });
-      for (const [id, preview] of cleanupPreviews) if (preview.expiresAt <= Date.now()) cleanupPreviews.delete(id);
       return res.json({ previewId, expiresAt: new Date(expiresAt).toISOString(), summary: plan.summary, policy: plan.policy });
     } catch (error) { return next(error); }
   });
@@ -214,6 +214,7 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
       if (!backupStorage?.list || !backupStorage?.delete) return res.status(503).json({ error: 'OBJECT_STORAGE_UNAVAILABLE', message: 'Object storage is not configured' });
       const preview = cleanupPreviews.get(String(req.body?.previewId || ''));
       if (!preview || preview.userId !== req.user.id || preview.expiresAt <= Date.now()) return res.status(409).json({ error: 'CLEANUP_PREVIEW_EXPIRED', message: 'Cleanup preview is missing or expired; create a new preview' });
+      cleanupPreviews.delete(String(req.body.previewId));
       const objects = await backupStorage.list('');
       const plan = createStorageCleanupPlan({
         objects,
@@ -223,7 +224,6 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
       });
       const currentKeys = plan.candidates.map((item) => item.key);
       if (currentKeys.length !== preview.keys.length || currentKeys.some((key, index) => key !== preview.keys[index])) {
-        cleanupPreviews.delete(String(req.body.previewId));
         return res.status(409).json({ error: 'CLEANUP_PREVIEW_CHANGED', message: 'Object storage changed; review a fresh cleanup preview' });
       }
       let deleted = 0; let deletedBytes = 0;
@@ -231,7 +231,6 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
         await backupStorage.delete(candidate.key);
         deleted += 1; deletedBytes += candidate.size;
       }
-      cleanupPreviews.delete(String(req.body.previewId));
       storageUsageCache = null;
       await audit(req, 'storage_cleanup_completed', 'object_storage', null, { deleted, deletedBytes, prefix: plan.policy.prefix });
       return res.json({ deleted, deletedBytes, prefix: plan.policy.prefix });
