@@ -353,5 +353,5 @@ export async function createApp(options = {}) {
     res.status(500).json({ error: 'INTERNAL_ERROR', message: '服务器内部错误' });
   });
 
-  return { app, db, auth, videoQueue, maintenance, monitoring, assetStorage, requestMetrics };
+  return { app, db, auth, videoQueue, directorCompositionQueue, maintenance, monitoring, assetStorage, requestMetrics };
 }
