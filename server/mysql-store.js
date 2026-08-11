@@ -1,5 +1,6 @@
 import mysql from 'mysql2/promise';
 import { createHash, randomUUID } from 'node:crypto';
+import { runSchemaMigrations } from './schema-migrations.js';
 
 const EMPTY_DATABASE = {
   users: [],
@@ -407,34 +408,12 @@ export class MySqlDatabase {
       reset_at BIGINT NOT NULL,
       INDEX rate_limits_reset_idx (reset_at)
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
-    await this.ensureColumn('users', 'role', "VARCHAR(16) NOT NULL DEFAULT 'user'");
-    await this.ensureColumn('users', 'balance_cents', 'BIGINT NOT NULL DEFAULT 0');
-    await this.ensureColumn('model_pricing', 'min_duration_sec', 'INT NULL');
-    await this.ensureColumn('model_pricing', 'max_duration_sec', 'INT NULL');
-    await this.ensureColumn('model_pricing', 'allowed_durations_sec', 'JSON NULL');
-    await this.ensureColumn('projects', 'version', 'INT NOT NULL DEFAULT 1');
-    await this.ensureColumn('assets', 'object_key', 'VARCHAR(1024) NULL');
-    await this.ensureColumn('assets', 'storage_provider', "VARCHAR(20) NOT NULL DEFAULT 'database'");
-    await this.ensureColumn('generation_jobs', 'lease_owner', 'VARCHAR(64) NULL');
-    await this.ensureColumn('generation_jobs', 'lease_until', 'BIGINT NOT NULL DEFAULT 0');
-    await this.ensureColumn('generation_jobs', 'submitted_at', 'VARCHAR(35) NULL');
-    await this.ensureColumn('user_api_configs', 'enabled', 'TINYINT(1) NOT NULL DEFAULT 1');
-    await this.ensureColumn('user_api_configs', 'disabled_at', 'VARCHAR(35) NULL');
-    await this.pool.query('ALTER TABLE `assets` MODIFY COLUMN `data_base64` MEDIUMTEXT NULL');
-    await this.pool.query('ALTER TABLE `audit_logs` MODIFY COLUMN `user_id` CHAR(36) NULL');
+    await runSchemaMigrations(this.pool);
     for (const [collection, spec] of Object.entries(TABLES)) {
       const [rows] = await this.pool.query(spec.select);
       this.data[collection] = spec.parse ? rows.map(spec.parse) : rows;
     }
     return this;
-  }
-
-  async ensureColumn(table, column, definition) {
-    const [rows] = await this.pool.query(
-      'SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ? LIMIT 1',
-      [table, column],
-    );
-    if (!rows.length) await this.pool.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
   }
 
   read(collection) {
@@ -936,6 +915,26 @@ export class MySqlDatabase {
   async storageStats() {
     const [rows] = await this.pool.query('SELECT COALESCE(SUM(data_length + index_length), 0) AS bytes, COALESCE(SUM(table_rows), 0) AS rows FROM information_schema.tables WHERE table_schema = DATABASE()');
     return { provider: 'mysql', bytes: Number(rows[0]?.bytes || 0), rows: Number(rows[0]?.rows || 0) };
+  }
+
+  async writeRequestMetricBuckets(buckets) {
+    if (!buckets?.length) return;
+    const values = buckets.map((item) => [item.bucketStart, item.scope, item.statusClass, item.latencyBucketMs, item.count, item.durationTotalMs]);
+    await this.pool.query(`INSERT INTO request_metric_buckets
+      (bucket_start, scope, status_class, latency_bucket_ms, request_count, duration_total_ms) VALUES ?
+      ON DUPLICATE KEY UPDATE request_count = request_count + VALUES(request_count), duration_total_ms = duration_total_ms + VALUES(duration_total_ms)`, [values]);
+  }
+
+  async readRequestMetricBuckets(since) {
+    const [rows] = await this.pool.query(`SELECT bucket_start AS bucketStart, scope, status_class AS statusClass,
+      latency_bucket_ms AS latencyBucketMs, request_count AS count, duration_total_ms AS durationTotalMs
+      FROM request_metric_buckets WHERE bucket_start >= ?`, [since]);
+    return rows.map((row) => ({ ...row, bucketStart: Number(row.bucketStart), latencyBucketMs: Number(row.latencyBucketMs), count: Number(row.count), durationTotalMs: Number(row.durationTotalMs) }));
+  }
+
+  async cleanupRequestMetricBuckets(before) {
+    const [result] = await this.pool.query('DELETE FROM request_metric_buckets WHERE bucket_start < ?', [before]);
+    return Number(result.affectedRows || 0);
   }
 
   async close() {
