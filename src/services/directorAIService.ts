@@ -58,6 +58,14 @@ const asTextArray = (value: unknown) => Array.isArray(value)
 const clampDuration = (value: unknown) => Math.min(15, Math.max(5, Math.round(Number(value) || 5)));
 export const normalizeFixedShotDuration = (value: unknown) => clampDuration(value);
 
+export function findFixedDurationViolations(raw: any, input: Pick<GenerateAIStoryboardInput, 'durationMode' | 'fixedShotDurationSec'>): string[] {
+  if (input.durationMode !== 'fixed-shot' || !Array.isArray(raw?.shots)) return [];
+  const fixedDuration = normalizeFixedShotDuration(input.fixedShotDurationSec);
+  return raw.shots.flatMap((shot: any, index: number) => (
+    Number(shot?.targetDurationSec) === fixedDuration ? [] : [String(shot?.title || `镜头 ${index + 1}`)]
+  ));
+}
+
 const METADATA_SECTION_PATTERN = /^(?:剧本信息|基本信息|项目信息|项目说明|创作说明|故事信息|故事大纲|剧情大纲|故事梗概|剧情梗概|内容梗概|人物形象|人物设定|角色设定|人物小传|角色小传|人物介绍|角色介绍|人物关系|角色关系|世界观|背景设定|美术设定|视觉设定|风格设定|创作背景|主题|核心主题|受众定位|制作信息|备注|附录)(?:\s*[:：].*)?$/i;
 const BODY_SECTION_PATTERN = /^(?:剧本正文|剧情正文|故事正文|正文内容|分场剧本|分场正文|分集正文|场次正文|正文)(?:\s*[:：]\s*(.*))?$/i;
 
@@ -562,10 +570,12 @@ export async function generateAIStoryboard(input: GenerateAIStoryboardInput): Pr
     let tooManyShots = false;
     let ungroundedShotTitles: string[] = [];
     let outOfOrderEvidenceTitles: string[] = [];
-    for (let attempt = 0; attempt < 2 && (missingIds.length || tooFewShots || tooManyShots || ungroundedShotTitles.length || outOfOrderEvidenceTitles.length); attempt += 1) {
+    let fixedDurationViolationTitles: string[] = [];
+    for (let attempt = 0; attempt < 2 && (missingIds.length || tooFewShots || tooManyShots || ungroundedShotTitles.length || outOfOrderEvidenceTitles.length || fixedDurationViolationTitles.length); attempt += 1) {
       input.onProgress?.(`AI 正在读取原剧本第 ${batchIndex + 1}/${displayBatchCount} 批（${expectedIds[0]}–${expectedIds[expectedIds.length - 1]}）…`, Math.round(5 + (selectionIndex / batchEntries.length) * 80));
       const fidelityIssue = attempt > 0
-        ? ungroundedShotTitles.length ? `这些镜头没有可核验的原文证据：${ungroundedShotTitles.join('、')}`
+        ? fixedDurationViolationTitles.length ? `用户要求每个分镜固定为 ${normalizeFixedShotDuration(input.fixedShotDurationSec)} 秒，但这些镜头返回了其他时长：${fixedDurationViolationTitles.join('、')}`
+          : ungroundedShotTitles.length ? `这些镜头没有可核验的原文证据：${ungroundedShotTitles.join('、')}`
           : outOfOrderEvidenceTitles.length ? `这些镜头引用了倒序或重复的原文证据：${outOfOrderEvidenceTitles.join('、')}`
           : tooManyShots ? `镜头数超过证据校验上限 ${validatedMaxShots(batch)}` : ''
         : '';
@@ -590,6 +600,7 @@ export async function generateAIStoryboard(input: GenerateAIStoryboardInput): Pr
         tooManyShots = false;
         ungroundedShotTitles = [];
         outOfOrderEvidenceTitles = [];
+        fixedDurationViolationTitles = [];
         continue;
       }
       const declaredIds = new Set(asTextArray(raw?.coveredSourceIds));
@@ -599,6 +610,7 @@ export async function generateAIStoryboard(input: GenerateAIStoryboardInput): Pr
       tooManyShots = Array.isArray(raw?.shots) && raw.shots.length > validatedMaxShots(batch);
       ungroundedShotTitles = findUngroundedShotTitles(raw, batch);
       outOfOrderEvidenceTitles = findOutOfOrderEvidenceTitles(raw, batch);
+      fixedDurationViolationTitles = findFixedDurationViolations(raw, input);
     }
     if (invalidJson) {
       input.onProgress?.(responseWasTruncated ? '完整 JSON 被截断，正在切换逐镜头续传…' : 'JSON 格式不稳定，正在切换逐镜头续传…', Math.round(5 + (selectionIndex / batchEntries.length) * 80));
@@ -611,14 +623,16 @@ export async function generateAIStoryboard(input: GenerateAIStoryboardInput): Pr
       tooManyShots = Array.isArray(raw?.shots) && raw.shots.length > validatedMaxShots(batch);
       ungroundedShotTitles = findUngroundedShotTitles(raw, batch);
       outOfOrderEvidenceTitles = findOutOfOrderEvidenceTitles(raw, batch);
+      fixedDurationViolationTitles = findFixedDurationViolations(raw, input);
     }
-    if (missingIds.length || tooFewShots || tooManyShots || ungroundedShotTitles.length || outOfOrderEvidenceTitles.length) {
+    if (missingIds.length || tooFewShots || tooManyShots || ungroundedShotTitles.length || outOfOrderEvidenceTitles.length || fixedDurationViolationTitles.length) {
       const detail = missingIds.length
         ? `遗漏 ${missingIds.join('、')}`
         : tooFewShots ? `仅生成 ${raw?.shots?.length || 0} 个镜头，低于最低 ${minimumShotCount} 个`
         : tooManyShots ? `生成 ${raw.shots.length} 个镜头，超过当前原文证据允许的 ${validatedMaxShots(batch)} 个`
         : ungroundedShotTitles.length ? `镜头 ${ungroundedShotTitles.join('、')} 没有当前原文中的逐字证据`
-        : `镜头 ${outOfOrderEvidenceTitles.join('、')} 引用了倒序或重复的原文证据`;
+        : outOfOrderEvidenceTitles.length ? `镜头 ${outOfOrderEvidenceTitles.join('、')} 引用了倒序或重复的原文证据`
+        : `镜头 ${fixedDurationViolationTitles.join('、')} 未使用用户指定的固定 ${normalizeFixedShotDuration(input.fixedShotDurationSec)} 秒`;
       throw new Error(`AI 分镜与原剧情一致性校验失败：${detail}。本次结果已拒绝`);
     }
 
