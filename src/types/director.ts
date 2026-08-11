@@ -49,6 +49,7 @@ export interface DirectorSession {
   plan: StoryboardPlan;
   assets: DirectorAsset[];
   clips: Record<string, DirectorClipGeneration>;
+  finalVideoUrl?: string;
   status: 'draft' | 'generating' | 'partial' | 'completed' | 'cancelled';
   updatedAt: string;
 }
