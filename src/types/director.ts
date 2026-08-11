@@ -45,6 +45,7 @@ export interface DirectorSession {
   voice: string;
   durationMode: DirectorDurationMode;
   manualDurationSec: number;
+  fixedShotDurationSec: number;
   plan: StoryboardPlan;
   assets: DirectorAsset[];
   clips: Record<string, DirectorClipGeneration>;
@@ -52,4 +53,4 @@ export interface DirectorSession {
   updatedAt: string;
 }
 
-export type DirectorDurationMode = 'ai' | 'manual';
+export type DirectorDurationMode = 'ai' | 'manual' | 'fixed-shot';
