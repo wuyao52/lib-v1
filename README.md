@@ -499,3 +499,6 @@ MIT License
 - `Production Watch` probes Railway every 30 minutes and verifies that a push reached the exact Git commit before accepting the deployment.
 - `SMOKE_BASE_URL=https://your-backend.example npm run smoke:production` runs the same health, operations, captcha, security-header, and concurrency checks locally.
 - System users can read `/api/admin/storage-usage` for sanitized object counts and byte totals grouped by storage prefix. Set `OBJECT_STORAGE_WARNING_BYTES` to enable a capacity warning.
+- `npm run drill:resilience` injects local database and object-storage outages, verifies recovery under concurrent health checks, and exercises maintenance cleanup without touching production data.
+- Maintenance removes expired sessions, verification records, rate-limit buckets, and audit logs older than `AUDIT_LOG_RETENTION_DAYS`.
+- The system console shows database/object-storage usage plus API P95/P99 and managed-AI gateway error rates; raw request paths and bodies are not retained in these metrics.
