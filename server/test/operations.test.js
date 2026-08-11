@@ -245,3 +245,48 @@ test('backup administration is role protected, password confirmed, locked and re
   assert.equal(publicBody.includes('backup-normal@example.com'), false);
   assert.equal(publicBody.includes('strong-password'), false);
 });
+
+test('storage cleanup requires preview and password, preserves referenced media and deletes only stale healthchecks', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'ads-storage-cleanup-'));
+  const codes = new Map();
+  const now = Date.now();
+  const objects = new Map([
+    ['healthchecks/stale.txt', { bytes: Buffer.from('old'), lastModified: new Date(now - 48 * 60 * 60 * 1000).toISOString() }],
+    ['healthchecks/recent.txt', { bytes: Buffer.from('new'), lastModified: new Date(now - 60 * 60 * 1000).toISOString() }],
+    ['assets/user/kept.png', { bytes: Buffer.from('asset'), lastModified: new Date(now - 90 * 24 * 60 * 60 * 1000).toISOString() }],
+    ['generated-videos/user/orphan.mp4', { bytes: Buffer.from('video'), lastModified: new Date(now - 90 * 24 * 60 * 60 * 1000).toISOString() }],
+  ]);
+  const storage = {
+    provider: 'test-oss', health: async () => true,
+    list: async () => [...objects.entries()].map(([key, item]) => ({ key, size: item.bytes.length, lastModified: item.lastModified })),
+    delete: async (key) => objects.delete(key),
+  };
+  const { app, db } = await createApp({
+    databasePath: join(directory, 'database.json'), secureCookies: false, videoQueue: false, maintenance: false, assetStorage: storage,
+    sendEmailCode: async ({ email, code }) => codes.set(email, code),
+  });
+  const server = app.listen(0, '127.0.0.1'); await new Promise((resolve) => server.once('listening', resolve)); t.after(() => server.close());
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const email = 'cleanup-admin@example.com';
+  await fetch(`${origin}/api/auth/email-code`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, purpose: 'register' }) });
+  const registered = await fetch(`${origin}/api/auth/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'cleanup-admin', email, password: 'strong-password', verificationCode: codes.get(email) }) });
+  const cookie = registered.headers.get('set-cookie').split(';')[0]; const user = (await registered.json()).user;
+  await db.mutate((data) => {
+    data.users.find((item) => item.id === user.id).role = 'system';
+    data.assets.push({ id: 'kept', userId: user.id, sha256: 'a'.repeat(64), mimeType: 'image/png', objectKey: 'assets/user/kept.png', storageProvider: 'test-oss', byteSize: 5, createdAt: new Date().toISOString() });
+  });
+  const previewResponse = await fetch(`${origin}/api/admin/storage-cleanup/preview`, { headers: { cookie } });
+  assert.equal(previewResponse.status, 200);
+  const preview = await previewResponse.json();
+  assert.equal(preview.summary.candidates, 1);
+  assert.equal(JSON.stringify(preview).includes('stale.txt'), false);
+  const denied = await fetch(`${origin}/api/admin/storage-cleanup/execute`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ previewId: preview.previewId, currentPassword: 'wrong-password' }) });
+  assert.equal(denied.status, 401);
+  const executed = await fetch(`${origin}/api/admin/storage-cleanup/execute`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ previewId: preview.previewId, currentPassword: 'strong-password' }) });
+  assert.equal(executed.status, 200);
+  assert.deepEqual(await executed.json(), { deleted: 1, deletedBytes: 3, prefix: 'healthchecks/' });
+  assert.equal(objects.has('healthchecks/stale.txt'), false);
+  assert.equal(objects.has('healthchecks/recent.txt'), true);
+  assert.equal(objects.has('assets/user/kept.png'), true);
+  assert.equal(objects.has('generated-videos/user/orphan.mp4'), true);
+});
