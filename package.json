@@ -20,7 +20,10 @@
     "smoke:production": "node server/scripts/production-smoke.js",
     "test:load": "node --test server/test/load.test.js server/test/video-queue.test.js",
     "drill:resilience": "node server/scripts/resilience-drill.js",
-    "fixture:browser": "node server/scripts/browser-e2e-fixture.js"
+    "fixture:browser": "node server/scripts/browser-e2e-fixture.js",
+    "release:verify": "node server/scripts/verify-release-artifacts.js",
+    "capacity:report": "node server/scripts/report-infrastructure-capacity.js",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1106.0",
@@ -41,6 +44,7 @@
     "zustand": "^4.5.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.0",
