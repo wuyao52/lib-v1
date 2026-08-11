@@ -70,6 +70,54 @@ test('MySQL atomic lease allows only one worker to claim the same queued job', a
   assert.equal(new Set(claims.flat().map((item) => item.leaseOwner)).size, 1);
 });
 
+test('MySQL multi-instance enqueue locks authoritative balance and pending count', async () => {
+  const shared = { balance: 100, jobs: [], charges: 0, lock: Promise.resolve() };
+  const makeConnection = () => {
+    let unlock;
+    return {
+      async beginTransaction() {
+        const previous = shared.lock;
+        shared.lock = new Promise((resolve) => { unlock = resolve; });
+        await previous;
+      },
+      async commit() { unlock?.(); unlock = null; },
+      async rollback() { unlock?.(); unlock = null; },
+      release() {},
+      async query(sql, params) {
+        if (/SELECT balance_cents AS balanceCents FROM users/i.test(sql)) return [[{ balanceCents: shared.balance }]];
+        if (/FROM generation_jobs WHERE id = \? AND user_id = \?/i.test(sql)) return [[...shared.jobs.filter((job) => job.id === params[0] && job.userId === params[1])]];
+        if (/SELECT COUNT\(\*\) AS pending/i.test(sql)) return [[{ pending: shared.jobs.filter((job) => !['completed', 'failed', 'cancelled'].includes(job.status)).length }]];
+        if (/UPDATE users SET balance_cents = \?/i.test(sql)) { shared.balance = Number(params[0]); return [{ affectedRows: 1 }]; }
+        if (/INSERT INTO balance_transactions/i.test(sql)) { shared.charges += 1; return [{ affectedRows: 1 }]; }
+        if (/INSERT INTO generation_jobs/i.test(sql)) {
+          const row = params[0][0];
+          shared.jobs.push({ id: row[0], userId: row[1], apiId: row[2], modelId: row[3], requestBody: row[4], status: row[5], createdAt: row[19], updatedAt: row[21] });
+          return [{ affectedRows: 1 }];
+        }
+        throw new Error(`Unexpected SQL: ${sql}`);
+      },
+    };
+  };
+  const instances = [new MySqlDatabase('mysql://user:pass@127.0.0.1/test'), new MySqlDatabase('mysql://user:pass@127.0.0.1/test')];
+  instances.forEach((db) => {
+    db.pool = { getConnection: async () => makeConnection() };
+    db.data.users = [{ id: 'shared-user', balanceCents: 100 }];
+  });
+  const jobs = Array.from({ length: 50 }, (_, index) => ({ id: `multi-${index}`, userId: 'shared-user', apiId: 'api-1', modelId: 'video', requestBody: {}, status: 'queued', chargeCents: 1, billingReference: `multi-${index}`, prompt: '', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
+  const results = await Promise.all(jobs.map((job, index) => instances[index % 2].enqueueGenerationJob(job, 20, new Set(['completed', 'failed', 'cancelled']))));
+  assert.equal(results.filter((item) => item.inserted).length, 20);
+  assert.equal(results.filter((item) => item.error === 'VIDEO_QUEUE_USER_LIMIT').length, 30);
+  assert.equal(shared.jobs.length, 20);
+  assert.equal(shared.charges, 20);
+  assert.equal(shared.balance, 80);
+});
+
+test('MySQL reports database bytes and estimated rows from information_schema', async () => {
+  const db = new MySqlDatabase('mysql://user:pass@127.0.0.1/test');
+  db.pool = { query: async () => [[{ bytes: '314572800', rows: '12000' }]] };
+  assert.deepEqual(await db.storageStats(), { provider: 'mysql', bytes: 314572800, rows: 12000 });
+});
+
 test('MySQL rate limits are shared by separate application instances', async () => {
   const row = { count: 0, resetAt: 0 };
   const connection = {
