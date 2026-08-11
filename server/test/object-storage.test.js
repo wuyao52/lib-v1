@@ -108,6 +108,18 @@ test('object storage lists every backup page without exposing credentials', asyn
   assert.deepEqual(commands.map((command) => command.input.ContinuationToken || null), [null, 'page-2']);
 });
 
+test('object storage quarantine move copies before deleting the original', async () => {
+  const commands = [];
+  const storage = createObjectStorageFromEnv({
+    OSS_REGION: 'cn-beijing', OSS_ACCESS_KEY_ID: 'test-access-key', OSS_ACCESS_KEY_SECRET: 'test-secret-key', OSS_BUCKET: 'ai-drama-assets-ooc',
+  }, { clientFactory: () => ({ send: async (command) => { commands.push(command); return {}; } }) });
+  await storage.move('assets/user/a b.png', 'quarantine/orphans/item-1');
+  assert.deepEqual(commands.map((command) => command.constructor.name), ['CopyObjectCommand', 'DeleteObjectCommand']);
+  assert.equal(commands[0].input.CopySource, 'ai-drama-assets-ooc/assets/user/a%20b.png');
+  assert.equal(commands[0].input.Key, 'quarantine/orphans/item-1');
+  assert.equal(commands[1].input.Key, 'assets/user/a b.png');
+});
+
 test('object storage usage groups every object and byte without exposing keys', () => {
   const usage = summarizeStoredObjects([
     { key: 'assets/user/image.png', size: 25 },
