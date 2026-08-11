@@ -79,7 +79,7 @@ export default function ProjectSelector() {
           <button onClick={() => setAccountMode('billing')} className="px-3 py-2 rounded-lg text-sm text-dark-200 hover:text-white hover:bg-dark-700 flex items-center gap-2"><Wallet className="w-4 h-4 text-green-400" />余额 ¥{((user?.balanceCents || 0) / 100).toFixed(2)}</button>
           <button onClick={() => setAccountMode('assets')} className="px-3 py-2 rounded-lg text-sm text-dark-200 hover:text-white hover:bg-dark-700 flex items-center gap-2" title="云端素材"><HardDrive className="w-4 h-4 text-cyan-400" /><span className="hidden lg:inline">云端素材</span></button>
           <button onClick={() => setAccountMode('security')} className="p-2 rounded-lg text-dark-400 hover:text-white hover:bg-dark-700" title="修改密码"><KeyRound className="w-4 h-4" /></button>
-          {user?.role === 'system' && <button onClick={() => setAccountMode('admin')} className="px-3 py-2 rounded-lg text-sm text-primary-300 hover:text-white hover:bg-dark-700 flex items-center gap-2" title="管理 API、用户和充值审核"><Shield className="w-4 h-4" />系统管理</button>}
+          {user?.role === 'system' && <button data-testid="open-system-admin" onClick={() => setAccountMode('admin')} className="px-3 py-2 rounded-lg text-sm text-primary-300 hover:text-white hover:bg-dark-700 flex items-center gap-2" title="管理 API、用户和充值审核"><Shield className="w-4 h-4" />系统管理</button>}
           <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500 to-primary-700
             flex items-center justify-center shadow-lg shadow-primary-500/20">
             <Film className="w-6 h-6 text-white" />
@@ -92,7 +92,7 @@ export default function ProjectSelector() {
 
         <div className="flex items-center gap-3">
           <div className="text-right hidden sm:block"><p className="text-sm text-dark-200">{user?.name}</p><p className="text-[10px] text-dark-500">{user?.email}</p></div>
-          <button onClick={() => logout()} className="p-2 rounded-lg text-dark-400 hover:text-white hover:bg-dark-700" title="退出登录"><LogOut className="w-4 h-4" /></button>
+          <button data-testid="logout" onClick={() => logout()} className="p-2 rounded-lg text-dark-400 hover:text-white hover:bg-dark-700" title="退出登录"><LogOut className="w-4 h-4" /></button>
         </div>
       </motion.header>
 
@@ -149,6 +149,7 @@ export default function ProjectSelector() {
                 {projects.map((project, index) => (
                   <motion.div
                     key={project.id}
+                    data-testid={`project-${project.id}`}
                     initial={{ y: 20, opacity: 0 }}
                     animate={{ y: 0, opacity: 1 }}
                     transition={{ delay: 0.1 * index }}
@@ -188,7 +189,7 @@ export default function ProjectSelector() {
 
                         <div className="flex items-center justify-between text-xs text-dark-400">
                           <div className="flex items-center gap-4">
-                            <span className="flex items-center gap-1">
+                            <span data-testid={`project-${project.id}-scene-count`} className="flex items-center gap-1">
                               <Layers className="w-3 h-3" />
                               {project.sceneCount} 个场景
                             </span>
