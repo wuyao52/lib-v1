@@ -1,4 +1,4 @@
-import { DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { CopyObjectCommand, DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 
@@ -126,6 +126,11 @@ export function createObjectStorageFromEnv(env = process.env, { clientFactory = 
     },
     async delete(key) {
       await client.send(new DeleteObjectCommand({ Bucket: config.bucket, Key: key }));
+    },
+    async move(sourceKey, destinationKey) {
+      const copySource = `${config.bucket}/${String(sourceKey).split('/').map(encodeURIComponent).join('/')}`;
+      await client.send(new CopyObjectCommand({ Bucket: config.bucket, CopySource: copySource, Key: destinationKey }));
+      await client.send(new DeleteObjectCommand({ Bucket: config.bucket, Key: sourceKey }));
     },
     async list(prefix = '') {
       const objects = [];
