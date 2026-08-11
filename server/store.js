@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 const EMPTY_DATABASE = {
@@ -69,5 +69,10 @@ export class JsonDatabase {
       await rename(tempPath, this.filePath);
     });
     return this.writeQueue;
+  }
+
+  async storageStats() {
+    const file = await stat(this.filePath).catch(() => ({ size: 0 }));
+    return { provider: 'json', bytes: Number(file.size || 0), rows: Object.values(this.data).reduce((sum, rows) => sum + (Array.isArray(rows) ? rows.length : 0), 0) };
   }
 }
