@@ -21,6 +21,12 @@ if (health.response.status !== 200 || !health.body?.ok) throw new Error(`Health 
 if (health.response.headers.get('x-content-type-options') !== 'nosniff') throw new Error('Security headers are missing');
 if (health.response.headers.get('cache-control') !== 'no-store') throw new Error('Health response is cacheable');
 
+const ready = await request('/api/health/ready');
+if (ready.response.status !== 200 || !ready.body?.ok || ready.body?.checks?.schema !== 'ok') {
+  throw new Error(`Release readiness failed with HTTP ${ready.response.status}`);
+}
+validateExpectedCommit(ready.body.commit, expectedCommit);
+
 const operations = await request('/api/health/operations');
 if (operations.response.status !== 200 || !operations.body?.ok) {
   throw new Error(`Operational readiness failed with HTTP ${operations.response.status}: ${(operations.body?.alerts || []).join(',')}`);
@@ -44,6 +50,8 @@ console.log('Production smoke completed:', JSON.stringify({
   release: operations.body.release || null,
   commit: operations.body.commit || null,
   health: health.body.checks,
+  readiness: ready.body.checks,
+  schema: ready.body.schema,
   operations: operations.body.checks,
   captchaRefresh: 'changed',
   concurrentHealthChecks: concurrency,
