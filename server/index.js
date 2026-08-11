@@ -8,7 +8,7 @@ const allowedOrigins = String(process.env.APP_ORIGINS || 'http://localhost:3000,
   .map((value) => value.trim())
   .filter(Boolean);
 
-const { app, db, monitoring, maintenance, assetStorage, requestMetrics, videoQueue } = await createApp({ allowedOrigins, serveFrontend: true });
+const { app, db, monitoring, maintenance, assetStorage, requestMetrics, videoQueue, directorCompositionQueue } = await createApp({ allowedOrigins, serveFrontend: true });
 const server = app.listen(port, '0.0.0.0', () => {
   console.log(`AI Drama Studio server listening on http://127.0.0.1:${port}`);
 });
@@ -22,11 +22,13 @@ const shutdown = (signal) => {
   maintenance?.stop?.();
   const shutdownTimeoutMs = Math.min(120_000, Math.max(5_000, Number(process.env.SHUTDOWN_TIMEOUT_SECONDS || 30) * 1000));
   const queueStop = videoQueue?.stop?.({ timeoutMs: Math.max(1000, shutdownTimeoutMs - 5000) }) || Promise.resolve({ drained: true });
+  const directorQueueStop = directorCompositionQueue?.stop?.() || Promise.resolve();
   const deadline = setTimeout(() => process.exit(1), shutdownTimeoutMs);
   deadline.unref?.();
   server.close(async () => {
     try {
       const queueResult = await queueStop;
+      await directorQueueStop;
       if (!queueResult.drained) console.warn('Video queue shutdown timed out; leases were released for another worker');
       await requestMetrics.close?.();
       await db.close?.();
