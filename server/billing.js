@@ -205,7 +205,8 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
       .finally(() => { backupDrillRunning = false; });
     return res.status(202).json({ accepted: true, operationId });
   });
-  router.get('/metrics', (_req, res) => {
+  router.get('/metrics', async (_req, res, next) => {
+    try {
     const jobs = db.read('generationJobs');
     const now = Date.now();
     const since = now - (24 * 60 * 60 * 1000);
@@ -216,7 +217,7 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
     const archivedJobIds = new Set(db.read('generatedMedia').map((item) => item.jobId));
     return res.json({
       generatedAt: nowIso(), windowHours: 24,
-      http: requestMetrics?.snapshot?.() || null,
+      http: requestMetrics?.snapshotPersistent ? await requestMetrics.snapshotPersistent() : requestMetrics?.snapshot?.() || null,
       queue: videoQueue ? videoQueue.overview().counts : { queued: 0, submitting: 0, processing: 0, completed: 0, failed: 0 },
       recent: {
         total: recent.length, completed: completed.length,
@@ -231,6 +232,7 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
         averageQueueWaitMs: (() => { const waits = recent.map((job) => Date.parse(job.submittedAt) - Date.parse(job.createdAt)).filter((value) => Number.isFinite(value) && value >= 0); return waits.length ? Math.round(waits.reduce((sum, value) => sum + value, 0) / waits.length) : null; })(),
       },
     });
+    } catch (error) { return next(error); }
   });
   router.get('/security-alerts', (_req, res) => {
     const since = Date.now() - (24 * 60 * 60 * 1000);
