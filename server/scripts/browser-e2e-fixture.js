@@ -21,9 +21,15 @@ await db.mutate((data) => {
 
 const { app } = await createApp({ database: db, secureCookies: false, serveFrontend: true, videoQueue: false, maintenance: false, monitoring: false, assetStorage: null, sendEmailCode: async () => {} });
 const fixture = express();
-fixture.get('/__e2e/login', (_req, res) => {
+fixture.get('/__e2e/login', async (_req, res, next) => {
+  try {
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+    await db.mutate((data) => {
+      if (!data.sessions.some((session) => session.tokenHash === tokenHash)) data.sessions.push({ id: randomUUID(), userId, tokenHash, createdAt: Date.now(), expiresAt: Date.now() + 60 * 60 * 1000, userAgent: 'browser-e2e' });
+    });
+  } catch (error) { return next(error); }
   res.cookie('ads_session', token, { httpOnly: true, sameSite: 'strict', secure: false, path: '/', maxAge: 60 * 60 * 1000 });
-  res.redirect('/');
+  return res.redirect('/');
 });
 fixture.use(app);
 const server = fixture.listen(port, '127.0.0.1', () => console.log(`BROWSER_E2E_READY http://127.0.0.1:${port}/__e2e/login`));
