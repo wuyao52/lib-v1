@@ -144,7 +144,13 @@ test('health checks report object-storage failure and admin metrics stay role pr
   ));
   const operationsReady = await fetch(`${baseUrl}/api/health/operations`);
   assert.equal(operationsReady.status, 200);
+  const previousCommit = process.env.APP_RELEASE_COMMIT;
+  process.env.APP_RELEASE_COMMIT = 'operations-test-commit';
+  const identifiedOperations = await (await fetch(`${baseUrl}/api/health/operations`)).json();
+  if (previousCommit === undefined) delete process.env.APP_RELEASE_COMMIT;
+  else process.env.APP_RELEASE_COMMIT = previousCommit;
   assert.deepEqual((await operationsReady.json()).checks, { queue: 'ok', backup: 'ok', restoreDrill: 'ok' });
+  assert.equal(identifiedOperations.commit, 'operations-test-commit');
 
   const register = async (username) => {
     const email = `${username}@example.com`;
@@ -167,6 +173,7 @@ test('health checks report object-storage failure and admin metrics stay role pr
   assert.equal(metrics.recent.refundedCents, 250);
   assert.equal(metrics.recent.archiveFallbacks, 1);
   assert.ok(metrics.recent.averageCompletionMs >= 0);
+  assert.equal((await fetch(`${baseUrl}/api/admin/storage-usage`, { headers: { cookie: normal.cookie } })).status, 403);
 });
 
 test('backup administration is role protected, password confirmed, locked and redacted', async (t) => {
@@ -221,6 +228,13 @@ test('backup administration is role protected, password confirmed, locked and re
   assert.equal(overview.backups.length, 1);
   assert.equal(overview.backups[0].verification, 'backup_drill_completed');
   assert.equal(overview.events.some((item) => item.action === 'backup_drill_completed'), true);
+  const storageUsageResponse = await fetch(`${baseUrl}/api/admin/storage-usage`, { headers: { cookie: admin.cookie } });
+  assert.equal(storageUsageResponse.status, 200);
+  const storageUsage = await storageUsageResponse.json();
+  assert.equal(storageUsage.provider, 'test-oss');
+  assert.equal(storageUsage.objects, 1);
+  assert.equal(storageUsage.groups.find((item) => item.prefix === 'backups/').objects, 1);
+  assert.equal(JSON.stringify(storageUsage).includes(overview.backups[0].key), false);
   const publicBody = JSON.stringify(overview);
   assert.equal(publicBody.includes('encryptedPayload'), false);
   assert.equal(publicBody.includes('backup-normal@example.com'), false);

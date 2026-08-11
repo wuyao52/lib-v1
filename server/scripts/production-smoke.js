@@ -1,5 +1,8 @@
+import { validateExpectedCommit } from './production-smoke-lib.js';
+
 const baseUrl = String(process.env.SMOKE_BASE_URL || process.argv[2] || '').trim().replace(/\/+$/, '');
 const concurrency = Math.min(50, Math.max(1, Number.parseInt(process.env.SMOKE_CONCURRENCY || '20', 10) || 20));
+const expectedCommit = String(process.env.SMOKE_EXPECTED_COMMIT || '').trim();
 
 if (!/^https:\/\//i.test(baseUrl) && !/^http:\/\/127\.0\.0\.1(?::\d+)?$/i.test(baseUrl)) {
   throw new Error('SMOKE_BASE_URL must be a HTTPS URL or local loopback URL');
@@ -22,6 +25,7 @@ const operations = await request('/api/health/operations');
 if (operations.response.status !== 200 || !operations.body?.ok) {
   throw new Error(`Operational readiness failed with HTTP ${operations.response.status}: ${(operations.body?.alerts || []).join(',')}`);
 }
+validateExpectedCommit(operations.body.commit, expectedCommit);
 
 const [captchaOne, captchaTwo] = await Promise.all([request('/api/auth/captcha'), request('/api/auth/captcha')]);
 for (const captcha of [captchaOne, captchaTwo]) {
@@ -38,6 +42,7 @@ if (failed.length) throw new Error(`${failed.length}/${concurrency} concurrent h
 console.log('Production smoke completed:', JSON.stringify({
   baseUrl,
   release: operations.body.release || null,
+  commit: operations.body.commit || null,
   health: health.body.checks,
   operations: operations.body.checks,
   captchaRefresh: 'changed',

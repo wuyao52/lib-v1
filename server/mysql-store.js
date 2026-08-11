@@ -590,6 +590,8 @@ export class MySqlDatabase {
   async enqueueGenerationJob(job, maxPendingPerUser, terminalStatuses) {
     let result = { inserted: false, error: null };
     const operation = this.writeQueue.then(async () => {
+      const existing = this.data.generationJobs.find((item) => item.id === job.id && item.userId === job.userId);
+      if (existing) { result = { inserted: false, error: null, job: existing }; return; }
       const pending = this.data.generationJobs.filter((item) => item.userId === job.userId && !terminalStatuses.has(item.status)).length;
       if (pending >= maxPendingPerUser) { result.error = 'VIDEO_QUEUE_USER_LIMIT'; return; }
       const user = this.data.users.find((item) => item.id === job.userId);

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { discoverSystemApi } from './api-discovery.js';
 import { verifyPassword } from './auth.js';
 import { runBackupDrill } from './backup-drill.js';
+import { summarizeStoredObjects } from './object-storage.js';
 
 const CATEGORIES = new Set(['text', 'image', 'video']);
 const BILLING_UNITS = new Set(['request', 'image', 'second']);
@@ -129,6 +130,7 @@ export function registerBillingRoutes(router, { db, requireAuth }) {
 export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImpl, resolveHost, videoQueue = null, backupStorage = null, backupEncryptionKey = '' }) {
   router.use(requireSystem);
   let backupDrillRunning = false;
+  let storageUsageCache = null;
   const audit = async (req, action, targetType, targetId, metadata = {}) => {
     const record = { id: randomUUID(), userId: req.user.id, action, targetType, targetId: targetId || null, ipAddress: String(req.ip || '').slice(0, 100), userAgent: String(req.get('user-agent') || '').slice(0, 300), metadata: { requestId: req.requestId || null, ...metadata }, createdAt: nowIso() };
     await db.mutate((data) => data.auditLogs.push(record));
@@ -156,6 +158,29 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
         policy: { retentionDays: Number(process.env.BACKUP_RETENTION_DAYS || 30), minimumCopies: Number(process.env.BACKUP_MINIMUM_COPIES || 7) },
         backups: objects.map((item) => ({ ...item, kind: item.key.includes('/drills/') ? 'drill' : 'scheduled', verification: eventsByKey.get(item.key)?.action || null })),
         events: events.map((item) => ({ id: item.id, action: item.action, objectKey: item.targetId, metadata: item.metadata, createdAt: item.createdAt })),
+      });
+    } catch (error) { return next(error); }
+  });
+  router.get('/storage-usage', async (_req, res, next) => {
+    try {
+      if (!backupStorage || typeof backupStorage.list !== 'function') {
+        return res.status(503).json({ error: 'OBJECT_STORAGE_UNAVAILABLE', message: 'Object storage is not configured' });
+      }
+      const cacheMs = 5 * 60 * 1000;
+      if (!storageUsageCache || Date.now() - storageUsageCache.generatedAtMs >= cacheMs) {
+        const usage = summarizeStoredObjects(await backupStorage.list(''));
+        storageUsageCache = { ...usage, generatedAt: nowIso(), generatedAtMs: Date.now() };
+      }
+      const warningBytes = Math.max(0, Number(process.env.OBJECT_STORAGE_WARNING_BYTES || 0));
+      return res.json({
+        configured: true,
+        provider: backupStorage.provider,
+        generatedAt: storageUsageCache.generatedAt,
+        objects: storageUsageCache.objects,
+        bytes: storageUsageCache.bytes,
+        groups: storageUsageCache.groups,
+        warning: warningBytes > 0 && storageUsageCache.bytes >= warningBytes,
+        warningBytes: warningBytes || null,
       });
     } catch (error) { return next(error); }
   });

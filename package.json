@@ -17,7 +17,8 @@
     "backup:mysql-drill": "node server/scripts/mysql-restore-drill.js",
     "maintenance:once": "node server/scripts/maintenance.js",
     "monitoring:audit-summary": "node server/scripts/monitoring-audit-summary.js",
-    "smoke:production": "node server/scripts/production-smoke.js"
+    "smoke:production": "node server/scripts/production-smoke.js",
+    "test:load": "node --test server/test/load.test.js server/test/video-queue.test.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1106.0",

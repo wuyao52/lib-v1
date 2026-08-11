@@ -351,6 +351,10 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
   };
 
   const enqueue = async ({ id = randomUUID(), userId, apiId, modelId, requestBody, chargeCents = 0, billingReference = null, client = {} }) => {
+    const existing = db.read('generationJobs').find((item) => item.id === id && item.userId === userId);
+    if (existing) {
+      return { job: existing, queuePosition: existing.status === 'queued' ? db.read('generationJobs').filter((item) => item.status === 'queued' && item.createdAt <= existing.createdAt).length : null, duplicate: true };
+    }
     const timestamp = nowIso();
     const job = {
       id, userId, apiId, modelId, requestBody, status: 'queued', providerTaskId: null, progress: 0,
@@ -364,6 +368,7 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
     if (db.enqueueGenerationJob) {
       const result = await db.enqueueGenerationJob(job, config.maxQueuePerUser, TERMINAL_STATUSES);
       enqueueError = result.error;
+      if (result.job) return { job: result.job, queuePosition: result.job.status === 'queued' ? db.read('generationJobs').filter((item) => item.status === 'queued' && item.createdAt <= result.job.createdAt).length : null, duplicate: true };
     } else await db.mutate((data) => {
       const pendingForUser = data.generationJobs.filter((item) => item.userId === userId && !TERMINAL_STATUSES.has(item.status)).length;
       if (pendingForUser >= config.maxQueuePerUser) { enqueueError = 'VIDEO_QUEUE_USER_LIMIT'; return; }

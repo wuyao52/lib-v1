@@ -188,7 +188,13 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
 
     if (req.method === 'POST' && pathname === '/v1/videos' && pricing?.category === 'video' && videoQueue) {
       try {
-        const jobId = randomUUID();
+        const suppliedIdempotencyKey = String(req.get('idempotency-key') || '').trim();
+        if (suppliedIdempotencyKey && !/^[A-Za-z0-9._:-]{16,128}$/.test(suppliedIdempotencyKey)) {
+          return res.status(400).json({ error: 'INVALID_IDEMPOTENCY_KEY', message: 'Idempotency-Key must contain 16-128 safe characters' });
+        }
+        const jobId = suppliedIdempotencyKey
+          ? `idem-${createHash('sha256').update(`${req.user.id}:${api.id}:${suppliedIdempotencyKey}`).digest('hex').slice(0, 48)}`
+          : randomUUID();
         const queued = await videoQueue.enqueue({
           id: jobId, userId: req.user.id, apiId: api.id, modelId: pricing.modelId,
           requestBody, chargeCents: req.user.role === 'system' ? 0 : chargeCents,

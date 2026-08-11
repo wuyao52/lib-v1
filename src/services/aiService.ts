@@ -340,6 +340,9 @@ export class SeedanceService extends AIService {
       const timeoutId = setTimeout(() => controller.abort(), 60000);
       const abortFromCaller = () => controller.abort();
       signal?.addEventListener('abort', abortFromCaller, { once: true });
+      const idempotencyKey = this.config.managed
+        ? String(settings._idempotencyKey || (settings._idempotencyKey = crypto.randomUUID()))
+        : '';
 
       try {
         const response = await fetch(url, {
@@ -348,6 +351,7 @@ export class SeedanceService extends AIService {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${this.config.apiKey}`,
             'X-API-Key': this.config.apiKey,
+            ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
           },
           body: JSON.stringify(requestBody),
           signal: controller.signal,

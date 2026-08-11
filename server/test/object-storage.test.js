@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createObjectStorageFromEnv } from '../object-storage.js';
+import { createObjectStorageFromEnv, summarizeStoredObjects } from '../object-storage.js';
 
 test('object storage accepts a complete Alibaba Cloud OSS S3 configuration', () => {
   let clientConfig;
@@ -105,4 +105,17 @@ test('object storage lists every backup page without exposing credentials', asyn
   const objects = await storage.list('backups/');
   assert.deepEqual(objects.map((item) => item.key), ['backups/a.json', 'backups/b.json']);
   assert.deepEqual(commands.map((command) => command.input.ContinuationToken || null), [null, 'page-2']);
+});
+
+test('object storage usage groups every object and byte without exposing keys', () => {
+  const usage = summarizeStoredObjects([
+    { key: 'assets/user/image.png', size: 25 },
+    { key: 'generated-videos/user/video.mp4', size: 1000 },
+    { key: 'backups/database.json', size: 200 },
+    { key: 'unclassified/item.bin', size: 5 },
+  ]);
+  assert.equal(usage.objects, 4);
+  assert.equal(usage.bytes, 1230);
+  assert.deepEqual(usage.groups.find((item) => item.prefix === 'generated-videos/'), { prefix: 'generated-videos/', objects: 1, bytes: 1000 });
+  assert.equal(JSON.stringify(usage).includes('user/image.png'), false);
 });

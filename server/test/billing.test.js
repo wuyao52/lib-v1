@@ -239,11 +239,27 @@ test('managed video requests use the persistent queue protocol and expose an adm
 
   const queuedResponse = await context.request(`/api/system-ai/${api.id}/v1/videos`, normal.cookie, {
     method: 'POST',
+    headers: { 'idempotency-key': 'queue-click-proof-0001' },
     body: JSON.stringify({ model: 'video-model', prompt: 'queued-video', seconds: 5, _client: { projectId: 'project-1', nodeId: 'node-1' } }),
   });
   assert.equal(queuedResponse.status, 202);
   const queued = await queuedResponse.json();
-  assert.match(queued.id, /^[0-9a-f-]{36}$/);
+  assert.match(queued.id, /^idem-[0-9a-f]{48}$/);
+  const duplicateResponse = await context.request(`/api/system-ai/${api.id}/v1/videos`, normal.cookie, {
+    method: 'POST',
+    headers: { 'idempotency-key': 'queue-click-proof-0001' },
+    body: JSON.stringify({ model: 'video-model', prompt: 'queued-video', seconds: 5, _client: { projectId: 'project-1', nodeId: 'node-1' } }),
+  });
+  assert.equal(duplicateResponse.status, 202);
+  assert.equal((await duplicateResponse.json()).id, queued.id);
+  assert.equal(context.db.read('generationJobs').length, 1);
+  assert.equal(context.db.read('balanceTransactions').filter((item) => item.type === 'model_usage').length, 1);
+
+  const invalidIdempotencyKey = await context.request(`/api/system-ai/${api.id}/v1/videos`, normal.cookie, {
+    method: 'POST', headers: { 'idempotency-key': 'short' }, body: JSON.stringify({ model: 'video-model', prompt: 'invalid-key', seconds: 5 }),
+  });
+  assert.equal(invalidIdempotencyKey.status, 400);
+  assert.equal((await invalidIdempotencyKey.json()).error, 'INVALID_IDEMPOTENCY_KEY');
 
   const startedAt = Date.now();
   while (context.db.read('generationJobs')[0]?.status !== 'processing') {

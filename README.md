@@ -492,3 +492,10 @@ ai-drama-studio/
 ## 📝 License
 
 MIT License
+
+## Production verification
+
+- GitHub Actions runs tests, type checking, the production build, and dependency auditing on every push and pull request.
+- `Production Watch` probes Railway every 30 minutes and verifies that a push reached the exact Git commit before accepting the deployment.
+- `SMOKE_BASE_URL=https://your-backend.example npm run smoke:production` runs the same health, operations, captcha, security-header, and concurrency checks locally.
+- System users can read `/api/admin/storage-usage` for sanitized object counts and byte totals grouped by storage prefix. Set `OBJECT_STORAGE_WARNING_BYTES` to enable a capacity warning.

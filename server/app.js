@@ -217,6 +217,7 @@ export async function createApp(options = {}) {
       ok: alerts.length === 0,
       service: 'ai-drama-studio',
       release: String(process.env.RAILWAY_DEPLOYMENT_ID || process.env.APP_RELEASE || '').trim() || null,
+      commit: String(process.env.RAILWAY_GIT_COMMIT_SHA || process.env.APP_RELEASE_COMMIT || '').trim() || null,
       alerts,
       checks: {
         queue: alerts.some((code) => code === 'QUEUE_BACKLOG' || code === 'GENERATION_FAILURE_RATE') ? 'error' : 'ok',

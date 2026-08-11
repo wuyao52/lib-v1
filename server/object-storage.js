@@ -35,6 +35,23 @@ const providers = [
   },
 ];
 
+export function summarizeStoredObjects(objects, prefixes = ['assets/', 'generated-videos/', 'backups/', 'healthchecks/']) {
+  const summary = Object.fromEntries(prefixes.map((prefix) => [prefix, { objects: 0, bytes: 0 }]));
+  summary.other = { objects: 0, bytes: 0 };
+  for (const item of objects || []) {
+    const key = String(item?.key || '');
+    const bucket = prefixes.find((prefix) => key.startsWith(prefix)) || 'other';
+    summary[bucket].objects += 1;
+    summary[bucket].bytes += Math.max(0, Number(item?.size || 0));
+  }
+  const groups = Object.entries(summary).map(([prefix, usage]) => ({ prefix, ...usage }));
+  return {
+    objects: groups.reduce((sum, item) => sum + item.objects, 0),
+    bytes: groups.reduce((sum, item) => sum + item.bytes, 0),
+    groups,
+  };
+}
+
 function configuredProvider(env) {
   const configuredProviders = providers.filter((provider) => provider.required.some((name) => String(env[name] || '').trim()));
   if (configuredProviders.length > 1) {

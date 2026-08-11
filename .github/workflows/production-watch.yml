@@ -1,0 +1,42 @@
+name: Production Watch
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '7,37 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-watch
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SMOKE_BASE_URL: https://lib-v1-production.up.railway.app
+      SMOKE_CONCURRENCY: '20'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Wait for the pushed commit to reach Railway
+        if: github.event_name == 'push'
+        env:
+          SMOKE_EXPECTED_COMMIT: ${{ github.sha }}
+        run: |
+          for attempt in $(seq 1 30); do
+            if node server/scripts/production-smoke.js; then exit 0; fi
+            sleep 20
+          done
+          echo "Railway did not deploy $SMOKE_EXPECTED_COMMIT within 10 minutes" >&2
+          exit 1
+      - name: Probe production independently
+        if: github.event_name != 'push'
+        run: node server/scripts/production-smoke.js
