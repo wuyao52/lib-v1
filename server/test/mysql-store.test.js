@@ -195,6 +195,8 @@ test('MySQL startup applies versioned legacy alignment for system audit events',
   await db.init();
   assert.equal(statements.some((sql) => /ALTER TABLE `audit_logs` MODIFY COLUMN `user_id` CHAR\(36\) NULL/i.test(sql)), true);
   assert.equal(statements.some((sql) => /CREATE TABLE IF NOT EXISTS audit_logs[\s\S]*user_id CHAR\(36\) NULL/i.test(sql)), true);
+  assert.equal(statements.some((sql) => /CREATE TABLE IF NOT EXISTS storage_quarantine[\s\S]*quarantine_key VARCHAR\(255\) NOT NULL UNIQUE/i.test(sql)), true);
+  assert.equal(statements.some((sql) => /quarantine_key VARCHAR\(1024\) NOT NULL UNIQUE/i.test(sql)), false);
 });
 
 test('schema migrations execute once and skip all ALTER statements on later startup', async () => {
