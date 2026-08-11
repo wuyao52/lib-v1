@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MySqlDatabase } from '../mysql-store.js';
+import { runSchemaMigrations, schemaMigrationVersions } from '../schema-migrations.js';
 
 function databaseWithRecordedSql() {
   const statements = [];
@@ -183,7 +184,7 @@ test('MySQL unique index resolves concurrent case-insensitive usernames to one a
   assert.equal(users.length, 1);
 });
 
-test('MySQL startup makes audit user nullable for system and pre-authentication events', async () => {
+test('MySQL startup applies versioned legacy alignment for system audit events', async () => {
   const statements = [];
   const db = new MySqlDatabase('mysql://user:pass@127.0.0.1/test');
   db.pool = { async query(sql) {
@@ -194,4 +195,30 @@ test('MySQL startup makes audit user nullable for system and pre-authentication 
   await db.init();
   assert.equal(statements.some((sql) => /ALTER TABLE `audit_logs` MODIFY COLUMN `user_id` CHAR\(36\) NULL/i.test(sql)), true);
   assert.equal(statements.some((sql) => /CREATE TABLE IF NOT EXISTS audit_logs[\s\S]*user_id CHAR\(36\) NULL/i.test(sql)), true);
+});
+
+test('schema migrations execute once and skip all ALTER statements on later startup', async () => {
+  const applied = new Set();
+  const statements = [];
+  const connection = {
+    release() {},
+    async query(sql, params) {
+      statements.push(sql);
+      if (/GET_LOCK/i.test(sql)) return [[{ acquired: 1 }]];
+      if (/RELEASE_LOCK/i.test(sql)) return [[{ released: 1 }]];
+      if (/SELECT version FROM schema_migrations/i.test(sql)) return [[...applied].map((version) => ({ version }))];
+      if (/information_schema\.columns/i.test(sql)) return [[{ exists: 1 }]];
+      if (/INSERT INTO schema_migrations/i.test(sql)) { applied.add(Number(params[0])); return [{ affectedRows: 1 }]; }
+      return [{ affectedRows: 0 }];
+    },
+  };
+  const pool = { getConnection: async () => connection };
+  await runSchemaMigrations(pool);
+  const firstAlterCount = statements.filter((sql) => /^ALTER TABLE/i.test(sql)).length;
+  assert.equal(firstAlterCount, 2);
+  assert.deepEqual([...applied], schemaMigrationVersions.map((item) => item.version));
+  statements.length = 0;
+  await runSchemaMigrations(pool);
+  assert.equal(statements.some((sql) => /^ALTER TABLE/i.test(sql)), false);
+  assert.equal(statements.some((sql) => /CREATE TABLE IF NOT EXISTS request_metric_buckets/i.test(sql)), false);
 });
