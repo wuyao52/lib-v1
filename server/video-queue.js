@@ -140,8 +140,11 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
   const workerId = randomUUID();
   const submitting = new Set();
   const polling = new Set();
+  const controllers = new Map();
   let ticking = false;
   let lastCleanupAt = 0;
+  let accepting = true;
+  let timer = null;
 
   const updateJob = async (jobId, patch) => {
     const job = db.read('generationJobs').find((item) => item.id === jobId);
@@ -230,6 +233,8 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
   const submitJob = async (job) => {
     if (submitting.has(job.id)) return;
     submitting.add(job.id);
+    const controller = new AbortController();
+    controllers.set(`submit:${job.id}`, controller);
     try {
       const api = apiForJob(job);
       const headers = new Headers({ accept: 'application/json', 'content-type': 'application/json', authorization: `Bearer ${api.apiKey}`, 'x-api-key': api.apiKey });
@@ -238,6 +243,7 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
         method: 'POST', redirect: 'manual',
         headers,
         body: JSON.stringify(job.requestBody),
+        signal: controller.signal,
       });
       const body = await jsonResponse(response);
       const status = statusOf(body);
@@ -272,12 +278,15 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
       else await refundJob(job.id, { code: 'UPSTREAM_UNAVAILABLE', message: String(error?.message || '系统 AI 服务暂时不可用').slice(0, 500) });
     } finally {
       submitting.delete(job.id);
+      controllers.delete(`submit:${job.id}`);
     }
   };
 
   const pollJob = async (job) => {
     if (polling.has(job.id)) return;
     polling.add(job.id);
+    const controller = new AbortController();
+    controllers.set(`poll:${job.id}`, controller);
     try {
       if (Date.now() - Date.parse(job.createdAt) > config.taskTimeoutMs) {
         await refundJob(job.id, { code: 'VIDEO_JOB_TIMEOUT', message: '视频任务处理超时，已自动退款' });
@@ -286,7 +295,7 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
       const api = apiForJob(job);
       const headers = new Headers({ accept: 'application/json', authorization: `Bearer ${api.apiKey}`, 'x-api-key': api.apiKey });
       const response = await fetchImpl(buildTarget(api, `/v1/videos/${encodeURIComponent(job.providerTaskId)}`), {
-        method: 'GET', redirect: 'manual', headers,
+        method: 'GET', redirect: 'manual', headers, signal: controller.signal,
       });
       const body = await jsonResponse(response);
       const status = statusOf(body);
@@ -308,11 +317,12 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
       await updateJob(job.id, { attemptCount: Number(job.attemptCount || 0) + 1, nextPollAt: Date.now() + 15000 });
     } finally {
       polling.delete(job.id);
+      controllers.delete(`poll:${job.id}`);
     }
   };
 
   const tick = async () => {
-    if (ticking) return;
+    if (ticking || !accepting) return;
     ticking = true;
     try {
       if (db.refreshGenerationJobs) await db.refreshGenerationJobs();
@@ -351,6 +361,11 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
   };
 
   const enqueue = async ({ id = randomUUID(), userId, apiId, modelId, requestBody, chargeCents = 0, billingReference = null, client = {} }) => {
+    if (!accepting) {
+      const error = new Error('视频队列正在滚动发布，请稍后重试');
+      error.code = 'VIDEO_QUEUE_DRAINING';
+      throw error;
+    }
     const existing = db.read('generationJobs').find((item) => item.id === id && item.userId === userId);
     if (existing) {
       return { job: existing, queuePosition: existing.status === 'queued' ? db.read('generationJobs').filter((item) => item.status === 'queued' && item.createdAt <= existing.createdAt).length : null, duplicate: true };
@@ -436,7 +451,29 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
   const overview = () => {
     const jobs = db.read('generationJobs');
     const counts = Object.fromEntries(['queued', 'submitting', 'processing', 'completed', 'failed'].map((status) => [status, jobs.filter((job) => job.status === status).length]));
-    return { counts, config, recent: jobs.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 50).map((job) => ({ id: job.id, userId: job.userId, apiId: job.apiId, modelId: job.modelId, status: job.status, progress: job.progress, errorCode: job.errorCode, createdAt: job.createdAt, updatedAt: job.updatedAt })) };
+    return { accepting, draining: !accepting, inFlight: submitting.size + polling.size + (ticking ? 1 : 0), counts, config, recent: jobs.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 50).map((job) => ({ id: job.id, userId: job.userId, apiId: job.apiId, modelId: job.modelId, status: job.status, progress: job.progress, errorCode: job.errorCode, createdAt: job.createdAt, updatedAt: job.updatedAt })) };
+  };
+
+  const isAccepting = () => accepting;
+  const stop = async ({ timeoutMs = 20_000 } = {}) => {
+    accepting = false;
+    if (timer) clearInterval(timer);
+    timer = null;
+    const deadline = Date.now() + Math.max(100, Number(timeoutMs) || 20_000);
+    while ((ticking || submitting.size || polling.size) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+    if (ticking || submitting.size || polling.size) {
+      controllers.forEach((controller) => controller.abort());
+      const abortDeadline = Date.now() + 1000;
+      while ((ticking || submitting.size || polling.size) && Date.now() < abortDeadline) await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    if (db.releaseGenerationJobLeases) await db.releaseGenerationJobLeases(workerId);
+    else await db.mutate((data) => data.generationJobs.forEach((job) => {
+      if (job.leaseOwner !== workerId) return;
+      if (job.status === 'submitting') job.status = 'queued';
+      if (job.status === 'processing') job.nextPollAt = 0;
+      job.leaseOwner = null; job.leaseUntil = 0; job.updatedAt = nowIso();
+    }));
+    return { drained: !ticking && submitting.size === 0 && polling.size === 0, releasedWorkerId: workerId };
   };
 
   if (db.recoverExpiredGenerationJobs) await db.recoverExpiredGenerationJobs();
@@ -461,7 +498,7 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
       }
     });
   });
-  const timer = autoStart ? setInterval(() => void tick(), 1000) : null;
+  timer = autoStart ? setInterval(() => void tick(), 1000) : null;
   timer?.unref?.();
-  return { enqueue, get, cancel, overview, tick, config, workerId };
+  return { enqueue, get, cancel, overview, tick, stop, isAccepting, config, workerId };
 }
