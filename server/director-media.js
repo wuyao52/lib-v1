@@ -101,6 +101,13 @@ export function createDirectorCompositionQueue({ db, storage, autoStart = true }
   let timer = null;
   const tick = async () => {
     if (!accepting) return;
+    const staleBefore = Date.now() - 120_000;
+    const hasStaleJob = db.read('generationJobs').some((job) => job.status === 'director_processing' && !active.has(job.id) && Date.parse(job.updatedAt || 0) < staleBefore);
+    if (hasStaleJob) await db.mutate((data) => data.generationJobs.forEach((job) => {
+      if (job.status === 'director_processing' && !active.has(job.id) && Date.parse(job.updatedAt || 0) < staleBefore) {
+        job.status = 'director_queued'; job.updatedAt = new Date().toISOString();
+      }
+    }));
     const jobs = db.read('generationJobs').filter((job) => job.status === 'director_queued' && !active.has(job.id)).slice(0, 1);
     for (const job of jobs) {
       active.add(job.id);
@@ -129,7 +136,7 @@ export function createDirectorCompositionQueue({ db, storage, autoStart = true }
     const now = new Date().toISOString();
     const job = { id: randomUUID(), userId, apiId: 'director-composer', modelId: 'ffmpeg', requestBody: { clipUrls }, status: 'director_queued', providerTaskId: null, progress: 0, resultUrl: null, thumbnail: null, errorCode: null, errorMessage: null, chargeCents: 0, billingReference: null, projectId: String(projectId || '').slice(0, 100) || null, nodeId: null, prompt: '导演模式最终短剧合成', attemptCount: 0, nextPollAt: 0, createdAt: now, submittedAt: null, updatedAt: now, completedAt: null, leaseOwner: null, leaseUntil: 0 };
     await db.mutate((data) => data.generationJobs.push(job));
-    void tick();
+    if (autoStart) void tick();
     return job;
   };
   const get = (id, userId) => {
