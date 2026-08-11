@@ -2,6 +2,7 @@ import { createAIService } from '@/services/aiService';
 import type { AIModelConfig, DramaProject } from '@/types';
 import type { StoryboardPlan } from '@/types/director';
 import type { DirectorAsset, DirectorAssetKind, DirectorAssetValidation } from '@/types/directorAsset';
+import { materializeReferenceImages } from '@/services/assetService';
 
 const assetLabels: Record<DirectorAssetKind, string> = {
   scene: '场景',
@@ -105,4 +106,12 @@ export function compileDirectorAssetContext(assets: DirectorAsset[]): string {
 
 export function getDirectorAssetReferenceImages(assets: DirectorAsset[]): string[] {
   return [...new Set(assets.map((asset) => asset.referenceImage).filter((image): image is string => Boolean(image)))];
+}
+
+export async function materializeDirectorAssets(assets: DirectorAsset[], signal?: AbortSignal): Promise<DirectorAsset[]> {
+  const references = getDirectorAssetReferenceImages(assets);
+  if (!references.length) return assets;
+  const materialized = await materializeReferenceImages(references, signal);
+  const replacements = new Map(references.map((reference, index) => [reference, materialized[index]]));
+  return assets.map((asset) => asset.referenceImage ? { ...asset, referenceImage: replacements.get(asset.referenceImage) || asset.referenceImage } : asset);
 }
