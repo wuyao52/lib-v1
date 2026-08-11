@@ -193,3 +193,28 @@ test('fair queue selection alternates users even when one user submitted first',
   const selected = selectFairQueuedJobs(jobs, [], { globalConcurrency: 4, userConcurrency: 20, apiConcurrency: 20 }, Date.now());
   assert.deepEqual(selected.map((job) => job.userId), ['user-a', 'user-b', 'user-a', 'user-b']);
 });
+
+test('video queue drains in-flight submission, rejects new work and releases its lease', async () => {
+  let releaseSubmission;
+  const submissionGate = new Promise((resolve) => { releaseSubmission = resolve; });
+  const db = fakeDb({
+    users: [{ id: 'user-a', balanceCents: 0 }],
+    systemApis: [{ id: 'api-1', enabled: true, baseUrl: 'https://upstream.example', encryptedApiKey: 'secret' }],
+  });
+  const queue = await createVideoQueue({
+    db, vault: { decrypt: (value) => value }, autoStart: false,
+    fetchImpl: async () => { await submissionGate; return new Response('{"id":"provider-drain","status":"queued"}', { status: 200, headers: { 'content-type': 'application/json' } }); },
+  });
+  await queue.enqueue({ id: 'drain-job', userId: 'user-a', apiId: 'api-1', modelId: 'video', requestBody: { prompt: 'drain' } });
+  await waitFor(() => db.data.generationJobs[0]?.status === 'submitting');
+  const stopping = queue.stop({ timeoutMs: 2000 });
+  await assert.rejects(queue.enqueue({ id: 'late-job', userId: 'user-a', apiId: 'api-1', modelId: 'video', requestBody: {} }), (error) => error.code === 'VIDEO_QUEUE_DRAINING');
+  releaseSubmission();
+  const result = await stopping;
+  assert.equal(result.drained, true);
+  assert.equal(queue.isAccepting(), false);
+  assert.equal(queue.overview().draining, true);
+  assert.equal(db.data.generationJobs[0].status, 'processing');
+  assert.equal(db.data.generationJobs[0].leaseOwner, null);
+  assert.equal(db.data.generationJobs[0].leaseUntil, 0);
+});
