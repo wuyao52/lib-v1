@@ -191,3 +191,39 @@ test('monitoring test email is sent once per deployment even across service inst
   assert.equal(emails.length, 1);
   assert.match(emails[0].subject, /运维测试：TEST/);
 });
+
+test('monitoring alerts on live database and object-storage capacity then recovers', async () => {
+  const now = new Date().toISOString();
+  let databaseBytes = 450;
+  let objectBytes = 1200;
+  const emails = [];
+  const data = {
+    users: [{ id: 'system-1', role: 'system', email: 'capacity@example.com' }],
+    generationJobs: [],
+    auditLogs: [
+      { id: 'backup-ok', action: 'backup_completed', targetType: 'backup', createdAt: now },
+      { id: 'restore-ok', action: 'mysql_restore_drill_completed', targetType: 'backup', createdAt: now },
+    ],
+  };
+  const db = {
+    read: (collection) => data[collection] || [],
+    mutate: async (operation) => operation(data),
+    storageStats: async () => ({ provider: 'mysql', bytes: databaseBytes, rows: 25 }),
+  };
+  const storage = { provider: 'aliyun-oss', list: async () => [{ key: 'assets/a.png', size: objectBytes }] };
+  const service = createMonitoringService({
+    db, storage,
+    env: { ALERT_DATABASE_WARNING_BYTES: '400', OBJECT_STORAGE_WARNING_BYTES: '1000' },
+    emailSender: async (message) => emails.push(message),
+  });
+  const alert = await service.check();
+  assert.deepEqual(alert.snapshot.alerts.map((item) => item.code), ['DATABASE_CAPACITY_WARNING', 'OBJECT_STORAGE_CAPACITY_WARNING']);
+  assert.equal(alert.snapshot.capacity.database.bytes, 450);
+  assert.equal(alert.snapshot.capacity.objectStorage.bytes, 1200);
+  assert.equal(emails.length, 1);
+  databaseBytes = 200; objectBytes = 300;
+  const recovered = await service.check();
+  assert.equal(recovered.event, 'operations.recovered');
+  assert.equal(recovered.snapshot.alerts.length, 0);
+  assert.equal(emails.length, 2);
+});
