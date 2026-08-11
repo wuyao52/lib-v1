@@ -95,7 +95,53 @@ export async function composeDirectorVideos({ db, storage, userId, clipUrls, pro
   });
 }
 
-export function registerDirectorMediaRoutes(router, { db, requireAuth, storage }) {
+export function createDirectorCompositionQueue({ db, storage, autoStart = true } = {}) {
+  const active = new Set();
+  let accepting = true;
+  let timer = null;
+  const tick = async () => {
+    if (!accepting) return;
+    const jobs = db.read('generationJobs').filter((job) => job.status === 'director_queued' && !active.has(job.id)).slice(0, 1);
+    for (const job of jobs) {
+      active.add(job.id);
+      await db.mutate((data) => {
+        const stored = data.generationJobs.find((item) => item.id === job.id && item.status === 'director_queued');
+        if (stored) { stored.status = 'director_processing'; stored.progress = 10; stored.updatedAt = new Date().toISOString(); }
+      });
+      void composeDirectorVideos({ db, storage, userId: job.userId, projectId: job.projectId, clipUrls: job.requestBody.clipUrls })
+        .then((result) => db.mutate((data) => {
+          const stored = data.generationJobs.find((item) => item.id === job.id);
+          if (!stored) return;
+          stored.status = 'completed'; stored.progress = 100; stored.resultUrl = result.url; stored.completedAt = new Date().toISOString(); stored.updatedAt = stored.completedAt;
+        }))
+        .catch((error) => db.mutate((data) => {
+          const stored = data.generationJobs.find((item) => item.id === job.id);
+          if (!stored) return;
+          stored.status = 'failed'; stored.progress = 100; stored.errorCode = error.code || 'DIRECTOR_COMPOSITION_FAILED'; stored.errorMessage = String(error.message || '短剧合成失败').slice(0, 500); stored.completedAt = new Date().toISOString(); stored.updatedAt = stored.completedAt;
+        }))
+        .finally(() => active.delete(job.id));
+    }
+  };
+  const enqueue = async ({ userId, projectId, clipUrls }) => {
+    if (!accepting) throw Object.assign(new Error('导演合成队列正在停止'), { code: 'DIRECTOR_QUEUE_DRAINING' });
+    if (!Array.isArray(clipUrls) || clipUrls.length < 1 || clipUrls.length > MAX_CLIPS) throw Object.assign(new Error(`合成至少需要 1 个、最多 ${MAX_CLIPS} 个镜头`), { code: 'DIRECTOR_COMPOSITION_INPUT_INVALID' });
+    for (const url of clipUrls) if (!ownedMedia(db, userId, url)) throw Object.assign(new Error('只能使用当前用户已归档的视频'), { code: 'DIRECTOR_MEDIA_NOT_OWNED' });
+    const now = new Date().toISOString();
+    const job = { id: randomUUID(), userId, apiId: 'director-composer', modelId: 'ffmpeg', requestBody: { clipUrls }, status: 'director_queued', providerTaskId: null, progress: 0, resultUrl: null, thumbnail: null, errorCode: null, errorMessage: null, chargeCents: 0, billingReference: null, projectId: String(projectId || '').slice(0, 100) || null, nodeId: null, prompt: '导演模式最终短剧合成', attemptCount: 0, nextPollAt: 0, createdAt: now, submittedAt: null, updatedAt: now, completedAt: null, leaseOwner: null, leaseUntil: 0 };
+    await db.mutate((data) => data.generationJobs.push(job));
+    void tick();
+    return job;
+  };
+  const get = (id, userId) => {
+    const job = db.read('generationJobs').find((item) => item.id === id && item.userId === userId && (String(item.status).startsWith('director_') || ['completed', 'failed'].includes(item.status)));
+    if (!job) return null;
+    return { id: job.id, status: job.status, progress: Number(job.progress || 0), resultUrl: job.resultUrl || undefined, error: job.errorMessage || undefined };
+  };
+  if (autoStart) { timer = setInterval(() => void tick(), 500); timer.unref?.(); }
+  return { enqueue, get, tick, stop: async () => { accepting = false; if (timer) clearInterval(timer); timer = null; } };
+}
+
+export function registerDirectorMediaRoutes(router, { db, requireAuth, storage, queue = null }) {
   router.post('/tail-frame', requireAuth, async (req, res) => {
     try {
       const dataUrl = await extractDirectorTailFrame({ db, storage, userId: req.user.id, url: req.body?.url });
@@ -108,11 +154,18 @@ export function registerDirectorMediaRoutes(router, { db, requireAuth, storage }
 
   router.post('/compose', requireAuth, async (req, res) => {
     try {
-      const result = await composeDirectorVideos({ db, storage, userId: req.user.id, projectId: req.body?.projectId, clipUrls: req.body?.clipUrls });
-      return res.status(201).json({ composition: result });
+      const job = queue
+        ? await queue.enqueue({ db, userId: req.user.id, projectId: req.body?.projectId, clipUrls: req.body?.clipUrls })
+        : await composeDirectorVideos({ db, storage, userId: req.user.id, projectId: req.body?.projectId, clipUrls: req.body?.clipUrls });
+      return res.status(queue ? 202 : 201).json(queue ? { job: { id: job.id, status: job.status, progress: 0 } } : { composition: job });
     } catch (error) {
       const status = error.code === 'DIRECTOR_MEDIA_NOT_OWNED' ? 403 : error.code === 'FFMPEG_UNAVAILABLE' ? 503 : 400;
       return res.status(status).json({ error: error.code || 'DIRECTOR_COMPOSITION_FAILED', message: error.message });
     }
+  });
+  router.get('/compose/:id', requireAuth, (req, res) => {
+    const job = queue?.get(req.params.id, req.user.id);
+    if (!job) return res.status(404).json({ error: 'DIRECTOR_COMPOSITION_NOT_FOUND', message: '合成任务不存在' });
+    return res.json({ job });
   });
 }
