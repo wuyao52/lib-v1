@@ -49,6 +49,37 @@ const defaultSettings: ProjectSettings = {
   aiModel: defaultModel,
 };
 
+export const normalizeProjectShape = (project: DramaProject): DramaProject => {
+  const incomingSettings = project?.settings || ({} as ProjectSettings);
+  const aiModel: AIModelConfig = {
+    ...defaultModel,
+    ...(incomingSettings.aiModel || {}),
+    parameters: { ...defaultModel.parameters, ...(incomingSettings.aiModel?.parameters || {}) },
+  };
+  const incomingMultiModel = incomingSettings.multiModel;
+  const normalizeSlot = (slot?: AIModelConfig): AIModelConfig => ({
+    ...aiModel,
+    ...(slot || {}),
+    parameters: { ...aiModel.parameters, ...(slot?.parameters || {}) },
+  });
+  return {
+    ...project,
+    nodes: Array.isArray(project?.nodes) ? project.nodes : [],
+    edges: Array.isArray(project?.edges) ? project.edges : [],
+    settings: {
+      ...defaultSettings,
+      ...incomingSettings,
+      resolution: { ...defaultSettings.resolution, ...(incomingSettings.resolution || {}) },
+      aiModel,
+      multiModel: incomingMultiModel ? {
+        textModel: normalizeSlot(incomingMultiModel.textModel),
+        videoModel: normalizeSlot(incomingMultiModel.videoModel),
+        imageModel: normalizeSlot(incomingMultiModel.imageModel),
+      } : undefined,
+    },
+  };
+};
+
 // 生成唯一ID
 const generateId = () => `id-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
@@ -90,18 +121,20 @@ const saveProjectsToStorage = (projects: ProjectInfo[]) => {
   localStorage.setItem(getProjectListKey(), JSON.stringify(projects));
 };
 
-const createPersistableProject = (project: DramaProject): DramaProject => ({
-  ...project,
+const createPersistableProject = (project: DramaProject): DramaProject => {
+  const normalized = normalizeProjectShape(project);
+  return ({
+  ...normalized,
   settings: {
-    ...project.settings,
-    aiModel: { ...project.settings.aiModel, apiKey: '' },
-    multiModel: project.settings.multiModel ? {
-      textModel: { ...project.settings.multiModel.textModel, apiKey: '' },
-      videoModel: { ...project.settings.multiModel.videoModel, apiKey: '' },
-      imageModel: { ...project.settings.multiModel.imageModel, apiKey: '' },
+    ...normalized.settings,
+    aiModel: { ...normalized.settings.aiModel, apiKey: '' },
+    multiModel: normalized.settings.multiModel ? {
+      textModel: { ...normalized.settings.multiModel.textModel, apiKey: '' },
+      videoModel: { ...normalized.settings.multiModel.videoModel, apiKey: '' },
+      imageModel: { ...normalized.settings.multiModel.imageModel, apiKey: '' },
     } : undefined,
   },
-  nodes: project.nodes.map(node => ({
+  nodes: normalized.nodes.map(node => ({
     ...node,
     data: {
       ...node.data,
@@ -110,9 +143,10 @@ const createPersistableProject = (project: DramaProject): DramaProject => ({
       thumbnail: node.data.thumbnail,
     },
   })),
-});
+  });
+};
 
-const restoreProjectSecrets = (project: DramaProject): DramaProject => project;
+const restoreProjectSecrets = (project: DramaProject): DramaProject => normalizeProjectShape(project);
 
 // 保存项目数据到本地存储。失败时绝不删除其他项目。
 const saveProjectDataToStorage = (project: DramaProject): boolean => {
