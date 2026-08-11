@@ -1,3 +1,6 @@
+import type { DirectorAsset } from './directorAsset';
+import type { DirectorClipGeneration } from '@/services/directorVideoService';
+
 export interface DirectorShot {
   clipId: string;
   sceneId: string;
@@ -35,3 +38,18 @@ export interface StoryboardPlan {
   shots: DirectorShot[];
   customSkills: Array<{ id: string; name: string; instructions: string }>;
 }
+
+export interface DirectorSession {
+  id: string;
+  story: string;
+  voice: string;
+  durationMode: DirectorDurationMode;
+  manualDurationSec: number;
+  plan: StoryboardPlan;
+  assets: DirectorAsset[];
+  clips: Record<string, DirectorClipGeneration>;
+  status: 'draft' | 'generating' | 'partial' | 'completed' | 'cancelled';
+  updatedAt: string;
+}
+
+export type DirectorDurationMode = 'ai' | 'manual';
