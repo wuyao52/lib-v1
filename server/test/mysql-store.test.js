@@ -222,3 +222,18 @@ test('schema migrations execute once and skip all ALTER statements on later star
   assert.equal(statements.some((sql) => /^ALTER TABLE/i.test(sql)), false);
   assert.equal(statements.some((sql) => /CREATE TABLE IF NOT EXISTS request_metric_buckets/i.test(sql)), false);
 });
+
+test('MySQL queue shutdown releases only the current worker leases', async () => {
+  const statements = [];
+  const db = new MySqlDatabase('mysql://user:pass@127.0.0.1/test');
+  db.pool = { async query(sql, params) {
+    statements.push({ sql, params });
+    if (/^SELECT id, user_id AS userId/i.test(sql)) return [[]];
+    return [{ affectedRows: 2 }];
+  } };
+  await db.releaseGenerationJobLeases('worker-current');
+  const update = statements.find((item) => /WHERE lease_owner = \?/i.test(item.sql));
+  assert.equal(update.params[1], 'worker-current');
+  assert.match(update.sql, /status = CASE WHEN status = 'submitting' THEN 'queued'/i);
+  assert.match(update.sql, /lease_owner = NULL, lease_until = 0/i);
+});
