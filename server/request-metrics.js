@@ -95,6 +95,12 @@ export function createRequestMetrics({ maxSamples = 20_000, store = null, flushI
     const rows = await store.readRequestMetricBuckets(now - windowMs);
     return { windowHours: Math.round(windowMs / 3_600_000), ...aggregateBuckets(rows), managedAi: aggregateBuckets(rows.filter((item) => item.scope === 'managedAi')), customAi: aggregateBuckets(rows.filter((item) => item.scope === 'customAi')) };
   };
-  const close = async () => { if (timer) clearInterval(timer); await flush(); };
+  const close = async () => {
+    if (timer) clearInterval(timer);
+    while (flushPromise || pending.size) {
+      if (flushPromise) await flushPromise;
+      else await flush();
+    }
+  };
   return { record, snapshot, snapshotPersistent, flush, close, get size() { return samples.length; }, get pendingSize() { return pending.size; } };
 }
