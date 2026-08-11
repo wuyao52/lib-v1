@@ -502,3 +502,7 @@ MIT License
 - `npm run drill:resilience` injects local database and object-storage outages, verifies recovery under concurrent health checks, and exercises maintenance cleanup without touching production data.
 - Maintenance removes expired sessions, verification records, rate-limit buckets, and audit logs older than `AUDIT_LOG_RETENTION_DAYS`.
 - The system console shows database/object-storage usage plus API P95/P99 and managed-AI gateway error rates; raw request paths and bodies are not retained in these metrics.
+- MySQL deployments aggregate sanitized minute-level request metric buckets across replicas and retain them for `REQUEST_METRIC_RETENTION_DAYS`; graceful shutdown flushes the final buffered batch.
+- Database upgrades are recorded in `schema_migrations` and protected by a MySQL advisory lock, so schema-altering migrations run once across concurrent replicas.
+- System users can preview object-storage cleanup without seeing object keys. Execution requires the current system password and only removes stale `healthchecks/` objects after reconciling database references.
+- `npm run fixture:browser` starts an isolated local browser fixture on port 8790. It uses a temporary JSON database and never connects to production services.
