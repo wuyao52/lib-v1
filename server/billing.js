@@ -4,6 +4,7 @@ import { verifyPassword } from './auth.js';
 import { runBackupDrill } from './backup-drill.js';
 import { summarizeStoredObjects } from './object-storage.js';
 import { createStorageCleanupPlan, referencedStorageKeys } from './storage-cleanup.js';
+import { createOrphanQuarantinePlan, quarantineOrphanObjects, restoreQuarantinedObject } from './storage-quarantine.js';
 
 const CATEGORIES = new Set(['text', 'image', 'video']);
 const BILLING_UNITS = new Set(['request', 'image', 'second']);
@@ -133,6 +134,7 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
   let backupDrillRunning = false;
   let storageUsageCache = null;
   const cleanupPreviews = new Map();
+  const quarantinePreviews = new Map();
   const audit = async (req, action, targetType, targetId, metadata = {}) => {
     const record = { id: randomUUID(), userId: req.user.id, action, targetType, targetId: targetId || null, ipAddress: String(req.ip || '').slice(0, 100), userAgent: String(req.get('user-agent') || '').slice(0, 300), metadata: { requestId: req.requestId || null, ...metadata }, createdAt: nowIso() };
     await db.mutate((data) => data.auditLogs.push(record));
@@ -188,6 +190,7 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
         warningBytes: warningBytes || null,
         databaseWarning: databaseWarningBytes > 0 && Number(storageUsageCache.database?.bytes || 0) >= databaseWarningBytes,
         databaseWarningBytes: databaseWarningBytes || null,
+        infrastructure: monitoring?.snapshot?.().capacity?.infrastructure || null,
       });
     } catch (error) { return next(error); }
   });
@@ -234,6 +237,53 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
       storageUsageCache = null;
       await audit(req, 'storage_cleanup_completed', 'object_storage', null, { deleted, deletedBytes, prefix: plan.policy.prefix });
       return res.json({ deleted, deletedBytes, prefix: plan.policy.prefix });
+    } catch (error) { return next(error); }
+  });
+  router.get('/storage-quarantine', (_req, res) => res.json({
+    records: db.read('storageQuarantine').slice().sort((a, b) => b.quarantinedAt.localeCompare(a.quarantinedAt)).slice(0, 200).map((item) => ({
+      id: item.id, objectType: item.objectType, objectSize: Number(item.objectSize || 0), status: item.status,
+      quarantinedAt: item.quarantinedAt, deleteAfter: item.deleteAfter, restoredAt: item.restoredAt, deletedAt: item.deletedAt, errorCode: item.errorCode,
+    })),
+  }));
+  router.get('/storage-quarantine/preview', async (req, res, next) => {
+    try {
+      if (!backupStorage?.list || !backupStorage?.move) return res.status(503).json({ error: 'QUARANTINE_UNAVAILABLE', message: 'Object storage does not support quarantine moves' });
+      const plan = createOrphanQuarantinePlan({
+        objects: await backupStorage.list(''), referencedKeys: referencedStorageKeys(db), quarantineRecords: db.read('storageQuarantine'),
+        minAgeDays: Math.max(1, Number(process.env.ORPHAN_OBJECT_MIN_AGE_DAYS || 7)), maxObjects: Math.min(500, Math.max(1, Number(process.env.ORPHAN_QUARANTINE_MAX_OBJECTS || 100))),
+      });
+      plan.policy.retentionDays = Math.max(1, Number(process.env.QUARANTINE_RETENTION_DAYS || 7));
+      const previewId = randomUUID(); const expiresAt = Date.now() + 5 * 60 * 1000;
+      for (const [id, preview] of quarantinePreviews) if (preview.userId === req.user.id || preview.expiresAt <= Date.now()) quarantinePreviews.delete(id);
+      quarantinePreviews.set(previewId, { userId: req.user.id, expiresAt, keys: plan.candidates.map((item) => item.key) });
+      return res.json({ previewId, expiresAt: new Date(expiresAt).toISOString(), summary: plan.summary, policy: plan.policy });
+    } catch (error) { return next(error); }
+  });
+  router.post('/storage-quarantine/execute', async (req, res, next) => {
+    try {
+      if (!(await requireCurrentPassword(req, res, 'storage_quarantine', 'object_storage', null))) return;
+      const preview = quarantinePreviews.get(String(req.body?.previewId || ''));
+      if (!preview || preview.userId !== req.user.id || preview.expiresAt <= Date.now()) return res.status(409).json({ error: 'QUARANTINE_PREVIEW_EXPIRED', message: 'Quarantine preview is missing or expired' });
+      quarantinePreviews.delete(String(req.body.previewId));
+      const plan = createOrphanQuarantinePlan({
+        objects: await backupStorage.list(''), referencedKeys: referencedStorageKeys(db), quarantineRecords: db.read('storageQuarantine'),
+        minAgeDays: Math.max(1, Number(process.env.ORPHAN_OBJECT_MIN_AGE_DAYS || 7)), maxObjects: Math.min(500, Math.max(1, Number(process.env.ORPHAN_QUARANTINE_MAX_OBJECTS || 100))),
+      });
+      const currentKeys = plan.candidates.map((item) => item.key);
+      if (currentKeys.length !== preview.keys.length || currentKeys.some((key, index) => key !== preview.keys[index])) return res.status(409).json({ error: 'QUARANTINE_PREVIEW_CHANGED', message: 'Object storage changed; create a fresh preview' });
+      const result = await quarantineOrphanObjects({ db, storage: backupStorage, candidates: plan.candidates, actorId: req.user.id, retentionDays: Math.max(1, Number(process.env.QUARANTINE_RETENTION_DAYS || 7)) });
+      storageUsageCache = null;
+      await audit(req, 'storage_quarantine_completed', 'object_storage', null, { quarantined: result.quarantined, failed: result.failed, bytes: result.bytes });
+      return res.json({ quarantined: result.quarantined, failed: result.failed, bytes: result.bytes });
+    } catch (error) { return next(error); }
+  });
+  router.post('/storage-quarantine/:id/restore', async (req, res, next) => {
+    try {
+      if (!(await requireCurrentPassword(req, res, 'storage_quarantine_restore', 'storage_quarantine', req.params.id))) return;
+      const result = await restoreQuarantinedObject({ db, storage: backupStorage, id: req.params.id });
+      if (!result.restored) return res.status(result.error === 'ORIGINAL_OBJECT_EXISTS' ? 409 : 404).json({ error: result.error });
+      await audit(req, 'storage_quarantine_restored', 'storage_quarantine', req.params.id);
+      return res.json(result);
     } catch (error) { return next(error); }
   });
   router.post('/backups/drill', async (req, res) => {
