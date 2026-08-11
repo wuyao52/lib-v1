@@ -26,6 +26,7 @@ type BackupOverview = {
   events: Array<{ id: string; action: string; objectKey: string | null; createdAt: string }>;
 };
 type StorageUsage = { provider: string; objects: number; bytes: number; warning: boolean; warningBytes: number | null; databaseWarning: boolean; databaseWarningBytes: number | null; database: { provider: string; bytes: number; rows: number } | null; groups: Array<{ prefix: string; objects: number; bytes: number }> };
+type StorageCleanupPreview = { previewId: string; expiresAt: string; summary: { candidates: number; candidateBytes: number; referenced: number; referencedBytes: number; recentHealthchecks: number; limited: boolean }; policy: { prefix: string; retentionHours: number; maxDeletes: number } };
 type ProviderFlags = Record<'alipay' | 'wechat', boolean>;
 type BillingProps = { balance: number; transactions: Transaction[]; recharges: Recharge[]; amount: string; setAmount: (value: string) => void; providers: ProviderFlags; provider: 'alipay' | 'wechat'; setProvider: (value: 'alipay' | 'wechat') => void; orders: PaymentOrder[]; startPayment: () => void };
 type AdminUsersProps = { users: AuthUser[]; currentUserId?: string; recharges: Recharge[]; balanceAdjustments: Record<string, string>; setBalanceAdjustments: (value: Record<string, string>) => void; currentPassword: string; act: (job: () => Promise<unknown>, success: string) => Promise<void> };
@@ -66,6 +67,7 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
   const [securityAlerts, setSecurityAlerts] = useState<SecurityAlerts | null>(null);
   const [backupOverview, setBackupOverview] = useState<BackupOverview | null>(null);
   const [storageUsage, setStorageUsage] = useState<StorageUsage | null>(null);
+  const [storageCleanup, setStorageCleanup] = useState<StorageCleanupPreview | null>(null);
 
   const loadBackups = useCallback(async () => {
     const data = await apiRequest<BackupOverview>('/api/admin/backups');
@@ -145,6 +147,25 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
       await apiRequest<{ accepted: true; operationId: string }>('/api/admin/backups/drill', { method: 'POST', body: JSON.stringify({ currentPassword: adminPassword }) });
       await loadBackups();
       setMessage('后台恢复演练已启动。只有出现“验证完成”事件后才代表演练成功。');
+    } catch (error) { setMessage(errorMessage(error)); }
+  };
+
+  const previewStorageCleanup = async () => {
+    try {
+      const preview = await apiRequest<StorageCleanupPreview>('/api/admin/storage-cleanup/preview');
+      setStorageCleanup(preview);
+      setMessage(`清理预览已生成：可安全删除 ${preview.summary.candidates} 个临时对象。`);
+    } catch (error) { setMessage(errorMessage(error)); }
+  };
+
+  const executeStorageCleanup = async () => {
+    if (!storageCleanup) return setMessage('请先生成清理预览');
+    if (!adminPassword) return setMessage('执行清理前请输入当前系统账号密码');
+    try {
+      const result = await apiRequest<{ deleted: number; deletedBytes: number }>('/api/admin/storage-cleanup/execute', { method: 'POST', body: JSON.stringify({ previewId: storageCleanup.previewId, currentPassword: adminPassword }) });
+      setStorageCleanup(null);
+      setMessage(`清理完成：删除 ${result.deleted} 个临时对象。`);
+      await load();
     } catch (error) { setMessage(errorMessage(error)); }
   };
 
@@ -283,6 +304,7 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
           </section>
 
           <OperationsView metrics={metrics} operationsAlerts={operationsAlerts} securityAlerts={securityAlerts} storageUsage={storageUsage} />
+          <StorageCleanupView preview={storageCleanup} onPreview={previewStorageCleanup} onExecute={executeStorageCleanup} currentPassword={adminPassword} />
           <BackupManagementView overview={backupOverview} currentPassword={adminPassword} onStart={startBackupDrill} onRefresh={loadBackups} setMessage={setMessage} />
           <QueueView overview={queue} users={users} />
           <AdminPaymentOrders orders={paymentOrders} users={users} currentPassword={adminPassword} act={act} />
@@ -318,6 +340,13 @@ function OperationsView({ metrics, operationsAlerts, securityAlerts, storageUsag
       <div className={`flex items-center gap-3 rounded border px-3 py-2 ${storageUsage?.databaseWarning ? 'border-amber-500/40 bg-amber-500/5' : 'border-dark-600 bg-dark-900'}`}><Database className="h-4 w-4 text-cyan-400" /><div><p className="text-[10px] text-dark-500">数据库占用</p><p className="text-sm text-white">{storageUsage?.database ? formatBytes(storageUsage.database.bytes) : '-'} <span className="text-xs text-dark-500">{storageUsage?.database?.rows ?? 0} 行</span></p></div></div>
       <div className={`flex items-center gap-3 rounded border px-3 py-2 ${storageUsage?.warning ? 'border-amber-500/40 bg-amber-500/5' : 'border-dark-600 bg-dark-900'}`}><Cloud className="h-4 w-4 text-green-400" /><div><p className="text-[10px] text-dark-500">对象存储占用</p><p className="text-sm text-white">{storageUsage ? formatBytes(storageUsage.bytes) : '-'} <span className="text-xs text-dark-500">{storageUsage?.objects ?? 0} 个对象</span></p></div></div>
     </div>
+  </section>;
+}
+
+function StorageCleanupView({ preview, onPreview, onExecute, currentPassword }: { preview: StorageCleanupPreview | null; onPreview: () => Promise<void>; onExecute: () => Promise<void>; currentPassword: string }) {
+  return <section>
+    <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="flex items-center gap-2 text-sm font-medium text-white"><Trash2 className="h-4 w-4 text-amber-400" />对象存储安全清理</h3><p className="mt-1 text-xs text-dark-400">仅处理超过保留期的 healthchecks 临时对象；资产、视频、备份和数据库引用不会删除。</p></div><button onClick={() => void onPreview()} className="border border-dark-600 px-3 py-2 text-xs text-dark-200 hover:border-primary-500">生成清理预览</button></div>
+    {preview && <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-y border-dark-700 py-3 text-xs text-dark-300"><span>候选 {preview.summary.candidates} 个 · {formatBytes(preview.summary.candidateBytes)} · 引用保护 {preview.summary.referenced} 个 · 保留 {preview.policy.retentionHours} 小时</span><button disabled={!currentPassword || preview.summary.candidates === 0} onClick={() => void onExecute()} className="border border-red-500/40 px-3 py-2 text-red-300 disabled:border-dark-600 disabled:text-dark-600">确认清理</button></div>}
   </section>;
 }
 
