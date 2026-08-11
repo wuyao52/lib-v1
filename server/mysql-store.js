@@ -362,7 +362,7 @@ const TABLES = {
     create: `CREATE TABLE IF NOT EXISTS storage_quarantine (
       id CHAR(36) PRIMARY KEY,
       original_key VARCHAR(1024) NOT NULL,
-      quarantine_key VARCHAR(1024) NOT NULL UNIQUE,
+      quarantine_key VARCHAR(255) NOT NULL UNIQUE,
       object_size BIGINT NOT NULL,
       object_type VARCHAR(32) NOT NULL,
       status VARCHAR(24) NOT NULL,
