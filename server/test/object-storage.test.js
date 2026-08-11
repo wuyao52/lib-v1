@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createObjectStorageFromEnv, summarizeStoredObjects } from '../object-storage.js';
+import { createStorageCleanupPlan } from '../storage-cleanup.js';
 
 test('object storage accepts a complete Alibaba Cloud OSS S3 configuration', () => {
   let clientConfig;
@@ -118,4 +119,23 @@ test('object storage usage groups every object and byte without exposing keys', 
   assert.equal(usage.bytes, 1230);
   assert.deepEqual(usage.groups.find((item) => item.prefix === 'generated-videos/'), { prefix: 'generated-videos/', objects: 1, bytes: 1000 });
   assert.equal(JSON.stringify(usage).includes('user/image.png'), false);
+});
+
+test('storage cleanup only selects stale unreferenced healthchecks and returns a redacted summary', () => {
+  const now = Date.parse('2026-08-11T12:00:00.000Z');
+  const plan = createStorageCleanupPlan({
+    now,
+    referencedKeys: new Set(['healthchecks/referenced.txt', 'assets/user/kept.png']),
+    objects: [
+      { key: 'healthchecks/stale.txt', size: 10, lastModified: '2026-08-09T00:00:00.000Z' },
+      { key: 'healthchecks/recent.txt', size: 20, lastModified: '2026-08-11T11:30:00.000Z' },
+      { key: 'healthchecks/referenced.txt', size: 30, lastModified: '2026-08-09T00:00:00.000Z' },
+      { key: 'assets/user/orphan.png', size: 40, lastModified: '2026-01-01T00:00:00.000Z' },
+      { key: 'generated-videos/user/orphan.mp4', size: 50, lastModified: '2026-01-01T00:00:00.000Z' },
+      { key: 'backups/database.json', size: 60, lastModified: '2026-01-01T00:00:00.000Z' },
+    ],
+  });
+  assert.deepEqual(plan.candidates, [{ key: 'healthchecks/stale.txt', size: 10 }]);
+  assert.deepEqual(plan.summary, { candidates: 1, candidateBytes: 10, referenced: 1, referencedBytes: 30, recentHealthchecks: 1, limited: false });
+  assert.equal(JSON.stringify(plan.summary).includes('stale.txt'), false);
 });
