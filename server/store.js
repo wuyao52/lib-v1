@@ -21,6 +21,7 @@ const EMPTY_DATABASE = {
   userApiConfigs: [],
   paymentOrders: [],
   paymentEvents: [],
+  storageQuarantine: [],
 };
 
 export class JsonDatabase {
@@ -74,5 +75,9 @@ export class JsonDatabase {
   async storageStats() {
     const file = await stat(this.filePath).catch(() => ({ size: 0 }));
     return { provider: 'json', bytes: Number(file.size || 0), rows: Object.values(this.data).reduce((sum, rows) => sum + (Array.isArray(rows) ? rows.length : 0), 0) };
+  }
+
+  migrationStatus() {
+    return { ready: true, currentVersion: 0, expectedVersion: 0, provider: 'json' };
   }
 }
