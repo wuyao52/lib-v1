@@ -6,6 +6,8 @@ yarn-error.log*
 
 # Build
 build/
+playwright-report/
+test-results/
 
 # Environment
 .env
