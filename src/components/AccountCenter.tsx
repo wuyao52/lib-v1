@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Activity, Archive, Check, Cloud, Coins, Copy, Database, Eye, EyeOff, Pencil, Play, Plus, RefreshCw, Shield, Trash2, Wallet, X } from 'lucide-react';
+import { Activity, Archive, Check, Cloud, Coins, Copy, Database, Eye, EyeOff, HardDrive, Pencil, Play, Plus, RefreshCw, Shield, Trash2, Wallet, X } from 'lucide-react';
 import { apiRequest } from '@/services/apiClient';
 import { useAuth, type AuthUser } from '@/auth/AuthContext';
 
@@ -25,8 +25,10 @@ type BackupOverview = {
   backups: Array<{ key: string; size: number; lastModified: string | null; kind: 'drill' | 'scheduled'; verification: string | null }>;
   events: Array<{ id: string; action: string; objectKey: string | null; createdAt: string }>;
 };
-type StorageUsage = { provider: string; objects: number; bytes: number; warning: boolean; warningBytes: number | null; databaseWarning: boolean; databaseWarningBytes: number | null; database: { provider: string; bytes: number; rows: number } | null; groups: Array<{ prefix: string; objects: number; bytes: number }> };
+type StorageUsage = { provider: string; objects: number; bytes: number; warning: boolean; warningBytes: number | null; databaseWarning: boolean; databaseWarningBytes: number | null; database: { provider: string; bytes: number; rows: number } | null; infrastructure: { source: string; usedBytes: number; totalBytes: number; usagePercent: number; reportedAt: string; stale: boolean } | null; groups: Array<{ prefix: string; objects: number; bytes: number }> };
 type StorageCleanupPreview = { previewId: string; expiresAt: string; summary: { candidates: number; candidateBytes: number; referenced: number; referencedBytes: number; recentHealthchecks: number; limited: boolean }; policy: { prefix: string; retentionHours: number; maxDeletes: number } };
+type QuarantinePreview = { previewId: string; expiresAt: string; summary: { candidates: number; candidateBytes: number; referenced: number; tooRecent: number; tracked: number; limited: boolean }; policy: { minAgeDays: number; maxObjects: number; retentionDays: number } };
+type QuarantineRecord = { id: string; objectType: 'asset' | 'generated_video'; objectSize: number; status: string; quarantinedAt: string; deleteAfter: string; restoredAt?: string | null; deletedAt?: string | null; errorCode?: string | null };
 type ProviderFlags = Record<'alipay' | 'wechat', boolean>;
 type BillingProps = { balance: number; transactions: Transaction[]; recharges: Recharge[]; amount: string; setAmount: (value: string) => void; providers: ProviderFlags; provider: 'alipay' | 'wechat'; setProvider: (value: 'alipay' | 'wechat') => void; orders: PaymentOrder[]; startPayment: () => void };
 type AdminUsersProps = { users: AuthUser[]; currentUserId?: string; recharges: Recharge[]; balanceAdjustments: Record<string, string>; setBalanceAdjustments: (value: Record<string, string>) => void; currentPassword: string; act: (job: () => Promise<unknown>, success: string) => Promise<void> };
@@ -68,6 +70,8 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
   const [backupOverview, setBackupOverview] = useState<BackupOverview | null>(null);
   const [storageUsage, setStorageUsage] = useState<StorageUsage | null>(null);
   const [storageCleanup, setStorageCleanup] = useState<StorageCleanupPreview | null>(null);
+  const [quarantinePreview, setQuarantinePreview] = useState<QuarantinePreview | null>(null);
+  const [quarantineRecords, setQuarantineRecords] = useState<QuarantineRecord[]>([]);
 
   const loadBackups = useCallback(async () => {
     const data = await apiRequest<BackupOverview>('/api/admin/backups');
@@ -86,7 +90,7 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
       setPaymentProviders(providerData.providers); setPaymentOrders(orderData.orders);
       return;
     }
-    const [apiData, priceData, userData, rechargeData, queueData, paymentData, metricData, operationData, securityData, backupData, storageData] = await Promise.all([
+    const [apiData, priceData, userData, rechargeData, queueData, paymentData, metricData, operationData, securityData, backupData, storageData, quarantineData] = await Promise.all([
       apiRequest<{ apis: SystemApi[] }>('/api/admin/system-apis'),
       apiRequest<{ pricing: Pricing[] }>('/api/admin/pricing'),
       apiRequest<{ users: AuthUser[] }>('/api/admin/users'),
@@ -98,6 +102,7 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
       apiRequest<SecurityAlerts>('/api/admin/security-alerts'),
       apiRequest<BackupOverview>('/api/admin/backups').catch(() => null),
       apiRequest<StorageUsage>('/api/admin/storage-usage').catch(() => null),
+      apiRequest<{ records: QuarantineRecord[] }>('/api/admin/storage-quarantine').catch(() => ({ records: [] })),
     ]);
     setApis(apiData.apis); setPricing(priceData.pricing); setUsers(userData.users); setRecharges(rechargeData.recharges);
     setQueue(queueData);
@@ -105,6 +110,7 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
     setMetrics(metricData); setOperationsAlerts(operationData); setSecurityAlerts(securityData);
     setBackupOverview(backupData);
     setStorageUsage(storageData);
+    setQuarantineRecords(quarantineData.records);
   }, [mode]);
 
   useEffect(() => { load().catch((error) => setMessage(error.message)); }, [load]);
@@ -167,6 +173,26 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
       setMessage(`清理完成：删除 ${result.deleted} 个临时对象。`);
       await load();
     } catch (error) { setMessage(errorMessage(error)); }
+  };
+
+  const previewQuarantine = async () => {
+    try { const preview = await apiRequest<QuarantinePreview>('/api/admin/storage-quarantine/preview'); setQuarantinePreview(preview); setMessage(`发现 ${preview.summary.candidates} 个可隔离孤立对象。`); }
+    catch (error) { setMessage(errorMessage(error)); }
+  };
+
+  const executeQuarantine = async () => {
+    if (!quarantinePreview) return setMessage('请先生成孤立对象预览');
+    if (!adminPassword) return setMessage('执行隔离前请输入当前系统账号密码');
+    try {
+      const result = await apiRequest<{ quarantined: number; failed: number }>('/api/admin/storage-quarantine/execute', { method: 'POST', body: JSON.stringify({ previewId: quarantinePreview.previewId, currentPassword: adminPassword }) });
+      setQuarantinePreview(null); await load(); setMessage(`已隔离 ${result.quarantined} 个对象，失败 ${result.failed} 个。`);
+    } catch (error) { setMessage(errorMessage(error)); }
+  };
+
+  const restoreQuarantine = async (id: string) => {
+    if (!adminPassword) return setMessage('恢复对象前请输入当前系统账号密码');
+    try { await apiRequest(`/api/admin/storage-quarantine/${id}/restore`, { method: 'POST', body: JSON.stringify({ currentPassword: adminPassword }) }); await load(); setMessage('隔离对象已恢复到原位置。'); }
+    catch (error) { setMessage(errorMessage(error)); }
   };
 
   const revealApiKey = async (apiId: string) => {
@@ -305,6 +331,7 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
 
           <OperationsView metrics={metrics} operationsAlerts={operationsAlerts} securityAlerts={securityAlerts} storageUsage={storageUsage} />
           <StorageCleanupView preview={storageCleanup} onPreview={previewStorageCleanup} onExecute={executeStorageCleanup} currentPassword={adminPassword} />
+          <StorageQuarantineView preview={quarantinePreview} records={quarantineRecords} onPreview={previewQuarantine} onExecute={executeQuarantine} onRestore={restoreQuarantine} currentPassword={adminPassword} />
           <BackupManagementView overview={backupOverview} currentPassword={adminPassword} onStart={startBackupDrill} onRefresh={loadBackups} setMessage={setMessage} />
           <QueueView overview={queue} users={users} />
           <AdminPaymentOrders orders={paymentOrders} users={users} currentPassword={adminPassword} act={act} />
@@ -336,25 +363,34 @@ function OperationsView({ metrics, operationsAlerts, securityAlerts, storageUsag
     <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">{stats.map(([label, value]) => <div key={label} className="border border-dark-600 bg-dark-900 px-3 py-2 rounded"><p className="text-[10px] text-dark-500">{label}</p><p className="mt-1 text-lg text-white">{value}</p></div>)}</div>
     <div className="mt-3 space-y-1 text-xs">{operationsAlerts?.alerts.length ? operationsAlerts.alerts.map((alert) => <div key={alert.code} className="flex items-center justify-between gap-3 border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-amber-200 rounded"><span>{alertLabels[alert.code as keyof typeof alertLabels] || alert.code}</span><span>{alert.code === 'GENERATION_FAILURE_RATE' ? `${alert.count}/${alert.total} (${((alert.rate || 0) * 100).toFixed(1)}%)` : `${alert.count} 项`}</span></div>) : <p className="text-dark-400">暂无运营告警</p>}</div>
     <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-dark-400"><span>登录异常 IP：{securityAlerts?.alerts.loginBruteForce.length ?? 0}</span><span>敏感管理操作：{securityAlerts?.alerts.privilegedActions ?? 0}</span><span>系统模型调用：{securityAlerts?.alerts.modelCalls ?? 0}</span></div>
-    <div className="mt-4 grid gap-2 md:grid-cols-2">
+    <div className="mt-4 grid gap-2 md:grid-cols-3">
       <div className={`flex items-center gap-3 rounded border px-3 py-2 ${storageUsage?.databaseWarning ? 'border-amber-500/40 bg-amber-500/5' : 'border-dark-600 bg-dark-900'}`}><Database className="h-4 w-4 text-cyan-400" /><div><p className="text-[10px] text-dark-500">数据库占用</p><p className="text-sm text-white">{storageUsage?.database ? formatBytes(storageUsage.database.bytes) : '-'} <span className="text-xs text-dark-500">{storageUsage?.database?.rows ?? 0} 行</span></p></div></div>
       <div className={`flex items-center gap-3 rounded border px-3 py-2 ${storageUsage?.warning ? 'border-amber-500/40 bg-amber-500/5' : 'border-dark-600 bg-dark-900'}`}><Cloud className="h-4 w-4 text-green-400" /><div><p className="text-[10px] text-dark-500">对象存储占用</p><p className="text-sm text-white">{storageUsage ? formatBytes(storageUsage.bytes) : '-'} <span className="text-xs text-dark-500">{storageUsage?.objects ?? 0} 个对象</span></p></div></div>
+      <div data-testid="infrastructure-capacity" className={`flex items-center gap-3 rounded border px-3 py-2 ${storageUsage?.infrastructure?.stale || (storageUsage?.infrastructure?.usagePercent || 0) >= 85 ? 'border-amber-500/40 bg-amber-500/5' : 'border-dark-600 bg-dark-900'}`}><HardDrive className="h-4 w-4 text-amber-400" /><div><p className="text-[10px] text-dark-500">基础设施卷占用</p><p className="text-sm text-white">{storageUsage?.infrastructure ? `${storageUsage.infrastructure.usagePercent.toFixed(1)}%` : '-'} <span className="text-xs text-dark-500">{storageUsage?.infrastructure?.stale ? '上报已过期' : storageUsage?.infrastructure ? formatBytes(storageUsage.infrastructure.usedBytes) : '未上报'}</span></p></div></div>
     </div>
   </section>;
 }
 
 function StorageCleanupView({ preview, onPreview, onExecute, currentPassword }: { preview: StorageCleanupPreview | null; onPreview: () => Promise<void>; onExecute: () => Promise<void>; currentPassword: string }) {
   const formatCleanupBytes = (bytes: number) => bytes >= 1024 ** 2 ? `${(bytes / 1024 ** 2).toFixed(1)} MB` : `${Math.max(0, Math.round(bytes / 1024))} KB`;
-  return <section>
+  return <section data-testid="storage-cleanup">
     <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="flex items-center gap-2 text-sm font-medium text-white"><Trash2 className="h-4 w-4 text-amber-400" />对象存储安全清理</h3><p className="mt-1 text-xs text-dark-400">仅处理超过保留期的 healthchecks 临时对象；资产、视频、备份和数据库引用不会删除。</p></div><button onClick={() => void onPreview()} className="border border-dark-600 px-3 py-2 text-xs text-dark-200 hover:border-primary-500">生成清理预览</button></div>
     {preview && <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-y border-dark-700 py-3 text-xs text-dark-300"><span>候选 {preview.summary.candidates} 个 · {formatCleanupBytes(preview.summary.candidateBytes)} · 引用保护 {preview.summary.referenced} 个 · 保留 {preview.policy.retentionHours} 小时</span><button disabled={!currentPassword || preview.summary.candidates === 0} onClick={() => void onExecute()} className="border border-red-500/40 px-3 py-2 text-red-300 disabled:border-dark-600 disabled:text-dark-600">确认清理</button></div>}
+  </section>;
+}
+
+function StorageQuarantineView({ preview, records, onPreview, onExecute, onRestore, currentPassword }: { preview: QuarantinePreview | null; records: QuarantineRecord[]; onPreview: () => Promise<void>; onExecute: () => Promise<void>; onRestore: (id: string) => Promise<void>; currentPassword: string }) {
+  const bytes = (value: number) => value >= 1024 ** 2 ? `${(value / 1024 ** 2).toFixed(1)} MB` : `${Math.max(0, Math.round(value / 1024))} KB`;
+  return <section data-testid="storage-quarantine"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="flex items-center gap-2 text-sm font-medium text-white"><Archive className="h-4 w-4 text-cyan-400" />孤立对象隔离区</h3><p className="mt-1 text-xs text-dark-400">数据库无引用且超过安全期的图片和视频先隔离，到期后才永久删除。</p></div><button onClick={() => void onPreview()} className="border border-dark-600 px-3 py-2 text-xs text-dark-200 hover:border-primary-500">扫描孤立对象</button></div>
+    {preview && <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-y border-dark-700 py-3 text-xs text-dark-300"><span>候选 {preview.summary.candidates} 个 · {bytes(preview.summary.candidateBytes)} · 隔离保留 {preview.policy.retentionDays} 天</span><button disabled={!currentPassword || preview.summary.candidates === 0} onClick={() => void onExecute()} className="border border-amber-500/40 px-3 py-2 text-amber-300 disabled:border-dark-600 disabled:text-dark-600">移入隔离区</button></div>}
+    <div className="mt-3 max-h-48 divide-y divide-dark-700 overflow-y-auto">{records.length ? records.map((item) => <div key={item.id} className="flex items-center justify-between gap-3 py-2 text-xs"><span className="text-dark-300">{item.objectType === 'asset' ? '图片资产' : '生成视频'} · {bytes(item.objectSize)}<small className="block text-dark-500">{item.status} · {new Date(item.quarantinedAt).toLocaleString()}</small></span>{item.status === 'quarantined' && <button disabled={!currentPassword} onClick={() => void onRestore(item.id)} className="border border-cyan-500/40 px-2 py-1 text-cyan-300 disabled:border-dark-600 disabled:text-dark-600">恢复</button>}</div>) : <p className="py-3 text-xs text-dark-500">隔离区为空</p>}</div>
   </section>;
 }
 
 function BackupManagementView({ overview, currentPassword, onStart, onRefresh, setMessage }: { overview: BackupOverview | null; currentPassword: string; onStart: () => Promise<void>; onRefresh: () => Promise<BackupOverview>; setMessage: (value: string) => void }) {
   const formatBytes = (bytes: number) => bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(2)} MB` : `${Math.max(0, Math.round(bytes / 1024))} KB`;
   const eventLabels: Record<string, string> = { backup_completed: '定时备份完成', backup_failed: '定时备份失败', backup_drill_started: '恢复演练已启动', backup_drill_completed: '恢复演练验证完成', backup_drill_failed: '恢复演练失败' };
-  return <section>
+  return <section data-testid="backup-management">
     <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
       <div><h3 className="flex items-center gap-2 text-sm font-medium text-white"><Archive className="h-4 w-4 text-green-400" />生产备份与恢复演练</h3><p className="mt-1 text-xs text-dark-400">对象仅展示元数据；备份正文、数据库内容和加密密钥不会返回浏览器。</p></div>
       <div className="flex items-center gap-2"><button title="刷新备份状态" onClick={() => void onRefresh().catch((error) => setMessage(errorMessage(error)))} className="p-2 text-dark-400 hover:text-white"><RefreshCw className="h-4 w-4" /></button><button disabled={!currentPassword || overview?.running || !overview} onClick={() => void onStart()} className="flex items-center gap-2 border border-green-500/40 px-3 py-2 text-xs text-green-300 disabled:border-dark-600 disabled:text-dark-600"><Play className="h-4 w-4" />{overview?.running ? '演练进行中' : '开始恢复演练'}</button></div>
