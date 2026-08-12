@@ -29,11 +29,26 @@ function parseImageDataUrl(value) {
   return { bytes, mimeType: match[1].toLowerCase() };
 }
 
+function parseImageRequest(req) {
+  if (Buffer.isBuffer(req.body)) {
+    const mimeType = String(req.get('content-type') || '').split(';')[0].trim().toLowerCase();
+    if (!ALLOWED_IMAGE_TYPES.has(mimeType)) {
+      return { error: 'INVALID_IMAGE', message: '仅支持 PNG、JPEG、WebP 或 GIF 图片' };
+    }
+    if (!req.body.length) return { error: 'INVALID_IMAGE', message: '图片内容不能为空' };
+    if (req.body.length > MAX_ASSET_BYTES) return { error: 'ASSET_TOO_LARGE', message: '图片大小不能超过 8 MB' };
+    return { bytes: Buffer.from(req.body), mimeType };
+  }
+  return parseImageDataUrl(req.body?.dataUrl);
+}
+
 function getPublicAssetUrl(req, id) {
   const configuredOrigin = String(process.env.PUBLIC_BACKEND_URL || '').trim().replace(/\/+$/, '');
   const requestOrigin = `${req.protocol}://${req.get('host')}`;
   return `${configuredOrigin || requestOrigin}/api/assets/public/${id}`;
 }
+
+const getStableAssetUrl = (id) => `/api/assets/public/${id}`;
 
 function signAssetAccess(id, expires, secret) {
   return createHmac('sha256', secret).update(`${id}:${expires}`).digest('base64url');
@@ -211,7 +226,7 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
         const referenced = assetIsReferenced(db, req.user.id, asset.id);
         return {
           id: asset.id,
-          url: getPublicAssetUrl(req, asset.id),
+          url: getStableAssetUrl(asset.id),
           mimeType: asset.mimeType,
           byteSize: Number(asset.byteSize || 0),
           storageProvider: asset.storageProvider || (asset.objectKey ? assetStorage?.provider || 'object-storage' : 'database'),
@@ -260,7 +275,7 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
 
   router.post('/', requireAuth, async (req, res, next) => {
     try {
-      const parsed = parseImageDataUrl(req.body?.dataUrl);
+      const parsed = parseImageRequest(req);
       if (parsed.error) return res.status(parsed.error === 'ASSET_TOO_LARGE' ? 413 : 400).json(parsed);
 
       const sha256 = createHash('sha256').update(parsed.bytes).digest('hex');
@@ -316,7 +331,7 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
       return res.status(result.created ? 201 : 200).json({
         asset: {
           id: result.asset.id,
-          url: getPublicAssetUrl(req, result.asset.id),
+          url: getStableAssetUrl(result.asset.id),
           mimeType: result.asset.mimeType,
           byteSize: result.asset.byteSize,
         },
