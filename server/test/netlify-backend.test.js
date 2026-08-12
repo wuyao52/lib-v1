@@ -215,6 +215,30 @@ test('Netlify backend proxy forwards image asset uploads', async (t) => {
   assert.match(result.body, /asset-1/);
 });
 
+test('Netlify backend proxy preserves binary image uploads without JSON expansion', async (t) => {
+  const previousOrigin = process.env.API_ORIGIN;
+  const previousFetch = globalThis.fetch;
+  const imageBytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  process.env.API_ORIGIN = 'https://api.example.com';
+  globalThis.fetch = async (url, options) => {
+    assert.equal(String(url), 'https://api.example.com/api/assets');
+    assert.equal(options.headers.get('content-type'), 'image/png');
+    assert.deepEqual(Buffer.from(options.body), imageBytes);
+    return new Response('{"asset":{"id":"binary-asset","url":"/api/assets/public/binary-asset"}}', { status: 201, headers: { 'content-type': 'application/json' } });
+  };
+  t.after(() => {
+    if (previousOrigin === undefined) delete process.env.API_ORIGIN;
+    else process.env.API_ORIGIN = previousOrigin;
+    globalThis.fetch = previousFetch;
+  });
+  const result = await handler(createEvent('/api/assets', {
+    httpMethod: 'POST', headers: { cookie: 'ads_session=token', 'content-type': 'image/png' },
+    body: imageBytes.toString('base64'), isBase64Encoded: true,
+  }));
+  assert.equal(result.statusCode, 201);
+  assert.match(result.body, /binary-asset/);
+});
+
 test('Netlify backend proxy preserves public image asset bytes', async (t) => {
   const previousOrigin = process.env.API_ORIGIN;
   const previousFetch = globalThis.fetch;
