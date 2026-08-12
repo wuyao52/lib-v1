@@ -21,6 +21,7 @@ ALERT_WEBHOOK_SECRET=至少24位随机字符串
 MONITORING_INTERVAL_MINUTES=5
 ALERT_QUEUE_BACKLOG=25
 ALERT_FAILURE_RATE=0.2
+ALERT_FAILURE_MIN_COUNT=2
 ```
 
 服务会在队列积压或失败率首次跨过阈值时发送 `operations.alert`；恢复后发送 `operations.recovered`。请求头 `x-ai-drama-signature` 是对原始 JSON body 的 `HMAC-SHA256`，接收端必须验证它。相同状态不会反复推送。
