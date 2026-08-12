@@ -20,7 +20,7 @@ import {
 } from '@/types';
 import { createAIService, prepareReferenceImages, SeedanceService } from '@/services/aiService';
 import { ApiError, apiRequest } from '@/services/apiClient';
-import { materializeReferenceImages } from '@/services/assetService';
+import { getSignedAssetUrl, materializeReferenceImages } from '@/services/assetService';
 import { planGenerationTarget } from './generationPolicy';
 import { normalizeModelDuration, videoDurationRules } from '@/services/modelDuration';
 import { refreshManagedModel } from '@/services/managedModelCatalog';
@@ -140,8 +140,8 @@ const createPersistableProject = (project: DramaProject): DramaProject => {
     data: {
       ...node.data,
       // 上传素材使用云端项目数据持久化，不能在退出时清空 data URL
-      generatedContent: node.data.generatedContent,
-      thumbnail: node.data.thumbnail,
+      generatedContent: stableAssetUrl(node.data.generatedContent) || node.data.generatedContent,
+      thumbnail: stableAssetUrl(node.data.thumbnail) || node.data.thumbnail,
     },
   })),
   });
@@ -207,11 +207,16 @@ const materializeProjectImages = async (project: DramaProject): Promise<DramaPro
     ? await materializeReferenceImages(pendingNodes.map((node) => String(node.data.generatedContent)))
     : [];
   const replacements = new Map(pendingNodes.map((node, index) => [node.id, urls[index]]));
+  const stableUrls = [...new Set(project.nodes.flatMap((node) => [node.data.generatedContent, node.data.thumbnail])
+    .map(stableAssetUrl)
+    .filter((url): url is string => Boolean(url)))];
+  const signedResults = await Promise.allSettled(stableUrls.map(async (url) => [url, await getSignedAssetUrl(url)] as const));
+  const signedByStableUrl = new Map(signedResults.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []));
   let changed = false;
   const nodes = project.nodes.map((node) => {
     const uploaded = replacements.get(node.id);
-    const generatedContent = uploaded || stableAssetUrl(node.data.generatedContent) || node.data.generatedContent;
-    const thumbnail = stableAssetUrl(node.data.thumbnail) || node.data.thumbnail;
+    const generatedContent = uploaded || (stableAssetUrl(node.data.generatedContent) ? signedByStableUrl.get(stableAssetUrl(node.data.generatedContent)!) : undefined) || node.data.generatedContent;
+    const thumbnail = (stableAssetUrl(node.data.thumbnail) ? signedByStableUrl.get(stableAssetUrl(node.data.thumbnail)!) : undefined) || node.data.thumbnail;
     if (generatedContent === node.data.generatedContent && thumbnail === node.data.thumbnail) return node;
     changed = true;
     return {
