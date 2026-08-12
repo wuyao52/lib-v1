@@ -5,6 +5,7 @@ import { runBackupDrill } from './backup-drill.js';
 import { summarizeStoredObjects } from './object-storage.js';
 import { createStorageCleanupPlan, referencedStorageKeys } from './storage-cleanup.js';
 import { createOrphanQuarantinePlan, quarantineOrphanObjects, restoreQuarantinedObject } from './storage-quarantine.js';
+import { generationFailureAlertConfig, summarizeGenerationFailures } from './generation-failure-policy.js';
 
 const CATEGORIES = new Set(['text', 'image', 'video']);
 const BILLING_UNITS = new Set(['request', 'image', 'second']);
@@ -309,6 +310,7 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
     const since = now - (24 * 60 * 60 * 1000);
     const recent = jobs.filter((job) => Date.parse(job.createdAt) >= since);
     const completed = recent.filter((job) => job.status === 'completed');
+    const failures = summarizeGenerationFailures(recent);
     const durations = completed.map((job) => Date.parse(job.completedAt || job.updatedAt) - Date.parse(job.createdAt)).filter((value) => value >= 0);
     const refundedCents = db.read('balanceTransactions').filter((item) => item.type === 'model_refund' && Date.parse(item.createdAt) >= since).reduce((sum, item) => sum + Number(item.amountCents || 0), 0);
     const archivedJobIds = new Set(db.read('generatedMedia').map((item) => item.jobId));
@@ -325,6 +327,10 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
         refundedCents,
         archiveFallbacks: completed.filter((job) => job.resultUrl && !archivedJobIds.has(job.id)).length,
         failureRate: recent.length ? Number((recent.filter((job) => job.status === 'failed').length / recent.length).toFixed(4)) : 0,
+        operationalFailureRate: failures.operationalFailureRate,
+        operationalFailed: failures.operationalFailed,
+        excludedFailed: failures.excludedFailed,
+        moderationFailed: failures.moderationFailed,
         queueBacklog: recent.filter((job) => ['queued', 'submitting', 'processing'].includes(job.status)).length,
         averageQueueWaitMs: (() => { const waits = recent.map((job) => Date.parse(job.submittedAt) - Date.parse(job.createdAt)).filter((value) => Number.isFinite(value) && value >= 0); return waits.length ? Math.round(waits.reduce((sum, value) => sum + value, 0) / waits.length) : null; })(),
       },
@@ -347,10 +353,9 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
     const jobs = db.read('generationJobs');
     const recent = jobs.filter((job) => Date.parse(job.createdAt) >= since);
     const backlog = jobs.filter((job) => ['queued', 'submitting', 'processing'].includes(job.status));
-    const failed = recent.filter((job) => job.status === 'failed').length;
-    const failureRate = recent.length ? failed / recent.length : 0;
+    const failures = summarizeGenerationFailures(recent);
     const queueThreshold = Math.max(1, Number.parseInt(process.env.ALERT_QUEUE_BACKLOG || '25', 10) || 25);
-    const failureThreshold = Math.min(1, Math.max(0.01, Number(process.env.ALERT_FAILURE_RATE || '0.2') || 0.2));
+    const failureAlert = generationFailureAlertConfig(process.env);
     const delayedThresholdMs = Math.max(60_000, (Number.parseInt(process.env.ALERT_PROCESSING_MINUTES || '30', 10) || 30) * 60_000);
     const delayed = backlog.filter((job) => job.status === 'processing' && now - Date.parse(job.updatedAt || job.createdAt) >= delayedThresholdMs)
       .map((job) => ({ jobId: job.id, userId: job.userId, apiId: job.apiId, updatedAt: job.updatedAt }));
@@ -363,7 +368,9 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
     const capacityAlerts = (monitoring?.snapshot?.().alerts || []).filter((item) => item.code === 'DATABASE_CAPACITY_WARNING' || item.code === 'OBJECT_STORAGE_CAPACITY_WARNING');
     const alerts = [
       ...(backlog.length >= queueThreshold ? [{ code: 'QUEUE_BACKLOG', severity: 'warning', count: backlog.length, threshold: queueThreshold }] : []),
-      ...(recent.length && failureRate >= failureThreshold ? [{ code: 'GENERATION_FAILURE_RATE', severity: 'warning', count: failed, total: recent.length, rate: Number(failureRate.toFixed(4)), threshold: failureThreshold }] : []),
+      ...(failures.operationalFailed >= failureAlert.minimumCount && failures.operationalFailureRate >= failureAlert.threshold
+        ? [{ code: 'GENERATION_FAILURE_RATE', severity: 'warning', count: failures.operationalFailed, total: failures.eligibleTerminalJobs, rate: failures.operationalFailureRate, threshold: failureAlert.threshold, minimumCount: failureAlert.minimumCount }]
+        : []),
       ...(delayed.length ? [{ code: 'PROCESSING_DELAYED', severity: 'warning', count: delayed.length, thresholdMinutes: Math.round(delayedThresholdMs / 60_000) }] : []),
       ...(backupFailed ? [{ code: 'BACKUP_FAILED', severity: 'critical', count: 1, occurredAt: latestBackupFailure.createdAt }] : []),
       ...(backupStale ? [{ code: 'BACKUP_STALE', severity: 'critical', count: 1, thresholdHours: backupMaxAgeHours, lastSuccessAt: latestBackup?.createdAt || null }] : []),
@@ -371,6 +378,7 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
     ];
     return res.json({
       generatedAt: nowIso(), windowHours: 24, healthy: alerts.length === 0, alerts, delayed,
+      generationFailures: { ...failures, threshold: failureAlert.threshold, minimumCount: failureAlert.minimumCount },
       backup: { lastSuccessAt: latestBackup?.createdAt || null, lastFailureAt: latestBackupFailure?.createdAt || null },
     });
   });
