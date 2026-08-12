@@ -31,7 +31,12 @@ const fixtureStorage = {
 await db.mutate((data) => {
   data.users.push({ id: userId, username: 'browser-admin', email: 'browser-admin@example.test', name: 'browser-admin', passwordHash: 'fixture:not-used', role: 'system', balanceCents: 5000, createdAt: now.toISOString() });
   data.sessions.push({ id: randomUUID(), userId, tokenHash: createHash('sha256').update(token).digest('hex'), createdAt: now.getTime(), expiresAt: now.getTime() + 60 * 60 * 1000, userAgent: 'browser-e2e' });
-  data.projects.push({ id: 'browser-project', userId, title: '浏览器联合验证项目', description: 'local fixture', projectData: { id: 'browser-project', title: '浏览器联合验证项目', description: 'local fixture', nodes: [], edges: [], settings: {}, createdAt: now.toISOString(), updatedAt: now.toISOString() }, version: 1, createdAt: now.toISOString(), updatedAt: now.toISOString() });
+  const fixtureNodes = [
+    { id: 'batch-source-a', type: 'sceneNode', position: { x: 80, y: 120 }, data: { label: '批量来源 A', type: 'text', content: '来源 A', duration: 5, prompt: '', settings: {}, status: 'idle' } },
+    { id: 'batch-source-b', type: 'sceneNode', position: { x: 80, y: 500 }, data: { label: '批量来源 B', type: 'text', content: '来源 B', duration: 5, prompt: '', settings: {}, status: 'idle' } },
+    { id: 'batch-target', type: 'sceneNode', position: { x: 620, y: 300 }, data: { label: '现有目标组件', type: 'video', content: '目标', duration: 5, prompt: '', settings: {}, status: 'idle' } },
+  ];
+  data.projects.push({ id: 'browser-project', userId, title: '浏览器联合验证项目', description: 'local fixture', projectData: { id: 'browser-project', title: '浏览器联合验证项目', description: 'local fixture', nodes: fixtureNodes, edges: [], settings: {}, createdAt: now.toISOString(), updatedAt: now.toISOString() }, version: 1, createdAt: now.toISOString(), updatedAt: now.toISOString() });
   data.generationHistory.push({ id: randomUUID(), userId, projectId: 'browser-project', nodeId: 'video-result', type: 'video', prompt: '浏览器联合验证短片', url: 'https://example.test/generated.mp4', thumbnail: null, createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString() });
 });
 
