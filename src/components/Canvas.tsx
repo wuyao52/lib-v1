@@ -325,6 +325,7 @@ export default function Canvas() {
     addNode({ id, type: 'sceneNode', position: { x: right + 120, y: top }, data: {
       label: `批量组件 ${project.nodes.length + 1}`, type: 'transition', content: '', duration: 5,
       prompt: selectedNodes.map((node) => `@[${node.data.label}](${node.id})`).join(' '),
+      referenceNodeIds: selectedNodes.map((node) => node.id),
       settings: { style: project.settings.defaultStyle, mood: '', camera: '', lighting: '' }, status: 'idle', progress: 0,
     } });
     selectedNodes.forEach((node) => onConnect({ source: node.id, target: id, sourceHandle: null, targetHandle: null }));
