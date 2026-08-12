@@ -33,6 +33,9 @@ export default function NodePropertiesPanel() {
       imageUrl: candidate.data.type === 'image' ? candidate.data.generatedContent : undefined,
     }));
   const configuredVideoModel = project.settings.multiModel?.videoModel || project.settings.aiModel;
+  const savedReferences = (data.referenceNodeIds || [])
+    .map((id: string) => project.nodes.find((candidate) => candidate.id === id))
+    .filter(Boolean);
 
   return (
     <AnimatePresence>
@@ -117,6 +120,15 @@ export default function NodePropertiesPanel() {
                   placeholder="输入提示词，输入 @ 引用其他画布目标"
                   minHeightClass="min-h-32"
                 />
+                {savedReferences.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5" data-testid="node-saved-references">
+                    {savedReferences.map((reference: any) => (
+                      <span key={reference.id} className="inline-flex items-center rounded border border-primary-500/30 bg-primary-500/10 px-2 py-1 text-[10px] text-primary-200">
+                        @{reference.data.label}
+                      </span>
+                    ))}
+                  </div>
+                )}
                 <div className="text-[10px] text-dark-500">
                   输入 @ 后选择目标，图片引用将在当前位置显示为缩略图
                 </div>
