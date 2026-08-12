@@ -55,6 +55,7 @@ export default function Canvas() {
 
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [showGenerationModal, setShowGenerationModal] = useState(false);
   const [showWatermarkModal, setShowWatermarkModal] = useState(false);
   const [watermarkSourceUrl, setWatermarkSourceUrl] = useState('');
@@ -125,15 +126,18 @@ export default function Canvas() {
   };
 
   const handleFileDrop = async (event: React.DragEvent) => {
-    if (!project || hasModalOpen) return; // 弹窗打开时忽略
+    if (!project || hasModalOpen || uploadStatus) return;
     const files = Array.from(event.dataTransfer.files);
     const dropPosition = screenToFlowPosition({ x: event.clientX, y: event.clientY });
 
-    for (const file of files) {
+    let uploadedCount = 0;
+    setUploadStatus(`准备上传 ${files.length} 个文件...`);
+    for (const [fileIndex, file] of files.entries()) {
       const fileType = getFileType(file);
       if (!fileType) continue;
 
       try {
+        setUploadStatus(`正在处理 ${fileIndex + 1}/${files.length}：${file.name}`);
         const dataUrl = await readFileAsDataURL(file);
         const storedUrl = fileType === 'image'
           ? (await materializeReferenceImages([dataUrl]))[0]
@@ -157,12 +161,15 @@ export default function Canvas() {
             progress: 100,
           },
         });
+        uploadedCount += 1;
       } catch (error) {
         console.error('素材上传失败:', error);
         window.alert(error instanceof Error ? `图片上传失败：${error.message}` : '图片上传失败，请稍后重试');
       }
     }
     setIsDraggingFile(false);
+    setUploadStatus(uploadedCount ? `已上传 ${uploadedCount}/${files.length} 个文件` : null);
+    if (uploadedCount) window.setTimeout(() => setUploadStatus(null), 2500);
   };
 
   const onDrop = (event: React.DragEvent) => {
@@ -347,6 +354,8 @@ export default function Canvas() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {uploadStatus && <div className="absolute left-1/2 top-20 z-[70] -translate-x-1/2 rounded-md border border-cyan-500/40 bg-dark-900/95 px-4 py-2 text-sm text-cyan-200 shadow-xl">{uploadStatus}</div>}
 
       <ReactFlow
         nodes={project.nodes}
