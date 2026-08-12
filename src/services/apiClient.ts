@@ -21,11 +21,13 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
     : null;
   const request = (async () => {
   const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
+  const isBinaryBody = (typeof Blob !== 'undefined' && options.body instanceof Blob)
+    || (typeof ArrayBuffer !== 'undefined' && (options.body instanceof ArrayBuffer || ArrayBuffer.isView(options.body as any)));
   const response = await fetch(path, {
     ...options,
     credentials: 'include',
     headers: {
-      ...(options.body && !isFormData ? { 'Content-Type': 'application/json' } : {}),
+      ...(options.body && !isFormData && !isBinaryBody ? { 'Content-Type': 'application/json' } : {}),
       ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
       ...options.headers,
     },
