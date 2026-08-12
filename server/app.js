@@ -160,6 +160,8 @@ export async function createApp(options = {}) {
   const preserveRawBody = (req, _res, buffer) => { req.rawBody = Buffer.from(buffer); };
   // Custom API calls may be multipart uploads; keep their exact body for the allowlisted proxy.
   app.use('/api/user-ai', express.raw({ type: () => true, limit: '12mb', verify: preserveRawBody }));
+  // Image assets are sent as binary to avoid Base64/JSON expansion in browsers and proxies.
+  app.use('/api/assets', express.raw({ type: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'], limit: '8mb', verify: preserveRawBody }));
   app.use(express.json({ limit: '22mb', verify: preserveRawBody }));
   app.use(express.urlencoded({ extended: false, limit: '1mb', verify: preserveRawBody }));
   app.use(cookieParser());
