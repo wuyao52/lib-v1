@@ -88,6 +88,8 @@ export default function PromptMentionEditor({ value, onChange, nodes, placeholde
   const editorRef = useRef<HTMLDivElement>(null);
   const rangeRef = useRef<Range | null>(null);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [activeMentionIndex, setActiveMentionIndex] = useState(0);
+  const [menuPosition, setMenuPosition] = useState<{ left: number; top: number } | null>(null);
 
   useEffect(() => {
     const editor = editorRef.current;
@@ -95,12 +97,18 @@ export default function PromptMentionEditor({ value, onChange, nodes, placeholde
     renderEditorValue(editor, value, nodes);
   }, [value, nodes]);
 
+  const closeMentionMenu = () => {
+    setMentionQuery(null);
+    setMenuPosition(null);
+    setActiveMentionIndex(0);
+  };
+
   const saveRangeAndQuery = () => {
     const editor = editorRef.current;
     const selection = window.getSelection();
-    if (!editor || !selection?.rangeCount) return setMentionQuery(null);
+    if (!editor || !selection?.rangeCount) return closeMentionMenu();
     const range = selection.getRangeAt(0);
-    if (!editor.contains(range.startContainer)) return setMentionQuery(null);
+    if (!editor.contains(range.startContainer)) return closeMentionMenu();
     rangeRef.current = range.cloneRange();
     const beforeRange = range.cloneRange();
     beforeRange.selectNodeContents(editor);
@@ -108,7 +116,15 @@ export default function PromptMentionEditor({ value, onChange, nodes, placeholde
     const before = beforeRange.toString();
     const lastAt = before.lastIndexOf('@');
     const query = lastAt >= 0 ? before.slice(lastAt + 1) : '';
-    setMentionQuery(lastAt >= 0 && !/[\s\n]/.test(query) ? query : null);
+    if (lastAt < 0 || /[\s\n]/.test(query)) return closeMentionMenu();
+    const rect = range.getBoundingClientRect();
+    const editorRect = editor.getBoundingClientRect();
+    setMentionQuery(query);
+    setActiveMentionIndex(0);
+    setMenuPosition({
+      left: Math.max(0, rect.left - editorRect.left),
+      top: Math.max(0, rect.bottom - editorRect.top + 4),
+    });
   };
 
   const handleInput = () => {
@@ -142,11 +158,15 @@ export default function PromptMentionEditor({ value, onChange, nodes, placeholde
     selection?.removeAllRanges();
     selection?.addRange(range);
     editor.focus();
-    setMentionQuery(null);
+    closeMentionMenu();
     onChange(serializeEditor(editor));
   };
 
   const filteredNodes = nodes.filter((node) => !mentionQuery || node.label.toLowerCase().includes(mentionQuery.toLowerCase()));
+  const selectActiveMention = () => {
+    const node = filteredNodes[activeMentionIndex];
+    if (node) insertMention(node);
+  };
 
   return (
     <div className="relative">
@@ -159,15 +179,44 @@ export default function PromptMentionEditor({ value, onChange, nodes, placeholde
         contentEditable
         suppressContentEditableWarning
         onInput={handleInput}
-        onKeyUp={saveRangeAndQuery}
         onMouseUp={saveRangeAndQuery}
-        onKeyDown={(event) => { if (event.key === 'Escape') setMentionQuery(null); }}
+        onKeyDown={(event) => {
+          if (mentionQuery === null) {
+            if (event.key === 'Escape') closeMentionMenu();
+            return;
+          }
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            closeMentionMenu();
+          } else if (event.key === 'ArrowDown' && filteredNodes.length) {
+            event.preventDefault();
+            setActiveMentionIndex((index) => (index + 1) % filteredNodes.length);
+          } else if (event.key === 'ArrowUp' && filteredNodes.length) {
+            event.preventDefault();
+            setActiveMentionIndex((index) => (index - 1 + filteredNodes.length) % filteredNodes.length);
+          } else if ((event.key === 'Enter' || event.key === 'Tab') && filteredNodes.length) {
+            event.preventDefault();
+            selectActiveMention();
+          }
+        }}
         className={`${minHeightClass} w-full overflow-y-auto whitespace-pre-wrap rounded-lg border border-dark-600 bg-dark-700 px-3 py-2 text-sm text-white outline-none focus:border-primary-500`}
       />
-      {mentionQuery !== null && (
-        <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-44 overflow-y-auto rounded-lg border border-dark-600 bg-dark-900 p-1 shadow-xl">
+      {mentionQuery !== null && menuPosition && (
+        <div
+          className="absolute z-50 max-h-44 min-w-56 max-w-[min(20rem,calc(100%-0.5rem))] overflow-y-auto rounded-lg border border-dark-600 bg-dark-900 p-1 shadow-xl"
+          style={{ left: menuPosition.left, top: menuPosition.top }}
+          data-testid="mention-menu"
+        >
           {filteredNodes.length ? filteredNodes.map((node) => (
-            <button key={node.id} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => insertMention(node)} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-dark-200 hover:bg-primary-600/20 hover:text-white">
+            <button
+              key={node.id}
+              type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => insertMention(node)}
+              className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs ${filteredNodes[activeMentionIndex]?.id === node.id ? 'bg-primary-600/30 text-white' : 'text-dark-200 hover:bg-primary-600/20 hover:text-white'}`}
+              aria-selected={filteredNodes[activeMentionIndex]?.id === node.id}
+              data-testid={`mention-option-${node.id}`}
+            >
               <span className="flex h-8 w-10 shrink-0 items-center justify-center overflow-hidden rounded border border-dark-600 bg-dark-800">
                 {node.type === 'image' && node.imageUrl ? <img src={node.imageUrl} alt="" className="h-full w-full object-cover" /> : <ImageIcon className="h-4 w-4 text-dark-400" />}
               </span>
