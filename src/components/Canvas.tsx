@@ -15,7 +15,7 @@ import SceneNodeComponent from './SceneNode';
 import GenerationModal, { GenerationSettings } from './GenerationModal';
 import RemoveWatermarkModal from './RemoveWatermarkModal';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Upload, Image, Video, Droplets, Wand2, Plus, Wallet } from 'lucide-react';
+import { Upload, Image, Video, Droplets, Wand2, Plus, Wallet, GitMerge } from 'lucide-react';
 import { useAuth } from '@/auth/AuthContext';
 import { apiRequest } from '@/services/apiClient';
 import { materializeReferenceImages } from '@/services/assetService';
@@ -51,6 +51,7 @@ export default function Canvas() {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const generationSourceNodeIdsRef = useRef<string[]>([]);
   const connectionSourceNodeIdsRef = useRef<string[]>([]);
+  const batchConnectionSourceIdsRef = useRef<string[]>([]);
   const generationPositionRef = useRef({ x: 0, y: 0 });
 
   const [isSelectionMode, setIsSelectionMode] = useState(false);
@@ -61,6 +62,7 @@ export default function Canvas() {
   const [watermarkSourceUrl, setWatermarkSourceUrl] = useState('');
   const [watermarkSourceType, setWatermarkSourceType] = useState<'image' | 'video'>('image');
   const [balanceCents, setBalanceCents] = useState(user?.balanceCents || 0);
+  const [batchConnection, setBatchConnection] = useState<{ start: { x: number; y: number }; current: { x: number; y: number }; targetId: string | null } | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -233,7 +235,21 @@ export default function Canvas() {
     setShowGenerationModal(true);
   };
 
-  const handleConnect = (connection: Connection) => onConnect(connection);
+  const connectSourcesToTarget = (sourceIds: string[], targetId: string) => {
+    [...new Set(sourceIds)].filter((sourceId) => sourceId !== targetId).forEach((sourceId) => {
+      if (!project?.edges.some((edge) => edge.source === sourceId && edge.target === targetId)) {
+        onConnect({ source: sourceId, target: targetId, sourceHandle: null, targetHandle: null });
+      }
+    });
+  };
+
+  const handleConnect = (connection: Connection) => {
+    if (!connection.source || !connection.target) return;
+    const groupedSources = connectionSourceNodeIdsRef.current.includes(connection.source)
+      ? connectionSourceNodeIdsRef.current
+      : [connection.source];
+    connectSourcesToTarget(groupedSources, connection.target);
+  };
 
   const handleGenerationSelect = (type: 'video' | 'image' | 'img2img', settings: GenerationSettings) => {
     const sourceNode = generationSourceNodeIdsRef.current[0];
@@ -257,6 +273,50 @@ export default function Canvas() {
   const sourceImageNode = generationSourceNodes.find((node) => node.data.type === 'image' && node.data.generatedContent);
   const configuredVideoModel = project.settings.multiModel?.videoModel || project.settings.aiModel;
   const selectedNodes = project.nodes.filter((node) => node.selected);
+  const targetNodeAt = (clientX: number, clientY: number, sourceIds: string[]) => {
+    const element = document.elementsFromPoint(clientX, clientY)
+      .find((candidate) => candidate.classList.contains('react-flow__node') && !sourceIds.includes((candidate as HTMLElement).dataset.id || '')) as HTMLElement | undefined;
+    return element?.dataset.id || null;
+  };
+
+  const startBatchConnection = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const sourceIds = selectedNodes.map((node) => node.id);
+    if (sourceIds.length < 2) return;
+    event.preventDefault();
+    event.stopPropagation();
+    batchConnectionSourceIdsRef.current = sourceIds;
+    const start = { x: event.clientX, y: event.clientY };
+    setBatchConnection({ start, current: start, targetId: null });
+    const move = (event: PointerEvent) => {
+      const sourceIds = batchConnectionSourceIdsRef.current;
+      const current = { x: event.clientX, y: event.clientY };
+      setBatchConnection((active) => active ? { ...active, current, targetId: targetNodeAt(current.x, current.y, sourceIds) } : null);
+    };
+    const cleanup = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', finish);
+    };
+    const finish = (event: PointerEvent) => {
+      const sourceIds = batchConnectionSourceIdsRef.current;
+      const targetId = targetNodeAt(event.clientX, event.clientY, sourceIds);
+      if (targetId) connectSourcesToTarget(sourceIds, targetId);
+      batchConnectionSourceIdsRef.current = [];
+      setBatchConnection(null);
+      cleanup();
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', finish);
+    window.addEventListener('pointercancel', finish);
+  };
+
+  const batchLine = batchConnection && reactFlowWrapper.current ? (() => {
+    const rect = reactFlowWrapper.current!.getBoundingClientRect();
+    const start = { x: batchConnection.start.x - rect.left, y: batchConnection.start.y - rect.top };
+    const current = { x: batchConnection.current.x - rect.left, y: batchConnection.current.y - rect.top };
+    const bend = Math.max(60, Math.abs(current.x - start.x) * 0.45);
+    return { current, path: `M ${start.x} ${start.y} C ${start.x + bend} ${start.y}, ${current.x - bend} ${current.y}, ${current.x} ${current.y}` };
+  })() : null;
   const createBatchNode = () => {
     if (selectedNodes.length < 2) return;
     const right = Math.max(...selectedNodes.map((node) => node.position.x + 240));
@@ -401,7 +461,23 @@ export default function Canvas() {
           <button onClick={createBatchNode} title="将选中目标连接到新组件" className="flex items-center gap-1 rounded-lg bg-primary-600 px-3 py-1.5 text-xs text-white hover:bg-primary-500">
             <Plus className="h-4 w-4" /> 新建连接组件
           </button>
+          <button
+            type="button"
+            onPointerDown={startBatchConnection}
+            title="拖动连线到现有组件，将所有选中组件一起连接"
+            className="flex cursor-crosshair items-center gap-1 rounded-lg border border-cyan-500/50 bg-cyan-500/10 px-3 py-1.5 text-xs text-cyan-200 hover:bg-cyan-500/20"
+            data-testid="batch-connect-handle"
+          >
+            <GitMerge className="h-4 w-4" /> 拖线到现有组件
+          </button>
         </div>
+      )}
+
+      {batchLine && (
+        <svg className="pointer-events-none absolute inset-0 z-[80] h-full w-full overflow-visible" aria-hidden="true" data-testid="batch-connection-line">
+          <path d={batchLine.path} fill="none" stroke={batchConnection?.targetId ? '#22d3ee' : '#8b5cf6'} strokeWidth="3" strokeDasharray="8 5" />
+          <circle cx={batchLine.current.x} cy={batchLine.current.y} r="7" fill={batchConnection?.targetId ? '#22d3ee' : '#8b5cf6'} stroke="#0f172a" strokeWidth="3" />
+        </svg>
       )}
 
       {/* 生成弹窗 */}
