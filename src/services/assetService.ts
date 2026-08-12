@@ -10,7 +10,7 @@ type AssetUploadResponse = {
 
 const ASSET_PATH = /\/api\/assets\/public\/([^/?#]+)/i;
 
-async function refreshAssetUrl(image: string, signal?: AbortSignal): Promise<string> {
+export async function getSignedAssetUrl(image: string, signal?: AbortSignal): Promise<string> {
   let parsed: URL;
   try { parsed = new URL(image, window.location.origin); } catch { return image; }
   const assetId = parsed.pathname.match(ASSET_PATH)?.[1];
@@ -50,7 +50,7 @@ export async function materializeReferenceImages(images: string[], signal?: Abor
   const materialized: string[] = [];
   for (const image of images) {
     if (!/^data:image\//i.test(image)) {
-      materialized.push(await refreshAssetUrl(image, signal));
+      materialized.push(await getSignedAssetUrl(image, signal));
       continue;
     }
     const prepared = await compressImageDataUrl(image, {
