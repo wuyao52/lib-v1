@@ -42,6 +42,14 @@ async function upload(baseUrl, cookie, dataUrl) {
   });
 }
 
+async function uploadBinary(baseUrl, cookie, bytes = PNG_BYTES, mimeType = 'image/png') {
+  return fetch(`${baseUrl}/api/assets`, {
+    method: 'POST',
+    headers: { cookie, 'content-type': mimeType },
+    body: bytes,
+  });
+}
+
 test('image assets require auth, persist exact bytes, deduplicate per user and validate input', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'ads-assets-'));
   const sentCodes = [];
@@ -69,11 +77,11 @@ test('image assets require auth, persist exact bytes, deduplicate per user and v
   const firstUpload = await upload(baseUrl, firstCookie, PNG_DATA_URL);
   assert.equal(firstUpload.status, 201);
   const firstAsset = (await firstUpload.json()).asset;
-  assert.equal(firstAsset.url, `https://backend.example.com/api/assets/public/${firstAsset.id}`);
+  assert.equal(firstAsset.url, `/api/assets/public/${firstAsset.id}`);
   assert.equal(firstAsset.mimeType, 'image/png');
   assert.equal(firstAsset.byteSize, PNG_BYTES.length);
 
-  const unsignedUrl = `${baseUrl}${new URL(firstAsset.url).pathname}`;
+  const unsignedUrl = `${baseUrl}${new URL(firstAsset.url, baseUrl).pathname}`;
   const anonymousResponse = await fetch(unsignedUrl);
   assert.equal(anonymousResponse.status, 401);
   const ownerResponse = await fetch(unsignedUrl, { headers: { cookie: firstCookie } });
@@ -99,6 +107,12 @@ test('image assets require auth, persist exact bytes, deduplicate per user and v
   assert.equal(otherUserUpload.status, 201);
   assert.notEqual((await otherUserUpload.json()).asset.id, firstAsset.id);
   assert.equal(db.read('assets').length, 2);
+
+  const binaryUpload = await uploadBinary(baseUrl, firstCookie);
+  assert.equal(binaryUpload.status, 200);
+  assert.equal((await binaryUpload.json()).asset.id, firstAsset.id);
+  const emptyBinary = await uploadBinary(baseUrl, firstCookie, Buffer.alloc(0));
+  assert.equal(emptyBinary.status, 400);
 
   const invalidMime = await upload(baseUrl, firstCookie, 'data:text/plain;base64,SGVsbG8=');
   assert.equal(invalidMime.status, 400);
