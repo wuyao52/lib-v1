@@ -38,6 +38,7 @@ export interface SceneNodeData {
   content: string;
   duration: number; // 秒
   prompt?: string;
+  referenceNodeIds?: string[];
   generatedContent?: string;
   settings: {
     style?: string;
