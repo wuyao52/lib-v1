@@ -256,7 +256,7 @@ function collectReferenceImages(
   promptOverride = '',
   additionalNodeIds: string[] = [],
 ): string[] {
-  const referencedIds = new Set<string>([node.id, ...additionalNodeIds]);
+  const referencedIds = new Set<string>([node.id, ...(node.data.referenceNodeIds || []), ...additionalNodeIds]);
   const prompt = `${String(node.data.prompt || node.data.content || '')} ${promptOverride}`;
   for (const match of prompt.matchAll(/@\[[^\]]+\]\(([^)]+)\)/g)) referencedIds.add(match[1]);
   for (const edge of project.edges) {
