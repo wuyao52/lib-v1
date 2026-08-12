@@ -84,6 +84,7 @@ export const normalizeProjectShape = (project: DramaProject): DramaProject => {
 const generateId = () => `id-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
 let storageScope = 'unscoped';
+let storageScopeEpoch = 0;
 let saveQueuedWhileBusy = false;
 const getProjectListKey = () => `ai-drama-projects:${storageScope}`;
 const getProjectDataKey = (projectId: string) => `ai-drama-project:${storageScope}:${projectId}`;
@@ -194,25 +195,39 @@ const loadProjectListFromCloud = async (): Promise<ProjectInfo[]> => {
   return result.projects;
 };
 
+const stableAssetUrl = (value: unknown): string | undefined => {
+  const source = String(value || '');
+  const match = source.match(/\/api\/assets\/public\/([^/?#]+)/i);
+  return match ? `/api/assets/public/${encodeURIComponent(decodeURIComponent(match[1]))}` : undefined;
+};
+
 const materializeProjectImages = async (project: DramaProject): Promise<DramaProject> => {
   const pendingNodes = project.nodes.filter((node) => /^data:image\//i.test(String(node.data.generatedContent || '')));
-  if (!pendingNodes.length) return project;
-
-  const urls = await materializeReferenceImages(pendingNodes.map((node) => String(node.data.generatedContent)));
+  const urls = pendingNodes.length
+    ? await materializeReferenceImages(pendingNodes.map((node) => String(node.data.generatedContent)))
+    : [];
   const replacements = new Map(pendingNodes.map((node, index) => [node.id, urls[index]]));
+  let changed = false;
+  const nodes = project.nodes.map((node) => {
+    const uploaded = replacements.get(node.id);
+    const generatedContent = uploaded || stableAssetUrl(node.data.generatedContent) || node.data.generatedContent;
+    const thumbnail = stableAssetUrl(node.data.thumbnail) || node.data.thumbnail;
+    if (generatedContent === node.data.generatedContent && thumbnail === node.data.thumbnail) return node;
+    changed = true;
+    return {
+      ...node,
+      data: {
+        ...node.data,
+        generatedContent,
+        thumbnail,
+        mediaSource: node.data.mediaSource || (String(node.data.prompt || '').trim() ? 'generated' : 'uploaded'),
+      },
+    };
+  });
+  if (!changed) return project;
   return {
     ...project,
-    nodes: project.nodes.map((node) => {
-      const url = replacements.get(node.id);
-      return url ? {
-        ...node,
-        data: {
-          ...node.data,
-          generatedContent: url,
-          mediaSource: node.data.mediaSource || (String(node.data.prompt || '').trim() ? 'generated' : 'uploaded'),
-        },
-      } : node;
-    }),
+    nodes,
   };
 };
 
@@ -309,7 +324,7 @@ interface ProjectStore {
   closeProject: () => void;
   deleteProject: (projectId: string) => void;
   refreshProjects: () => void;
-  setUserScope: (userId: string) => void;
+  setUserScope: (userId: string) => Promise<void>;
 
   // 画布操作
   onNodesChange: OnNodesChange;
@@ -499,6 +514,9 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
   setUserScope: async (userId) => {
     const nextScope = userId.replace(/[^a-zA-Z0-9-]/g, '');
     if (!nextScope || nextScope === storageScope) return;
+    const previousTimer = get().autoSaveTimer;
+    if (previousTimer) clearTimeout(previousTimer);
+    const scopeEpoch = ++storageScopeEpoch;
     Object.keys(sessionStorage)
       .filter((key) => key.startsWith('ai-drama-project-secrets:'))
       .forEach((key) => sessionStorage.removeItem(key));
@@ -511,22 +529,16 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
       selectedNode: null,
       history: [],
       historyIndex: -1,
+      autoSaveTimer: null,
+      isSaving: false,
     });
     try {
       const remoteProjects = await loadProjectListFromCloud();
-      const remoteById = new Map(remoteProjects.map((project) => [project.id, project]));
-      const localProjects = getStoredProjects();
-      for (const localInfo of localProjects) {
-        const remoteInfo = remoteById.get(localInfo.id);
-        if (!remoteInfo || localInfo.updatedAt > remoteInfo.updatedAt) {
-          const localProject = loadProjectDataFromStorage(localInfo.id);
-          if (localProject) await saveProjectToCloud(localProject);
-        }
-      }
-      const synchronizedProjects = await loadProjectListFromCloud();
-      saveProjectsToStorage(synchronizedProjects);
-      set({ projects: synchronizedProjects });
+      if (scopeEpoch !== storageScopeEpoch || storageScope !== nextScope) return;
+      saveProjectsToStorage(remoteProjects);
+      set({ projects: remoteProjects });
     } catch (error) {
+      if (scopeEpoch !== storageScopeEpoch || storageScope !== nextScope) return;
       console.warn('项目云同步失败，当前继续使用本地缓存', error);
     }
   },
@@ -921,11 +933,15 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     if (!project) return;
     if (get().isSaving) { saveQueuedWhileBusy = true; return; }
 
+    const saveScope = storageScope;
+    const saveScopeEpoch = storageScopeEpoch;
+
     set({ isSaving: true });
 
     let projectToSave = project;
     try {
       const migratedProject = await materializeProjectImages(project);
+      if (saveScopeEpoch !== storageScopeEpoch || saveScope !== storageScope) return set({ isSaving: false });
       const latestProject = get().project;
       if (!latestProject || latestProject.id !== project.id) return set({ isSaving: false });
       const migratedUrls = new Map(migratedProject.nodes.map((node) => [node.id, node.data.generatedContent]));
@@ -970,7 +986,9 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     );
     saveProjectsToStorage(updatedProjects);
     try {
+      if (saveScopeEpoch !== storageScopeEpoch || saveScope !== storageScope) return set({ isSaving: false });
       const saved = await saveProjectToCloud(projectToSave);
+      if (saveScopeEpoch !== storageScopeEpoch || saveScope !== storageScope) return;
       const versionedProjects = updatedProjects.map((item) => item.id === projectToSave.id ? { ...item, version: saved.version } : item);
       set((state) => ({
         project: state.project?.id === projectToSave.id ? { ...state.project, version: saved.version } : state.project,
