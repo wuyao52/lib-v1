@@ -26,6 +26,44 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   await expect.poll(() => refreshedImage.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
   const nodes = page.locator('.react-flow__node');
   const targetNode = page.locator('.react-flow__node[data-id="batch-target"]');
+
+  await page.waitForTimeout(2200);
+  const putsBeforeUpload = projectPutCount;
+  let uploadRequests = 0;
+  let activeUploads = 0;
+  let maxActiveUploads = 0;
+  await page.route('**/api/assets', async (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    uploadRequests += 1;
+    if (uploadRequests === 1) return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'OBJECT_STORAGE_ERROR', message: 'temporary fixture failure' }) });
+    activeUploads += 1;
+    maxActiveUploads = Math.max(maxActiveUploads, activeUploads);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    try {
+      const response = await route.fetch();
+      await route.fulfill({ response });
+    } finally {
+      activeUploads -= 1;
+    }
+  });
+  await page.locator('.react-flow__pane').evaluate((pane) => {
+    const png = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAEAQH/2p4ZxQAAAABJRU5ErkJggg=='), (character) => character.charCodeAt(0));
+    const transfer = new DataTransfer();
+    ['multi-a.png', 'multi-b.png', 'multi-c.png'].forEach((name) => transfer.items.add(new File([png], name, { type: 'image/png' })));
+    pane.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer, clientX: 600, clientY: 450 }));
+  });
+  await expect.poll(() => uploadRequests).toBe(4);
+  await expect(page.getByText('已上传 3/3')).toBeVisible();
+  await expect(page.locator('.react-flow__node')).toHaveCount(7);
+  await expect(page.locator('.react-flow__node').filter({ hasText: 'multi-a' })).toBeVisible();
+  await expect(page.locator('.react-flow__node').filter({ hasText: 'multi-b' })).toBeVisible();
+  await expect(page.locator('.react-flow__node').filter({ hasText: 'multi-c' })).toBeVisible();
+  expect(uploadRequests).toBe(4);
+  expect(maxActiveUploads).toBeLessThanOrEqual(2);
+  await page.waitForTimeout(2200);
+  expect(projectPutCount - putsBeforeUpload).toBe(1);
+  browserErrors.splice(0, browserErrors.length);
+
   await page.waitForTimeout(2200);
   const putsBeforeSelection = projectPutCount;
   await page.locator('.react-flow__node[data-id="batch-source-a"]').click({ force: true });
@@ -44,8 +82,8 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   expect(menuBox).not.toBeNull();
   expect(menuBox!.y).toBeGreaterThanOrEqual(editorBox!.y);
   await promptEditor.press('ArrowUp');
-  await expect(page.getByTestId('mention-option-batch-source-b')).toHaveAttribute('aria-selected', 'true');
-  await promptEditor.press('Enter');
+  await expect(page.getByTestId('mention-menu').locator('[aria-selected="true"]')).toHaveCount(1);
+  await page.getByTestId('mention-option-batch-source-b').click();
   await expect(promptEditor.locator('[data-mention-id="batch-source-b"]')).toBeVisible();
   await page.locator('.react-flow__pane').click({ position: { x: 1100, y: 650 } });
 
@@ -53,7 +91,7 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   await page.locator('.react-flow__node[data-id="batch-source-b"]').click({ position: { x: 30, y: 20 }, modifiers: ['Shift'], force: true });
   await expect(page.getByTestId('batch-connect-handle')).toBeVisible();
   await page.getByTitle('将选中目标连接到新组件').click();
-  await expect(page.locator('.react-flow__node')).toHaveCount(5);
+  await expect(page.locator('.react-flow__node')).toHaveCount(8);
   await expect(page.getByTestId('node-saved-references')).toContainText('批量来源 A');
   await expect(page.getByTestId('node-saved-references')).toContainText('批量来源 B');
   const handleBox = await page.getByTestId('batch-connect-handle').boundingBox();
@@ -73,7 +111,7 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   await expect(page.locator('.react-flow__edge')).toHaveCount(4);
 
   await page.getByTestId('add-image-node').click();
-  await expect(page.locator('.react-flow__node')).toHaveCount(6);
+  await expect(page.locator('.react-flow__node')).toHaveCount(9);
 
   const batchSaved = page.waitForResponse((response) => response.url().endsWith('/api/projects/browser-project') && response.request().method() === 'PUT' && response.ok());
   await page.getByTestId('save-project').click();
@@ -93,7 +131,7 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   await page.getByTestId('logout').click();
   await expect(page.getByText('登录创作空间')).toBeVisible();
   await page.goto('/__e2e/login');
-  await expect(page.getByTestId('project-browser-project-scene-count')).toContainText('6');
+  await expect(page.getByTestId('project-browser-project-scene-count')).toContainText('9');
   await page.getByTestId('project-browser-project').click();
   const imageAfterRefresh = page.locator('.react-flow__node[data-id="refresh-image-node"] img').first();
   await expect(imageAfterRefresh).toBeVisible();
