@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      SMOKE_BASE_URL: https://lib-v1-production.up.railway.app
+      SMOKE_BASE_URL: https://lib-v1-1.netlify.app
       SMOKE_CONCURRENCY: '20'
     steps:
       - uses: actions/checkout@v4
@@ -40,3 +40,14 @@ jobs:
       - name: Probe production independently
         if: github.event_name != 'push'
         run: node server/scripts/production-smoke.js
+      - name: Diagnose production probe failure
+        if: failure() && github.event_name != 'push'
+        env:
+          SMOKE_BASE_URL: https://lib-v1-1.netlify.app
+        run: |
+          set +e
+          for endpoint in /api/health /api/health/ready /api/health/operations /api/auth/captcha; do
+            echo "===== $endpoint ====="
+            curl --silent --show-error --max-time 20 --include "$SMOKE_BASE_URL$endpoint" || true
+            echo
+          done
