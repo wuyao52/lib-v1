@@ -13,7 +13,7 @@ export default defineConfig({
     ...devices['Desktop Chrome'],
   },
   webServer: {
-    command: 'npm run fixture:browser',
+    command: 'node server/scripts/browser-e2e-fixture.js',
     url: 'http://127.0.0.1:8790/api/health',
     reuseExistingServer: false,
     timeout: 30_000,
