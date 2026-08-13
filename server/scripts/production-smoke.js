@@ -17,26 +17,26 @@ const request = async (path) => {
 };
 
 const health = await request('/api/health');
-if (health.response.status !== 200 || !health.body?.ok) throw new Error(`Health check failed with HTTP ${health.response.status}`);
+if (health.response.status !== 200 || !health.body?.ok) throw new Error(`Health check failed with HTTP ${health.response.status}: ${JSON.stringify(health.body || health.text).slice(0, 1000)}`);
 if (health.response.headers.get('x-content-type-options') !== 'nosniff') throw new Error('Security headers are missing');
 if (health.response.headers.get('cache-control') !== 'no-store') throw new Error('Health response is cacheable');
 
 const ready = await request('/api/health/ready');
 if (ready.response.status !== 200 || !ready.body?.ok || ready.body?.checks?.schema !== 'ok') {
-  throw new Error(`Release readiness failed with HTTP ${ready.response.status}`);
+  throw new Error(`Release readiness failed with HTTP ${ready.response.status}: ${JSON.stringify(ready.body || ready.text).slice(0, 1000)}`);
 }
 validateExpectedCommit(ready.body.commit, expectedCommit);
 
 const operations = await request('/api/health/operations');
 if (operations.response.status !== 200 || !operations.body?.ok) {
-  throw new Error(`Operational readiness failed with HTTP ${operations.response.status}: ${(operations.body?.alerts || []).join(',')}`);
+  throw new Error(`Operational readiness failed with HTTP ${operations.response.status}: ${JSON.stringify(operations.body || operations.text).slice(0, 2000)}`);
 }
 validateExpectedCommit(operations.body.commit, expectedCommit);
 
 const [captchaOne, captchaTwo] = await Promise.all([request('/api/auth/captcha'), request('/api/auth/captcha')]);
 for (const captcha of [captchaOne, captchaTwo]) {
   if (captcha.response.status !== 200 || !captcha.body?.captchaId || !String(captcha.body?.image || '').startsWith('data:image/svg+xml;base64,')) {
-    throw new Error(`Captcha smoke check failed with HTTP ${captcha.response.status}`);
+    throw new Error(`Captcha smoke check failed with HTTP ${captcha.response.status}: ${JSON.stringify(captcha.body || captcha.text).slice(0, 1000)}`);
   }
 }
 if (captchaOne.body.captchaId === captchaTwo.body.captchaId || captchaOne.body.image === captchaTwo.body.image) throw new Error('Captcha refresh returned duplicate data');
