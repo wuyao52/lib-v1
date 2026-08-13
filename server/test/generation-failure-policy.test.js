@@ -16,8 +16,27 @@ function monitoringFor(jobs) {
       { action: 'mysql_restore_drill_completed', targetType: 'backup', createdAt: now },
     ],
   };
-  return createMonitoringService({ db: { read: (collection) => data[collection] || [] } });
+  return createMonitoringService({
+    db: { read: (collection) => data[collection] || [] },
+    env: { ALERT_GENERATION_FAILURE_EMAIL_ENABLED: 'true' },
+  });
 }
+
+test('generation failure email alerts are disabled by default while metrics remain available', () => {
+  const jobs = Array.from({ length: 6 }, (_, index) => failed(`system-${index}`, 'UPSTREAM_VIDEO_FAILED'));
+  const data = {
+    generationJobs: jobs,
+    users: [],
+    auditLogs: [
+      { action: 'backup_completed', targetType: 'backup', createdAt: now },
+      { action: 'mysql_restore_drill_completed', targetType: 'backup', createdAt: now },
+    ],
+  };
+  const snapshot = createMonitoringService({ db: { read: (collection) => data[collection] || [] } }).snapshot();
+  assert.equal(snapshot.generationFailures.operationalFailed, 6);
+  assert.equal(snapshot.generationFailures.emailEnabled, false);
+  assert.equal(snapshot.alerts.some((alert) => alert.code === 'GENERATION_FAILURE_RATE'), false);
+});
 
 test('one operational generation failure is reported in metrics but does not alert', () => {
   const snapshot = monitoringFor([failed('system-1', 'UPSTREAM_VIDEO_FAILED')]).snapshot();
@@ -32,7 +51,19 @@ test('two operational failures over the threshold trigger one aggregate alert', 
   for (let index = 0; index < 8; index += 1) jobs.push(completed(`completed-${index}`));
   const snapshot = monitoringFor(jobs).snapshot();
   const alert = snapshot.alerts.find((item) => item.code === 'GENERATION_FAILURE_RATE');
-  assert.deepEqual(alert, { code: 'GENERATION_FAILURE_RATE', count: 2, total: 10, rate: 0.2, threshold: 0.2, minimumCount: 2 });
+  assert.deepEqual({ code: alert.code, count: alert.count, total: alert.total, rate: alert.rate, errorCodes: alert.errorCodes }, {
+    code: 'GENERATION_FAILURE_RATE', count: 2, total: 10, rate: 0.2,
+    errorCodes: [{ code: 'UPSTREAM_VIDEO_FAILED', count: 1 }, { code: 'VIDEO_JOB_TIMEOUT', count: 1 }],
+  });
+});
+
+test('two failures in a tiny sample stay silent while five failures are considered critical', () => {
+  assert.equal(monitoringFor([
+    failed('small-1', 'UPSTREAM_VIDEO_FAILED'),
+    failed('small-2', 'UPSTREAM_VIDEO_FAILED'),
+  ]).snapshot().alerts.some((alert) => alert.code === 'GENERATION_FAILURE_RATE'), false);
+  assert.equal(monitoringFor(Array.from({ length: 5 }, (_, index) => failed(`critical-${index}`, 'UPSTREAM_VIDEO_FAILED')))
+    .snapshot().alerts.some((alert) => alert.code === 'GENERATION_FAILURE_RATE'), true);
 });
 
 test('prompt and image moderation failures are excluded from operational alerts', () => {
@@ -52,6 +83,8 @@ test('moderation plus one system failure stays silent, but a second system failu
   ];
   assert.equal(monitoringFor(jobs).snapshot().alerts.some((alert) => alert.code === 'GENERATION_FAILURE_RATE'), false);
   jobs.push(failed('system-2', 'UPSTREAM_TIMEOUT'));
+  assert.equal(monitoringFor(jobs).snapshot().alerts.some((alert) => alert.code === 'GENERATION_FAILURE_RATE'), false);
+  for (let index = 0; index < 7; index += 1) jobs.push(completed(`completed-${index + 2}`));
   assert.equal(monitoringFor(jobs).snapshot().alerts.some((alert) => alert.code === 'GENERATION_FAILURE_RATE'), true);
 });
 
