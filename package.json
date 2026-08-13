@@ -12,7 +12,7 @@
     "build": "vite build",
     "preview": "vite preview --host",
     "start": "node server/entry.js",
-    "test": "node --test server/test/*.test.js",
+    "test": "node --test --test-concurrency=2 server/test/*.test.js",
     "backup:drill": "node server/scripts/backup-drill.js",
     "backup:mysql-drill": "node server/scripts/mysql-restore-drill.js",
     "maintenance:once": "node server/scripts/maintenance.js",
