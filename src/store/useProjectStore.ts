@@ -345,6 +345,7 @@ interface ProjectStore {
   onConnect: OnConnect;
   setSelectedNode: (nodeId: string | null) => void;
   addNode: (node: Node<SceneNodeData>) => void;
+  addNodes: (nodes: Node<SceneNodeData>[]) => void;
   updateNodeData: (nodeId: string, data: Partial<SceneNodeData>) => void;
   deleteNode: (nodeId: string) => void;
   duplicateNode: (nodeId: string) => void;
@@ -639,6 +640,21 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     get().pushToHistory();
 
     // 触发自动保存
+    get().triggerAutoSave();
+  },
+
+  addNodes: (nodes) => {
+    const { project } = get();
+    if (!project || !nodes.length) return;
+
+    set({
+      project: {
+        ...project,
+        nodes: [...project.nodes, ...nodes],
+        updatedAt: new Date().toISOString(),
+      },
+    });
+    get().pushToHistory();
     get().triggerAutoSave();
   },
 
