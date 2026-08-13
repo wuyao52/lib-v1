@@ -1,10 +1,18 @@
 import { expect, test } from '@playwright/test';
 
+test.afterAll(async ({ request }) => {
+  await request.post('/__e2e/shutdown').catch(() => undefined);
+});
+
 test('旧项目、画布保存、历史、系统控制台和重登可联合使用', async ({ page }) => {
   const browserErrors: string[] = [];
+  let projectPutCount = 0;
   page.on('pageerror', (error) => browserErrors.push(error.message));
   page.on('console', (message) => {
     if (message.type() === 'error') browserErrors.push(message.text());
+  });
+  page.on('request', (request) => {
+    if (request.method() === 'PUT' && request.url().endsWith('/api/projects/browser-project')) projectPutCount += 1;
   });
 
   await page.goto('/__e2e/login');
@@ -12,9 +20,20 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   await page.getByTestId('project-browser-project').click();
   await expect(page.getByTestId('add-image-node')).toBeVisible();
 
-  await expect(page.locator('.react-flow__node')).toHaveCount(3);
+  await expect(page.locator('.react-flow__node')).toHaveCount(4);
+  const refreshedImage = page.locator('.react-flow__node[data-id="refresh-image-node"] img').first();
+  await expect(refreshedImage).toBeVisible();
+  await expect.poll(() => refreshedImage.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
   const nodes = page.locator('.react-flow__node');
-  await nodes.nth(2).click({ position: { x: 30, y: 20 }, force: true });
+  const targetNode = page.locator('.react-flow__node[data-id="batch-target"]');
+  await page.waitForTimeout(2200);
+  const putsBeforeSelection = projectPutCount;
+  await page.locator('.react-flow__node[data-id="batch-source-a"]').click({ force: true });
+  await page.locator('.react-flow__node[data-id="batch-source-b"]').click({ modifiers: ['Shift'], force: true });
+  await page.waitForTimeout(2200);
+  expect(projectPutCount).toBe(putsBeforeSelection);
+  await page.locator('.react-flow__pane').click({ position: { x: 1100, y: 650 } });
+  await targetNode.click({ position: { x: 30, y: 20 }, force: true });
   const promptEditor = page.getByRole('textbox', { name: '提示词' });
   await promptEditor.click();
   await promptEditor.pressSequentially('@');
@@ -30,15 +49,15 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   await expect(promptEditor.locator('[data-mention-id="batch-source-b"]')).toBeVisible();
   await page.locator('.react-flow__pane').click({ position: { x: 1100, y: 650 } });
 
-  await nodes.nth(0).click({ position: { x: 30, y: 20 }, force: true });
-  await nodes.nth(1).click({ position: { x: 30, y: 20 }, modifiers: ['Shift'], force: true });
+  await page.locator('.react-flow__node[data-id="batch-source-a"]').click({ position: { x: 30, y: 20 }, force: true });
+  await page.locator('.react-flow__node[data-id="batch-source-b"]').click({ position: { x: 30, y: 20 }, modifiers: ['Shift'], force: true });
   await expect(page.getByTestId('batch-connect-handle')).toBeVisible();
   await page.getByTitle('将选中目标连接到新组件').click();
-  await expect(page.locator('.react-flow__node')).toHaveCount(4);
+  await expect(page.locator('.react-flow__node')).toHaveCount(5);
   await expect(page.getByTestId('node-saved-references')).toContainText('批量来源 A');
   await expect(page.getByTestId('node-saved-references')).toContainText('批量来源 B');
   const handleBox = await page.getByTestId('batch-connect-handle').boundingBox();
-  const targetBox = await nodes.nth(2).boundingBox();
+  const targetBox = await targetNode.boundingBox();
   expect(handleBox).not.toBeNull();
   expect(targetBox).not.toBeNull();
   await page.getByTestId('batch-connect-handle').dispatchEvent('pointerdown', {
@@ -54,7 +73,7 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   await expect(page.locator('.react-flow__edge')).toHaveCount(4);
 
   await page.getByTestId('add-image-node').click();
-  await expect(page.locator('.react-flow__node')).toHaveCount(5);
+  await expect(page.locator('.react-flow__node')).toHaveCount(6);
 
   const batchSaved = page.waitForResponse((response) => response.url().endsWith('/api/projects/browser-project') && response.request().method() === 'PUT' && response.ok());
   await page.getByTestId('save-project').click();
@@ -74,6 +93,10 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   await page.getByTestId('logout').click();
   await expect(page.getByText('登录创作空间')).toBeVisible();
   await page.goto('/__e2e/login');
-  await expect(page.getByTestId('project-browser-project-scene-count')).toContainText('5');
+  await expect(page.getByTestId('project-browser-project-scene-count')).toContainText('6');
+  await page.getByTestId('project-browser-project').click();
+  const imageAfterRefresh = page.locator('.react-flow__node[data-id="refresh-image-node"] img').first();
+  await expect(imageAfterRefresh).toBeVisible();
+  await expect.poll(() => imageAfterRefresh.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
   expect(browserErrors).toEqual([]);
 });
