@@ -9,13 +9,21 @@ type AssetUploadResponse = {
 };
 
 const ASSET_PATH = /\/api\/assets\/public\/([^/?#]+)/i;
+const signedAssetCache = new Map<string, { url: string; expiresAt: number }>();
 
 export async function getSignedAssetUrl(image: string, signal?: AbortSignal): Promise<string> {
   let parsed: URL;
   try { parsed = new URL(image, window.location.origin); } catch { return image; }
   const assetId = parsed.pathname.match(ASSET_PATH)?.[1];
   if (!assetId) return image;
-  const response = await apiRequest<{ url: string }>(`/api/assets/${encodeURIComponent(assetId)}/signed-url`, { signal });
+  const cacheKey = decodeURIComponent(assetId);
+  const cached = signedAssetCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now() + 60_000) return cached.url;
+  const response = await apiRequest<{ url: string; expiresAt?: string }>(`/api/assets/${encodeURIComponent(assetId)}/signed-url`, { signal });
+  signedAssetCache.set(cacheKey, {
+    url: response.url,
+    expiresAt: Date.parse(response.expiresAt || '') || Date.now() + 10 * 60_000,
+  });
   return response.url;
 }
 
