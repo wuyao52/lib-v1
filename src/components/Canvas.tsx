@@ -17,8 +17,32 @@ import RemoveWatermarkModal from './RemoveWatermarkModal';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Upload, Image, Video, Droplets, Wand2, Plus, Wallet, GitMerge } from 'lucide-react';
 import { useAuth } from '@/auth/AuthContext';
-import { apiRequest } from '@/services/apiClient';
+import { ApiError, apiRequest } from '@/services/apiClient';
 import { materializeReferenceImages } from '@/services/assetService';
+
+const MAX_FILES_PER_DROP = 20;
+const UPLOAD_CONCURRENCY = 2;
+
+const wait = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+
+const shouldRetryUpload = (error: unknown) => {
+  const status = error instanceof ApiError ? error.status : Number((error as { status?: unknown })?.status || 0);
+  return !status || status === 408 || status === 429 || status >= 500;
+};
+
+async function uploadImageWithRetry(dataUrl: string): Promise<string> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return (await materializeReferenceImages([dataUrl]))[0];
+    } catch (error) {
+      lastError = error;
+      if (!shouldRetryUpload(error) || attempt === 2) throw error;
+      await wait(500 * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
 
 // 自定义节点类型
 const nodeTypes: NodeTypes = {
@@ -44,6 +68,7 @@ export default function Canvas() {
     onConnect,
     setSelectedNode,
     addNode,
+    addNodes,
     startGenerationWithType,
     pushToHistory,
   } = useProjectStore();
@@ -53,6 +78,8 @@ export default function Canvas() {
   const connectionSourceNodeIdsRef = useRef<string[]>([]);
   const batchConnectionSourceIdsRef = useRef<string[]>([]);
   const generationPositionRef = useRef({ x: 0, y: 0 });
+  const uploadInFlightRef = useRef(false);
+  const uploadStatusTimerRef = useRef<number | null>(null);
 
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
@@ -82,6 +109,10 @@ export default function Canvas() {
       window.removeEventListener('billing:changed', refreshBalance);
     };
   }, [user?.id, user?.role]);
+
+  useEffect(() => () => {
+    if (uploadStatusTimerRef.current) window.clearTimeout(uploadStatusTimerRef.current);
+  }, []);
 
   // 检查是否有弹窗打开
   const hasModalOpen = showGenerationModal || showWatermarkModal;
@@ -128,50 +159,82 @@ export default function Canvas() {
   };
 
   const handleFileDrop = async (event: React.DragEvent) => {
-    if (!project || hasModalOpen || uploadStatus) return;
-    const files = Array.from(event.dataTransfer.files);
+    if (!project || hasModalOpen || uploadInFlightRef.current) return;
+    uploadInFlightRef.current = true;
+    if (uploadStatusTimerRef.current) {
+      window.clearTimeout(uploadStatusTimerRef.current);
+      uploadStatusTimerRef.current = null;
+    }
+    const supportedFiles = Array.from(event.dataTransfer.files).filter((file) => getFileType(file));
+    const files = supportedFiles.slice(0, MAX_FILES_PER_DROP);
     const dropPosition = screenToFlowPosition({ x: event.clientX, y: event.clientY });
 
-    let uploadedCount = 0;
-    setUploadStatus(`准备上传 ${files.length} 个文件...`);
-    for (const [fileIndex, file] of files.entries()) {
-      const fileType = getFileType(file);
-      if (!fileType) continue;
-
-      try {
-        setUploadStatus(`正在处理 ${fileIndex + 1}/${files.length}：${file.name}`);
-        const dataUrl = await readFileAsDataURL(file);
-        const storedUrl = fileType === 'image'
-          ? (await materializeReferenceImages([dataUrl]))[0]
-          : dataUrl;
-        const fileName = file.name.replace(/\.[^/.]+$/, '');
-
-        addNode({
-          id: `scene-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
-          type: 'sceneNode',
-          position: { x: dropPosition.x - 100, y: dropPosition.y - 60 },
-          data: {
-            label: fileName || `${fileType === 'image' ? '图片' : '视频'}场景`,
-            type: fileType,
-            content: file.name,
-            duration: fileType === 'video' ? 10 : 5,
-            prompt: '',
-            generatedContent: storedUrl,
-            mediaSource: 'uploaded',
-            settings: { style: project.settings.defaultStyle, mood: '', camera: '', lighting: '' },
-            status: 'completed',
-            progress: 100,
-          },
-        });
-        uploadedCount += 1;
-      } catch (error) {
-        console.error('素材上传失败:', error);
-        window.alert(error instanceof Error ? `图片上传失败：${error.message}` : '图片上传失败，请稍后重试');
-      }
+    if (!files.length) {
+      setIsDraggingFile(false);
+      setUploadStatus('没有可上传的图片或视频文件');
+      uploadInFlightRef.current = false;
+      uploadStatusTimerRef.current = window.setTimeout(() => setUploadStatus(null), 4000);
+      return;
     }
-    setIsDraggingFile(false);
-    setUploadStatus(uploadedCount ? `已上传 ${uploadedCount}/${files.length} 个文件` : null);
-    if (uploadedCount) window.setTimeout(() => setUploadStatus(null), 2500);
+
+    let completedCount = 0;
+    const results: Array<{ index: number; node?: Parameters<typeof addNodes>[0][number]; error?: unknown }> = [];
+    setUploadStatus(`正在上传 0/${files.length}`);
+    try {
+      let nextIndex = 0;
+      const worker = async () => {
+        while (nextIndex < files.length) {
+          const fileIndex = nextIndex++;
+          const file = files[fileIndex];
+          const fileType = getFileType(file)!;
+          try {
+            const dataUrl = await readFileAsDataURL(file);
+            const storedUrl = fileType === 'image' ? await uploadImageWithRetry(dataUrl) : dataUrl;
+            const fileName = file.name.replace(/\.[^/.]+$/, '');
+            const column = fileIndex % 4;
+            const row = Math.floor(fileIndex / 4);
+            results.push({
+              index: fileIndex,
+              node: {
+                id: `scene-${Date.now()}-${fileIndex}-${Math.random().toString(36).substring(2, 8)}`,
+                type: 'sceneNode',
+                position: { x: dropPosition.x - 100 + column * 240, y: dropPosition.y - 60 + row * 190 },
+                data: {
+                  label: fileName || `${fileType === 'image' ? '图片' : '视频'}场景`,
+                  type: fileType,
+                  content: file.name,
+                  duration: fileType === 'video' ? 10 : 5,
+                  prompt: '',
+                  generatedContent: storedUrl,
+                  mediaSource: 'uploaded',
+                  settings: { style: project.settings.defaultStyle, mood: '', camera: '', lighting: '' },
+                  status: 'completed',
+                  progress: 100,
+                },
+              },
+            });
+          } catch (error) {
+            console.error('素材上传失败:', file.name, error);
+            results.push({ index: fileIndex, error });
+          } finally {
+            completedCount += 1;
+            setUploadStatus(`正在上传 ${completedCount}/${files.length}`);
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(UPLOAD_CONCURRENCY, files.length) }, worker));
+      const uploadedNodes = results.sort((a, b) => a.index - b.index).flatMap((result) => result.node ? [result.node] : []);
+      addNodes(uploadedNodes);
+      const failedCount = files.length - uploadedNodes.length;
+      const omittedCount = Math.max(0, supportedFiles.length - files.length);
+      setUploadStatus(failedCount || omittedCount
+        ? `已上传 ${uploadedNodes.length}/${files.length}，失败 ${failedCount}${omittedCount ? `，另有 ${omittedCount} 个超过单批限制` : ''}`
+        : `已上传 ${uploadedNodes.length}/${files.length}`);
+    } finally {
+      uploadInFlightRef.current = false;
+      setIsDraggingFile(false);
+      uploadStatusTimerRef.current = window.setTimeout(() => setUploadStatus(null), 5000);
+    }
   };
 
   const onDrop = (event: React.DragEvent) => {
