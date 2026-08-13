@@ -202,15 +202,12 @@ const stableAssetUrl = (value: unknown): string | undefined => {
 };
 
 const materializeProjectImages = async (project: DramaProject): Promise<DramaProject> => {
-  const stableUrls = [...new Set(project.nodes.flatMap((node) => [node.data.generatedContent, node.data.thumbnail])
-    .map(stableAssetUrl)
-    .filter((url): url is string => Boolean(url)))];
-  const signedResults = await Promise.allSettled(stableUrls.map(async (url) => [url, await getSignedAssetUrl(url)] as const));
-  const signedByStableUrl = new Map(signedResults.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []));
   let changed = false;
   const nodes = project.nodes.map((node) => {
-    const generatedContent = (stableAssetUrl(node.data.generatedContent) ? signedByStableUrl.get(stableAssetUrl(node.data.generatedContent)!) : undefined) || node.data.generatedContent;
-    const thumbnail = (stableAssetUrl(node.data.thumbnail) ? signedByStableUrl.get(stableAssetUrl(node.data.thumbnail)!) : undefined) || node.data.thumbnail;
+    // Canvas media is same-origin and authenticated, so stable asset URLs are enough.
+    // Signed URLs are only materialized when an external AI provider needs access.
+    const generatedContent = stableAssetUrl(node.data.generatedContent) || node.data.generatedContent;
+    const thumbnail = stableAssetUrl(node.data.thumbnail) || node.data.thumbnail;
     if (generatedContent === node.data.generatedContent && thumbnail === node.data.thumbnail) return node;
     changed = true;
     return {
