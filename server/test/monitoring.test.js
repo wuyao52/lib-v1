@@ -192,6 +192,48 @@ test('monitoring test email is sent once per deployment even across service inst
   assert.match(emails[0].subject, /运维测试：TEST/);
 });
 
+test('generation failure email requires confirmation and count changes do not repeat it', async () => {
+  const now = new Date().toISOString();
+  const data = {
+    users: [{ id: 'system-1', role: 'system', email: 'operator@example.com' }],
+    generationJobs: [
+      { id: 'failed-1', status: 'failed', errorCode: 'UPSTREAM_TIMEOUT', createdAt: now, updatedAt: now },
+      { id: 'failed-2', status: 'failed', errorCode: 'UPSTREAM_TIMEOUT', createdAt: now, updatedAt: now },
+      ...Array.from({ length: 8 }, (_, index) => ({ id: `ok-${index}`, status: 'completed', createdAt: now, updatedAt: now })),
+    ],
+    auditLogs: [
+      { id: 'backup-ok', action: 'backup_completed', targetType: 'backup', createdAt: now },
+      { id: 'restore-ok', action: 'mysql_restore_drill_completed', targetType: 'backup', createdAt: now },
+    ],
+  };
+  const locks = new Map();
+  const db = {
+    read: (collection) => data[collection] || [],
+    mutate: async (operation) => operation(data),
+    async consumeRateLimit(key, limit, windowMs) {
+      const current = locks.get(key);
+      if (!current || current.resetAt <= Date.now()) {
+        const fresh = { count: 1, resetAt: Date.now() + windowMs }; locks.set(key, fresh);
+        return { allowed: true, ...fresh };
+      }
+      current.count += 1;
+      return { allowed: current.count <= limit, count: current.count, resetAt: current.resetAt };
+    },
+  };
+  const emails = [];
+  const service = createMonitoringService({ db, env: { ALERT_REPEAT_HOURS: '24', ALERT_GENERATION_FAILURE_EMAIL_ENABLED: 'true' }, emailSender: async (message) => emails.push(message) });
+  assert.equal((await service.check()).reason, 'AWAITING_CONFIRMATION');
+  assert.equal(emails.length, 0);
+  assert.equal((await service.check()).event, 'operations.alert');
+  assert.equal(emails.length, 1);
+  assert.match(emails[0].text, /生成失败：2\/10（20\.0%）/);
+  assert.match(emails[0].text, /错误分类：UPSTREAM_TIMEOUT×2/);
+
+  data.generationJobs.push({ id: 'failed-3', status: 'failed', errorCode: 'UPSTREAM_VIDEO_FAILED', createdAt: now, updatedAt: now });
+  await service.check();
+  assert.equal(emails.length, 1);
+});
+
 test('monitoring alerts on live database and object-storage capacity then recovers', async () => {
   const now = new Date().toISOString();
   let databaseBytes = 450;
