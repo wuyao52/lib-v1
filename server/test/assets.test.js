@@ -91,7 +91,9 @@ test('image assets require auth, persist exact bytes, deduplicate per user and v
   assert.deepEqual(Buffer.from(await ownerResponse.arrayBuffer()), PNG_BYTES);
 
   const signedResult = await (await fetch(`${baseUrl}/api/assets/${firstAsset.id}/signed-url`, { headers: { cookie: firstCookie } })).json();
-  const signedUrl = new URL(signedResult.url);
+  assert.match(signedResult.url, new RegExp(`^/api/assets/public/${firstAsset.id}\\?`));
+  assert.equal(signedResult.url.includes('backend.example.com'), false);
+  const signedUrl = new URL(signedResult.url, baseUrl);
   const signedResponse = await fetch(`${baseUrl}${signedUrl.pathname}${signedUrl.search}`);
   assert.equal(signedResponse.status, 200);
   assert.deepEqual(Buffer.from(await signedResponse.arrayBuffer()), PNG_BYTES);
