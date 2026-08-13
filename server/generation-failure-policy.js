@@ -24,6 +24,19 @@ function normalizedCode(job) {
   return String(job?.errorCode || job?.error?.code || '').trim().toUpperCase();
 }
 
+export function summarizeOperationalFailureCodes(jobs = [], limit = 5) {
+  const counts = new Map();
+  for (const job of jobs) {
+    if (classifyGenerationFailure(job).kind !== 'operational') continue;
+    const code = normalizedCode(job) || 'UNKNOWN_OPERATIONAL_FAILURE';
+    counts.set(code, (counts.get(code) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, Math.max(1, limit))
+    .map(([code, count]) => ({ code, count }));
+}
+
 export function classifyGenerationFailure(job) {
   if (job?.status === 'cancelled') return { kind: 'excluded', reason: 'cancelled' };
   if (job?.status !== 'failed') return { kind: 'not_failed', reason: null };
@@ -77,7 +90,19 @@ export function summarizeGenerationFailures(jobs = []) {
 
 export function generationFailureAlertConfig(env = process.env) {
   return {
+    emailEnabled: String(env.ALERT_GENERATION_FAILURE_EMAIL_ENABLED || '').trim().toLowerCase() === 'true',
     threshold: Math.min(1, Math.max(0.01, Number(env.ALERT_FAILURE_RATE || '0.2') || 0.2)),
     minimumCount: Math.max(2, Number.parseInt(env.ALERT_FAILURE_MIN_COUNT || '2', 10) || 2),
+    minimumSamples: Math.max(2, Number.parseInt(env.ALERT_FAILURE_MIN_SAMPLES || '10', 10) || 10),
+    criticalCount: Math.max(2, Number.parseInt(env.ALERT_FAILURE_CRITICAL_COUNT || '5', 10) || 5),
+    windowMinutes: Math.max(15, Number.parseInt(env.ALERT_FAILURE_WINDOW_MINUTES || '60', 10) || 60),
+    confirmations: Math.max(1, Number.parseInt(env.ALERT_FAILURE_CONFIRMATIONS || '2', 10) || 2),
   };
+}
+
+export function shouldAlertGenerationFailures(summary, config) {
+  if (summary.operationalFailed < config.minimumCount) return false;
+  if (summary.operationalFailed >= config.criticalCount) return true;
+  return summary.eligibleTerminalJobs >= config.minimumSamples
+    && summary.operationalFailureRate >= config.threshold;
 }
