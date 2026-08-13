@@ -1,7 +1,7 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import { summarizeStoredObjects } from './object-storage.js';
 import { latestInfrastructureCapacity } from './infrastructure-capacity.js';
-import { generationFailureAlertConfig, summarizeGenerationFailures } from './generation-failure-policy.js';
+import { generationFailureAlertConfig, shouldAlertGenerationFailures, summarizeGenerationFailures, summarizeOperationalFailureCodes } from './generation-failure-policy.js';
 
 const nowIso = () => new Date().toISOString();
 
@@ -20,6 +20,10 @@ function operationSnapshot(db, env = process.env, now = Date.now(), capacity = {
   const failures = summarizeGenerationFailures(recent);
   const queueThreshold = Math.max(1, Number.parseInt(env.ALERT_QUEUE_BACKLOG || '25', 10) || 25);
   const failureAlert = generationFailureAlertConfig(env);
+  const failureSince = now - failureAlert.windowMinutes * 60 * 1000;
+  const failureWindowJobs = recent.filter((job) => Date.parse(job.completedAt || job.updatedAt || job.createdAt) >= failureSince);
+  const alertFailures = summarizeGenerationFailures(failureWindowJobs);
+  const failureCodes = summarizeOperationalFailureCodes(failureWindowJobs);
   const backupMaxAgeHours = Math.max(1, Number.parseInt(env.ALERT_BACKUP_MAX_AGE_HOURS || '12', 10) || 12);
   const restoreDrillMaxAgeHours = Math.max(1, Number.parseInt(env.ALERT_RESTORE_DRILL_MAX_AGE_HOURS || '840', 10) || 840);
   const backupEvents = (db.read('auditLogs') || []).filter((item) => item.targetType === 'backup');
@@ -38,8 +42,8 @@ function operationSnapshot(db, env = process.env, now = Date.now(), capacity = {
   const infrastructureRequired = String(env.INFRA_CAPACITY_REPORT_REQUIRED || '').toLowerCase() === 'true';
   const alerts = [
     ...(backlog >= queueThreshold ? [{ code: 'QUEUE_BACKLOG', count: backlog, threshold: queueThreshold }] : []),
-    ...(failures.operationalFailed >= failureAlert.minimumCount && failures.operationalFailureRate >= failureAlert.threshold
-      ? [{ code: 'GENERATION_FAILURE_RATE', count: failures.operationalFailed, total: failures.eligibleTerminalJobs, rate: failures.operationalFailureRate, threshold: failureAlert.threshold, minimumCount: failureAlert.minimumCount }]
+    ...(failureAlert.emailEnabled && shouldAlertGenerationFailures(alertFailures, failureAlert)
+      ? [{ code: 'GENERATION_FAILURE_RATE', count: alertFailures.operationalFailed, total: alertFailures.eligibleTerminalJobs, rate: alertFailures.operationalFailureRate, threshold: failureAlert.threshold, minimumCount: failureAlert.minimumCount, minimumSamples: failureAlert.minimumSamples, criticalCount: failureAlert.criticalCount, windowMinutes: failureAlert.windowMinutes, errorCodes: failureCodes }]
       : []),
     ...(backupFailed ? [{ code: 'BACKUP_FAILED', occurredAt: latestFailure.createdAt }] : []),
     ...(backupStale ? [{ code: 'BACKUP_STALE', thresholdHours: backupMaxAgeHours, lastSuccessAt: latestBackup?.createdAt || null }] : []),
@@ -52,7 +56,7 @@ function operationSnapshot(db, env = process.env, now = Date.now(), capacity = {
   ];
   return {
     alerts, backlog, failed: failures.totalFailed, total: recent.length, failureRate: failures.operationalFailureRate,
-    generationFailures: { ...failures, threshold: failureAlert.threshold, minimumCount: failureAlert.minimumCount },
+    generationFailures: { ...failures, alertWindow: alertFailures, errorCodes: failureCodes, ...failureAlert },
     backup: { lastSuccessAt: latestBackup?.createdAt || null, lastFailureAt: latestFailure?.createdAt || null },
     restoreDrill: { lastSuccessAt: latestRestoreDrill?.createdAt || null, lastFailureAt: latestRestoreFailure?.createdAt || null },
     capacity: { ...capacity, infrastructure },
@@ -122,7 +126,13 @@ export function createMonitoringService({ db, storage = null, fetchImpl = fetch,
         ? 'TEST'
         : (payload.operations?.alerts || []).map((item) => item.code).join(', ') || 'RECOVERED';
       const subjectType = event === 'operations.test' ? '运维测试' : event === 'operations.recovered' ? '运维恢复' : '运维告警';
-      const text = [`服务：ai-drama-studio`, `事件：${event}`, `时间：${envelope.occurredAt}`, `状态：${codes}`, '', '请登录系统管理控制台查看脱敏指标和任务标识。'].join('\n');
+      const failure = payload.operations?.alerts?.find((item) => item.code === 'GENERATION_FAILURE_RATE');
+      const failureDetails = failure ? [
+        `生成失败：${failure.count}/${failure.total}（${(failure.rate * 100).toFixed(1)}%）`,
+        `统计窗口：最近 ${failure.windowMinutes} 分钟`,
+        `错误分类：${failure.errorCodes?.map((item) => `${item.code}×${item.count}`).join('、') || 'UNKNOWN'}`,
+      ] : [];
+      const text = [`服务：ai-drama-studio`, `事件：${event}`, `时间：${envelope.occurredAt}`, `状态：${codes}`, ...failureDetails, '', '请登录系统管理控制台查看脱敏指标和任务标识。'].join('\n');
       await Promise.all(recipients.map((to) => emailSender({ to, subject: `[AI Drama Studio] ${subjectType}：${codes}`, text })));
       channels.push('email');
     }
@@ -133,7 +143,8 @@ export function createMonitoringService({ db, storage = null, fetchImpl = fetch,
     if (typeof db.refreshCollections === 'function') await db.refreshCollections(['generationJobs', 'auditLogs', 'users']);
     await refreshCapacity();
     const snapshot = operationSnapshot(db, env, Date.now(), capacity);
-    const fingerprint = createHmac('sha256', 'monitoring-alert-fingerprint').update(JSON.stringify(snapshot.alerts)).digest('hex');
+    const alertTypes = snapshot.alerts.map((item) => item.code).sort();
+    const fingerprint = createHmac('sha256', 'monitoring-alert-fingerprint').update(JSON.stringify(alertTypes)).digest('hex');
     const latest = latestNotification();
 
     if (!snapshot.alerts.length) {
@@ -149,6 +160,13 @@ export function createMonitoringService({ db, storage = null, fetchImpl = fetch,
       localAlertFingerprint = null;
       if (delivery.delivered) await recordNotification('monitoring_recovered_sent', event, fingerprint, snapshot);
       return { changed: Boolean(delivery.delivered), event, delivery, snapshot };
+    }
+
+    const generationOnly = snapshot.alerts.length === 1 && snapshot.alerts[0].code === 'GENERATION_FAILURE_RATE';
+    if (generationOnly && failureAlertConfirmations(env) > 1 && db.consumeRateLimit) {
+      const confirmationWindow = Math.max(intervalMs * (failureAlertConfirmations(env) + 1), 15 * 60 * 1000);
+      const confirmation = await db.consumeRateLimit(`monitoring-confirm:${fingerprint}`, 1000, confirmationWindow);
+      if (confirmation.count < failureAlertConfirmations(env)) return { changed: false, snapshot, reason: 'AWAITING_CONFIRMATION' };
     }
 
     if (!db.consumeRateLimit && localAlertFingerprint === fingerprint) return { changed: false, snapshot };
@@ -185,4 +203,8 @@ export function createMonitoringService({ db, storage = null, fetchImpl = fetch,
     repeatMs,
     refreshCapacity,
   };
+}
+
+function failureAlertConfirmations(env) {
+  return generationFailureAlertConfig(env).confirmations;
 }
