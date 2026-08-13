@@ -202,11 +202,6 @@ const stableAssetUrl = (value: unknown): string | undefined => {
 };
 
 const materializeProjectImages = async (project: DramaProject): Promise<DramaProject> => {
-  const pendingNodes = project.nodes.filter((node) => /^data:image\//i.test(String(node.data.generatedContent || '')));
-  const urls = pendingNodes.length
-    ? await materializeReferenceImages(pendingNodes.map((node) => String(node.data.generatedContent)))
-    : [];
-  const replacements = new Map(pendingNodes.map((node, index) => [node.id, urls[index]]));
   const stableUrls = [...new Set(project.nodes.flatMap((node) => [node.data.generatedContent, node.data.thumbnail])
     .map(stableAssetUrl)
     .filter((url): url is string => Boolean(url)))];
@@ -214,8 +209,7 @@ const materializeProjectImages = async (project: DramaProject): Promise<DramaPro
   const signedByStableUrl = new Map(signedResults.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []));
   let changed = false;
   const nodes = project.nodes.map((node) => {
-    const uploaded = replacements.get(node.id);
-    const generatedContent = uploaded || (stableAssetUrl(node.data.generatedContent) ? signedByStableUrl.get(stableAssetUrl(node.data.generatedContent)!) : undefined) || node.data.generatedContent;
+    const generatedContent = (stableAssetUrl(node.data.generatedContent) ? signedByStableUrl.get(stableAssetUrl(node.data.generatedContent)!) : undefined) || node.data.generatedContent;
     const thumbnail = (stableAssetUrl(node.data.thumbnail) ? signedByStableUrl.get(stableAssetUrl(node.data.thumbnail)!) : undefined) || node.data.thumbnail;
     if (generatedContent === node.data.generatedContent && thumbnail === node.data.thumbnail) return node;
     changed = true;
@@ -233,6 +227,20 @@ const materializeProjectImages = async (project: DramaProject): Promise<DramaPro
   return {
     ...project,
     nodes,
+  };
+};
+
+const uploadPendingProjectImages = async (project: DramaProject): Promise<DramaProject> => {
+  const pendingNodes = project.nodes.filter((node) => /^data:image\//i.test(String(node.data.generatedContent || '')));
+  if (!pendingNodes.length) return project;
+  const urls = await materializeReferenceImages(pendingNodes.map((node) => String(node.data.generatedContent)));
+  const replacements = new Map(pendingNodes.map((node, index) => [node.id, urls[index]]));
+  return {
+    ...project,
+    nodes: project.nodes.map((node) => {
+      const generatedContent = replacements.get(node.id);
+      return generatedContent ? { ...node, data: { ...node.data, generatedContent, mediaSource: node.data.mediaSource || 'uploaded' } } : node;
+    }),
   };
 };
 
@@ -443,12 +451,12 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     let projectData: DramaProject | null = null;
     try {
       const cloudProject = await loadProjectFromCloud(projectId);
-      projectData = await materializeProjectImages(cloudProject);
+      const migratedProject = await uploadPendingProjectImages(cloudProject);
+      projectData = await materializeProjectImages(migratedProject);
       saveProjectDataToStorage(projectData);
-      if (projectData !== cloudProject) {
-        const migrated = projectData;
-        void saveProjectToCloud(migrated).then((saved) => set((state) => ({
-          project: state.project?.id === migrated.id ? { ...state.project, version: saved.version } : state.project,
+      if (migratedProject !== cloudProject) {
+        void saveProjectToCloud(migratedProject).then((saved) => set((state) => ({
+          project: state.project?.id === migratedProject.id ? { ...state.project, version: saved.version } : state.project,
         }))).catch((error) => console.error('旧图片云端迁移保存失败', error));
       }
     } catch (error) {
@@ -456,9 +464,11 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
       projectData = loadProjectDataFromStorage(projectId);
       if (projectData) {
         try {
-          projectData = await materializeProjectImages(projectData);
+          const cachedProject = projectData;
+          const migratedProject = await uploadPendingProjectImages(cachedProject);
+          projectData = await materializeProjectImages(migratedProject);
           saveProjectDataToStorage(projectData);
-          void saveProjectToCloud(projectData).catch((saveError) => console.error('本地旧图片迁移保存失败', saveError));
+          if (migratedProject !== cachedProject) void saveProjectToCloud(migratedProject).catch((saveError) => console.error('本地旧图片迁移保存失败', saveError));
         } catch (migrationError) {
           console.error('本地旧图片云端迁移失败', migrationError);
         }
@@ -555,16 +565,18 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
 
     const newNodes = applyNodeChanges(changes, project.nodes) as Node<SceneNodeData>[];
 
+    // Selection and React Flow's runtime measurements only affect the current view.
+    // Persisting them causes a cloud write whenever a project opens or nodes are selected.
+    const persistsProject = changes.some((change) => change.type !== 'select' && change.type !== 'dimensions');
     set({
       project: {
         ...project,
         nodes: newNodes,
-        updatedAt: new Date().toISOString(),
+        updatedAt: persistsProject ? new Date().toISOString() : project.updatedAt,
       },
     });
 
-    // 触发自动保存
-    get().triggerAutoSave();
+    if (persistsProject) get().triggerAutoSave();
   },
 
   onEdgesChange: (changes) => {
@@ -945,7 +957,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
 
     let projectToSave = project;
     try {
-      const migratedProject = await materializeProjectImages(project);
+      const migratedProject = await uploadPendingProjectImages(project);
       if (saveScopeEpoch !== storageScopeEpoch || saveScope !== storageScope) return set({ isSaving: false });
       const latestProject = get().project;
       if (!latestProject || latestProject.id !== project.id) return set({ isSaving: false });
