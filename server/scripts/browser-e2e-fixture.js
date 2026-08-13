@@ -13,6 +13,9 @@ const userId = randomUUID();
 const token = `e2e-${randomUUID()}`;
 const now = new Date();
 const storedObjects = new Map();
+const FIXTURE_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAEAQH/2p4ZxQAAAABJRU5ErkJggg==', 'base64');
+const fixtureAssetKey = `assets/${userId}/refresh-fixture.png`;
+storedObjects.set(fixtureAssetKey, FIXTURE_PNG);
 const fixtureStorage = {
   provider: 'memory-fixture',
   async list(prefix = '') {
@@ -21,6 +24,12 @@ const fixtureStorage = {
       .map(([key, value]) => ({ key, size: value.length, lastModified: now.toISOString() }));
   },
   async delete(key) { storedObjects.delete(key); },
+  async get(key) {
+    const value = storedObjects.get(key);
+    if (!value) throw new Error('Fixture object not found');
+    return Buffer.from(value);
+  },
+  async put({ key, bytes }) { storedObjects.set(key, Buffer.from(bytes)); },
   async move(sourceKey, destinationKey) {
     const value = storedObjects.get(sourceKey);
     if (!value) throw Object.assign(new Error('Fixture object not found'), { code: 'NoSuchKey' });
@@ -31,17 +40,20 @@ const fixtureStorage = {
 await db.mutate((data) => {
   data.users.push({ id: userId, username: 'browser-admin', email: 'browser-admin@example.test', name: 'browser-admin', passwordHash: 'fixture:not-used', role: 'system', balanceCents: 5000, createdAt: now.toISOString() });
   data.sessions.push({ id: randomUUID(), userId, tokenHash: createHash('sha256').update(token).digest('hex'), createdAt: now.getTime(), expiresAt: now.getTime() + 60 * 60 * 1000, userAgent: 'browser-e2e' });
+  data.assets.push({ id: 'refresh-image', userId, sha256: createHash('sha256').update(FIXTURE_PNG).digest('hex'), mimeType: 'image/png', byteSize: FIXTURE_PNG.length, objectKey: fixtureAssetKey, storageProvider: fixtureStorage.provider, dataBase64: null, createdAt: now.toISOString() });
   const fixtureNodes = [
+    { id: 'refresh-image-node', type: 'sceneNode', position: { x: 440, y: 80 }, data: { label: '刷新后仍显示图片', type: 'image', content: '云端图片', duration: 5, prompt: '', generatedContent: '/api/assets/public/refresh-image', mediaSource: 'uploaded', settings: {}, status: 'completed', progress: 100 } },
     { id: 'batch-source-a', type: 'sceneNode', position: { x: 80, y: 120 }, data: { label: '批量来源 A', type: 'text', content: '来源 A', duration: 5, prompt: '', settings: {}, status: 'idle' } },
     { id: 'batch-source-b', type: 'sceneNode', position: { x: 80, y: 500 }, data: { label: '批量来源 B', type: 'text', content: '来源 B', duration: 5, prompt: '', settings: {}, status: 'idle' } },
     { id: 'batch-target', type: 'sceneNode', position: { x: 620, y: 300 }, data: { label: '现有目标组件', type: 'video', content: '目标', duration: 5, prompt: '', settings: {}, status: 'idle' } },
   ];
   data.projects.push({ id: 'browser-project', userId, title: '浏览器联合验证项目', description: 'local fixture', projectData: { id: 'browser-project', title: '浏览器联合验证项目', description: 'local fixture', nodes: fixtureNodes, edges: [], settings: {}, createdAt: now.toISOString(), updatedAt: now.toISOString() }, version: 1, createdAt: now.toISOString(), updatedAt: now.toISOString() });
-  data.generationHistory.push({ id: randomUUID(), userId, projectId: 'browser-project', nodeId: 'video-result', type: 'video', prompt: '浏览器联合验证短片', url: 'https://example.test/generated.mp4', thumbnail: null, createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString() });
+  data.generationHistory.push({ id: randomUUID(), userId, projectId: 'browser-project', nodeId: 'video-result', type: 'video', prompt: '浏览器联合验证短片', url: '/__e2e/video.mp4', thumbnail: null, createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString() });
 });
 
 const { app } = await createApp({ database: db, secureCookies: false, serveFrontend: true, videoQueue: false, maintenance: false, monitoring: false, assetStorage: fixtureStorage, backupEncryptionKey: 'browser-e2e-backup-key-32-bytes-long', sendEmailCode: async () => {} });
 const fixture = express();
+fixture.get('/__e2e/video.mp4', (_req, res) => res.status(204).set('content-type', 'video/mp4').end());
 fixture.get('/__e2e/login', async (_req, res, next) => {
   try {
     const tokenHash = createHash('sha256').update(token).digest('hex');
@@ -52,8 +64,13 @@ fixture.get('/__e2e/login', async (_req, res, next) => {
   res.cookie('ads_session', token, { httpOnly: true, sameSite: 'strict', secure: false, path: '/', maxAge: 60 * 60 * 1000 });
   return res.redirect('/');
 });
+fixture.post('/__e2e/shutdown', (_req, res) => res.status(204).end(() => setImmediate(stop)));
 fixture.use(app);
 const server = fixture.listen(port, '127.0.0.1', () => console.log(`BROWSER_E2E_READY http://127.0.0.1:${port}/__e2e/login`));
-const stop = () => server.close(() => process.exit(0));
+const stop = () => {
+  server.closeAllConnections?.();
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 1000).unref();
+};
 process.on('SIGINT', stop);
 process.on('SIGTERM', stop);
