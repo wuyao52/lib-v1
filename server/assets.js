@@ -42,12 +42,6 @@ function parseImageRequest(req) {
   return parseImageDataUrl(req.body?.dataUrl);
 }
 
-function getPublicAssetUrl(req, id) {
-  const configuredOrigin = String(process.env.PUBLIC_BACKEND_URL || '').trim().replace(/\/+$/, '');
-  const requestOrigin = `${req.protocol}://${req.get('host')}`;
-  return `${configuredOrigin || requestOrigin}/api/assets/public/${id}`;
-}
-
 const getStableAssetUrl = (id) => `/api/assets/public/${id}`;
 
 function signAssetAccess(id, expires, secret) {
@@ -248,10 +242,10 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
     const asset = db.read('assets').find((entry) => entry.id === req.params.id && entry.userId === req.user.id);
     if (!asset) return res.status(404).json({ error: 'ASSET_NOT_FOUND', message: '素材不存在' });
     const expires = Date.now() + SIGNED_URL_TTL_MS;
-    const url = new URL(getPublicAssetUrl(req, asset.id));
+    const url = new URL(getStableAssetUrl(asset.id), 'http://same-origin.invalid');
     url.searchParams.set('expires', String(expires));
     url.searchParams.set('signature', signAssetAccess(asset.id, expires, signingKey));
-    return res.json({ url: url.toString(), expiresAt: new Date(expires).toISOString() });
+    return res.json({ url: `${url.pathname}${url.search}`, expiresAt: new Date(expires).toISOString() });
   });
 
   router.delete('/:id', requireAuth, async (req, res) => {
