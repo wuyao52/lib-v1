@@ -42,7 +42,7 @@ await db.mutate((data) => {
   data.sessions.push({ id: randomUUID(), userId, tokenHash: createHash('sha256').update(token).digest('hex'), createdAt: now.getTime(), expiresAt: now.getTime() + 60 * 60 * 1000, userAgent: 'browser-e2e' });
   data.assets.push({ id: 'refresh-image', userId, sha256: createHash('sha256').update(FIXTURE_PNG).digest('hex'), mimeType: 'image/png', byteSize: FIXTURE_PNG.length, objectKey: fixtureAssetKey, storageProvider: fixtureStorage.provider, dataBase64: null, createdAt: now.toISOString() });
   const fixtureNodes = [
-    { id: 'refresh-image-node', type: 'sceneNode', position: { x: 440, y: 80 }, data: { label: '刷新后仍显示图片', type: 'image', content: '云端图片', duration: 5, prompt: '', generatedContent: '/api/assets/public/refresh-image', mediaSource: 'uploaded', settings: {}, status: 'completed', progress: 100 } },
+    { id: 'refresh-image-node', type: 'sceneNode', position: { x: 440, y: 80 }, data: { label: '刷新后仍显示图片', type: 'image', content: '云端图片', duration: 5, prompt: '', generatedContent: 'https://stale-railway.example/api/assets/public/refresh-image?expires=1&signature=expired', mediaSource: 'uploaded', settings: {}, status: 'completed', progress: 100 } },
     { id: 'batch-source-a', type: 'sceneNode', position: { x: 80, y: 120 }, data: { label: '批量来源 A', type: 'text', content: '来源 A', duration: 5, prompt: '', settings: {}, status: 'idle' } },
     { id: 'batch-source-b', type: 'sceneNode', position: { x: 80, y: 500 }, data: { label: '批量来源 B', type: 'text', content: '来源 B', duration: 5, prompt: '', settings: {}, status: 'idle' } },
     { id: 'batch-target', type: 'sceneNode', position: { x: 620, y: 300 }, data: { label: '现有目标组件', type: 'video', content: '目标', duration: 5, prompt: '', settings: {}, status: 'idle' } },
