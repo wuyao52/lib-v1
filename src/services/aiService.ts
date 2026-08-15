@@ -1,6 +1,14 @@
 import { AIModelConfig, GenerationRequest, GenerationResponse } from '@/types';
 import { compressImageDataUrl, dataUrlByteLength } from '@/utils/imageCompression';
 
+const browserConsole = globalThis.console;
+// Provider payloads can contain credentials, API responses or Base64 images.
+const console = {
+  log: (..._args: unknown[]) => undefined,
+  warn: (..._args: unknown[]) => undefined,
+  error: (message: unknown, ..._args: unknown[]) => browserConsole.error(String(message || 'AI request failed').slice(0, 300)),
+};
+
 const VIDEO_POLL_INTERVAL_MS = 5000;
 const VIDEO_POLL_MAX_ATTEMPTS = 240;
 const MANAGED_VIDEO_POLL_MAX_ATTEMPTS = 1440;
@@ -156,6 +164,10 @@ export class AIService {
 
   async generateImage(prompt: string, settings: Record<string, any>, signal?: AbortSignal): Promise<GenerationResponse> {
     throw new Error('请使用具体的模型服务类');
+  }
+
+  async resumeVideo(_taskId: string, _signal?: AbortSignal, _onProgress?: (update: { taskId: string; status: string; progress: number; queuePosition: number | null }) => void): Promise<GenerationResponse> {
+    throw new Error('当前模型服务不支持恢复视频任务');
   }
 
   async generate(request: GenerationRequest): Promise<GenerationResponse> {
@@ -376,7 +388,7 @@ export class SeedanceService extends AIService {
         if (taskId && (!taskStatus || ['queued', 'pending', 'processing', 'running'].includes(String(taskStatus).toLowerCase()))) {
           console.log('任务已创建，taskId:', taskId);
           const onProgress = typeof settings._onProgress === 'function' ? settings._onProgress : undefined;
-          onProgress?.({ status: String(taskStatus || 'queued').toLowerCase(), progress: Number(payload.progress || 0), queuePosition: Number(payload.queue_position || 0) || null });
+          onProgress?.({ taskId: String(taskId), status: String(taskStatus || 'queued').toLowerCase(), progress: Number(payload.progress || 0), queuePosition: Number(payload.queue_position || 0) || null });
           return await this.pollVideoResult(String(taskId), signal, onProgress);
         }
 
@@ -428,7 +440,11 @@ export class SeedanceService extends AIService {
   }
 
   // 轮询视频任务
-  private async pollVideoResult(taskId: string, signal?: AbortSignal, onProgress?: (update: { status: string; progress: number; queuePosition: number | null }) => void): Promise<GenerationResponse> {
+  async resumeVideo(taskId: string, signal?: AbortSignal, onProgress?: (update: { taskId: string; status: string; progress: number; queuePosition: number | null }) => void): Promise<GenerationResponse> {
+    return this.pollVideoResult(taskId, signal, onProgress);
+  }
+
+  private async pollVideoResult(taskId: string, signal?: AbortSignal, onProgress?: (update: { taskId: string; status: string; progress: number; queuePosition: number | null }) => void): Promise<GenerationResponse> {
     const baseUrl = this.config.baseUrl.replace(/\/v1\/?$/, '');
     const maxAttempts = this.config.managed ? MANAGED_VIDEO_POLL_MAX_ATTEMPTS : VIDEO_POLL_MAX_ATTEMPTS;
 
@@ -472,6 +488,7 @@ export class SeedanceService extends AIService {
         const status = payload.status || payload.state || data.status || data.state;
         console.log('任务状态:', status);
         onProgress?.({
+          taskId,
           status: String(status || 'processing').toLowerCase(),
           progress: Number(payload.progress || payload.percent || data.progress || data.percent || 0),
           queuePosition: Number(payload.queue_position || data.queue_position || 0) || null,
