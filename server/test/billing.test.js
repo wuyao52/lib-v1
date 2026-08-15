@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createApp } from '../app.js';
 
-async function setup({ videoQueue = false, videoQueueAutoStart = true } = {}) {
+async function setup({ videoQueue = false, videoQueueAutoStart = true, assetStorage } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'ads-billing-'));
   const codes = new Map();
   const upstreamCalls = [];
@@ -26,6 +26,7 @@ async function setup({ videoQueue = false, videoQueueAutoStart = true } = {}) {
     databasePath: join(directory, 'database.json'), secureCookies: false,
     encryptionKey: 'test-encryption-key-with-at-least-32-characters', fetchImpl,
     videoQueue, videoQueueAutoStart,
+    assetStorage,
     resolveHost: async () => [{ address: '203.0.113.10', family: 4 }],
     sendEmailCode: async ({ email, code }) => codes.set(email, code),
   });
@@ -42,6 +43,37 @@ async function setup({ videoQueue = false, videoQueueAutoStart = true } = {}) {
   const request = (path, cookie, options = {}) => fetch(`${baseUrl}${path}`, { ...options, headers: { ...(options.body ? { 'content-type': 'application/json' } : {}), cookie, ...options.headers } });
   return { server, db, register, request, upstreamCalls, videoQueue: queue };
 }
+
+test('managed video replaces owned asset paths with public OSS URLs before calling the provider', async (t) => {
+  const signedKeys = [];
+  const context = await setup({
+    assetStorage: {
+      provider: 'test-oss',
+      async createDownloadUrl({ key }) { signedKeys.push(key); return `https://oss.example.test/${encodeURIComponent(key)}?signed=1`; },
+      async health() {}, async get() { return Buffer.alloc(0); }, async put() {}, async delete() {},
+    },
+  });
+  t.after(() => context.server.close());
+  const normal = await context.register('asset-video-user');
+  const admin = await context.register('asset-video-admin');
+  await context.db.mutate((data) => {
+    data.users.find((item) => item.id === admin.user.id).role = 'system';
+    data.users.find((item) => item.id === normal.user.id).balanceCents = 1000;
+    data.assets.push({ id: 'owned-image', userId: normal.user.id, objectKey: 'assets/owned-image.png', mimeType: 'image/png', byteSize: 10, createdAt: new Date().toISOString() });
+    data.assets.push({ id: 'other-image', userId: admin.user.id, objectKey: 'assets/other-image.png', mimeType: 'image/png', byteSize: 10, createdAt: new Date().toISOString() });
+  });
+  const apiResponse = await context.request('/api/admin/system-apis', admin.cookie, { method: 'POST', body: JSON.stringify({ name: 'Managed', provider: 'Compatible', baseUrl: 'https://upstream.example', apiKey: 'secret-system-key' }) });
+  const api = (await apiResponse.json()).api;
+  await context.request('/api/admin/pricing', admin.cookie, { method: 'POST', body: JSON.stringify({ apiId: api.id, modelId: 'video-model', displayName: '视频模型', category: 'video', billingUnit: 'second', unitPriceCents: 1, allowedDurationsSec: [5] }) });
+  const generated = await context.request(`/api/system-ai/${api.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'asset-url', seconds: 5, images: ['/api/assets/public/owned-image'] }) });
+  assert.equal(generated.status, 200);
+  const providerBody = JSON.parse(context.upstreamCalls.find((call) => call.body?.includes('asset-url')).body);
+  assert.deepEqual(providerBody.images, ['https://oss.example.test/assets%2Fowned-image.png?signed=1']);
+  assert.deepEqual(signedKeys, ['assets/owned-image.png']);
+  const stolen = await context.request(`/api/system-ai/${api.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'stolen', seconds: 5, images: ['/api/assets/public/other-image'] }) });
+  assert.equal(stolen.status, 400);
+  assert.equal((await stolen.json()).error, 'INVALID_REFERENCE_IMAGE_URL');
+});
 
 test('system APIs, pricing, balances and managed gateway enforce roles and billing', async (t) => {
   const context = await setup();
