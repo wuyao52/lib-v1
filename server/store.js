@@ -58,13 +58,23 @@ export class JsonDatabase {
   }
 
   async mutate(mutator) {
-    const result = mutator(this.data);
-    await this.persist();
-    return result;
+    const before = structuredClone(this.data);
+    try {
+      const result = mutator(this.data);
+      await this.persist();
+      return result;
+    } catch (error) {
+      this.data = before;
+      throw error;
+    }
+  }
+
+  async mutateCollections(_collections, mutator) {
+    return this.mutate(mutator);
   }
 
   async persist() {
-    this.writeQueue = this.writeQueue.then(async () => {
+    this.writeQueue = this.writeQueue.catch(() => undefined).then(async () => {
       const tempPath = `${this.filePath}.tmp`;
       await writeFile(tempPath, JSON.stringify(this.data, null, 2), 'utf8');
       await rename(tempPath, this.filePath);
