@@ -1,4 +1,4 @@
-const FORWARDED_HEADERS = ['accept', 'authorization', 'content-type', 'cookie', 'origin', 'user-agent', 'x-api-key', 'x-request-id', 'wechatpay-timestamp', 'wechatpay-nonce', 'wechatpay-signature', 'wechatpay-serial'];
+const FORWARDED_HEADERS = ['accept', 'authorization', 'content-type', 'cookie', 'origin', 'range', 'if-range', 'user-agent', 'x-api-key', 'x-request-id', 'wechatpay-timestamp', 'wechatpay-nonce', 'wechatpay-signature', 'wechatpay-serial'];
 const PROTECTED_API_PATH = /^\/api\/(?:auth|director|skills|projects|generation-history|generated-media|assets|admin|billing|catalog|system-ai|user-api-configs|user-ai|payments|health)(?:\/|$)/;
 const PROTECTED_API_SCOPES = new Set(['auth', 'director', 'skills', 'projects', 'generation-history', 'generated-media', 'assets', 'admin', 'billing', 'catalog', 'system-ai', 'user-api-configs', 'user-ai', 'payments', 'health']);
 
@@ -82,7 +82,7 @@ export async function handler(event) {
       redirect: 'manual',
     });
     const responseHeaders = {};
-    for (const name of ['cache-control', 'content-type', 'location', 'content-security-policy', 'x-content-type-options', 'x-frame-options', 'referrer-policy', 'permissions-policy', 'cross-origin-opener-policy', 'cross-origin-resource-policy', 'strict-transport-security']) {
+    for (const name of ['accept-ranges', 'cache-control', 'content-length', 'content-range', 'content-type', 'etag', 'last-modified', 'location', 'content-security-policy', 'x-content-type-options', 'x-frame-options', 'referrer-policy', 'permissions-policy', 'cross-origin-opener-policy', 'cross-origin-resource-policy', 'strict-transport-security']) {
       const value = response.headers.get(name);
       if (value) responseHeaders[name] = value;
     }
