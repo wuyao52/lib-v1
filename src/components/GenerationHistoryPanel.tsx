@@ -3,14 +3,14 @@ import { X, History, ExternalLink, Film, ChevronDown } from 'lucide-react';
 import { apiRequest } from '@/services/apiClient';
 import useProjectStore from '@/store/useProjectStore';
 import { PromptMentionContent } from './PromptMentionEditor';
-import { getPlayableMediaUrl } from '@/services/assetService';
+import { getPlayableMediaUrl, needsResolvedMediaUrl } from '@/services/assetService';
 
 type HistoryItem = { id: string; type: string; prompt: string; url: string; thumbnail?: string | null; createdAt: string };
 
 function HistoryThumbnail({ item }: { item: HistoryItem }) {
   const containerRef = useRef<HTMLSpanElement>(null);
   const [visible, setVisible] = useState(item.type !== 'video' || Boolean(item.thumbnail));
-  const [playbackUrl, setPlaybackUrl] = useState(item.url);
+  const [playbackUrl, setPlaybackUrl] = useState(needsResolvedMediaUrl(item.url) ? '' : item.url);
   useEffect(() => {
     if (visible || !containerRef.current) return;
     const observer = new IntersectionObserver(([entry]) => {
@@ -22,14 +22,15 @@ function HistoryThumbnail({ item }: { item: HistoryItem }) {
   useEffect(() => {
     if (!visible || item.type !== 'video') return undefined;
     const controller = new AbortController();
-    void getPlayableMediaUrl(item.url, controller.signal).then(setPlaybackUrl).catch(() => setPlaybackUrl(item.url));
+    setPlaybackUrl(needsResolvedMediaUrl(item.url) ? '' : item.url);
+    void getPlayableMediaUrl(item.url, controller.signal).then(setPlaybackUrl).catch(() => undefined);
     return () => controller.abort();
   }, [item.type, item.url, visible]);
   const className = 'h-full w-full object-cover';
   return <span ref={containerRef} className="flex h-full w-full items-center justify-center bg-black">{item.thumbnail
     ? <img src={item.thumbnail} alt="" loading="lazy" className={className} />
     : item.type === 'video'
-      ? visible ? <video src={playbackUrl} muted preload="metadata" className={className} /> : <Film className="h-5 w-5 text-dark-500" />
+      ? visible && playbackUrl ? <video src={playbackUrl} muted preload="metadata" className={className} /> : <Film className="h-5 w-5 text-dark-500" />
       : <img src={item.url} alt="" loading="lazy" className={className} />}</span>;
 }
 
