@@ -19,6 +19,18 @@ const maxNonStreamBytes = () => {
   return Number.isSafeInteger(configured) && configured > 0 ? Math.min(configured, maxVideoBytes()) : Math.min(DEFAULT_NON_STREAM_MAX_BYTES, maxVideoBytes());
 };
 
+function limitedStream(body, maximumBytes, onProgress) {
+  let total = 0;
+  return body.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      total += Number(chunk?.byteLength || chunk?.length || 0);
+      if (total > maximumBytes) throw Object.assign(new Error('生成视频超过平台归档大小限制'), { code: 'GENERATED_VIDEO_TOO_LARGE' });
+      onProgress(total);
+      controller.enqueue(chunk);
+    },
+  }));
+}
+
 function parseRange(value) {
   const match = String(value || '').match(/^bytes=(\d+)-(\d*)$/);
   if (!match) return null;
@@ -29,6 +41,7 @@ function parseRange(value) {
 }
 
 export function createGeneratedMediaService({ db, storage, fetchImpl = fetch, resolveHost = lookup } = {}) {
+  const mutateMedia = (mutator) => db.mutateCollections ? db.mutateCollections(['generatedMedia'], mutator) : db.mutate(mutator);
   const archive = async (job, result) => {
     if (!storage || !result?.url) return result;
     const existing = db.read('generatedMedia').find((item) => item.jobId === job.id);
@@ -52,7 +65,13 @@ export function createGeneratedMediaService({ db, storage, fetchImpl = fetch, re
       const objectKey = `generated-videos/${job.userId}/${job.id}/${id}.${extension}`;
       let byteSize = contentLength;
       if (storage.putStream) {
-        await storage.putStream({ key: objectKey, body: response.body, mimeType, contentLength: contentLength || undefined });
+        try {
+          const body = limitedStream(response.body, maxVideoBytes(), (total) => { byteSize = total; });
+          await storage.putStream({ key: objectKey, body, mimeType, contentLength: contentLength || undefined });
+        } catch (error) {
+          await storage.delete?.(objectKey).catch(() => undefined);
+          throw error;
+        }
       } else {
         if (!contentLength || contentLength > maxNonStreamBytes()) throw new Error('当前存储不支持流式归档，视频过大或未声明大小，已拒绝以保护服务器内存');
         const bytes = await readLimitedBody(response, maxNonStreamBytes());
@@ -64,7 +83,7 @@ export function createGeneratedMediaService({ db, storage, fetchImpl = fetch, re
         id, userId: job.userId, jobId: job.id, objectKey, mimeType, byteSize,
         sourceUrl: result.url, createdAt, expiresAt: new Date(Date.parse(createdAt) + retentionMs()).toISOString(),
       };
-      await db.mutate((data) => data.generatedMedia.push(record));
+      await mutateMedia((data) => data.generatedMedia.push(record));
       return { ...result, url: `/api/generated-media/${id}` };
     } finally {
       clearTimeout(timeout);
@@ -78,7 +97,7 @@ export function createGeneratedMediaService({ db, storage, fetchImpl = fetch, re
     for (const item of expired) {
       try { await storage.delete(item.objectKey); deleted.push(item.id); } catch (error) { console.error('清理过期视频归档失败:', error); }
     }
-    if (deleted.length) await db.mutate((data) => { data.generatedMedia = data.generatedMedia.filter((item) => !deleted.includes(item.id)); });
+    if (deleted.length) await mutateMedia((data) => { data.generatedMedia = data.generatedMedia.filter((item) => !deleted.includes(item.id)); });
     return { deleted: deleted.length };
   };
 
