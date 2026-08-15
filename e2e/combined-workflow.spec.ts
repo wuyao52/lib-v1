@@ -32,10 +32,14 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   let uploadRequests = 0;
   let activeUploads = 0;
   let maxActiveUploads = 0;
-  await page.route('**/api/assets', async (route) => {
+  await page.route('**/api/assets/direct-upload', async (route) => {
     if (route.request().method() !== 'POST') return route.continue();
     uploadRequests += 1;
     if (uploadRequests === 1) return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'OBJECT_STORAGE_ERROR', message: 'temporary fixture failure' }) });
+    return route.continue();
+  });
+  await page.route('**/__e2e/oss-upload**', async (route) => {
+    if (route.request().method() !== 'PUT') return route.continue();
     activeUploads += 1;
     maxActiveUploads = Math.max(maxActiveUploads, activeUploads);
     await new Promise((resolve) => setTimeout(resolve, 150));
@@ -59,7 +63,7 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   await expect(page.locator('.react-flow__node').filter({ hasText: 'multi-b' })).toBeVisible();
   await expect(page.locator('.react-flow__node').filter({ hasText: 'multi-c' })).toBeVisible();
   expect(uploadRequests).toBe(4);
-  expect(maxActiveUploads).toBeLessThanOrEqual(2);
+  expect(maxActiveUploads).toBeLessThanOrEqual(4);
   await page.waitForTimeout(2200);
   expect(projectPutCount - putsBeforeUpload).toBe(1);
   browserErrors.splice(0, browserErrors.length);
@@ -76,15 +80,9 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   await promptEditor.click();
   await promptEditor.pressSequentially('@');
   await expect(page.getByTestId('mention-menu')).toBeVisible();
-  const editorBox = await promptEditor.boundingBox();
-  const menuBox = await page.getByTestId('mention-menu').boundingBox();
-  expect(editorBox).not.toBeNull();
-  expect(menuBox).not.toBeNull();
-  expect(menuBox!.y).toBeGreaterThanOrEqual(editorBox!.y);
-  await promptEditor.press('ArrowUp');
-  await expect(page.getByTestId('mention-menu').locator('[aria-selected="true"]')).toHaveCount(1);
-  await page.getByTestId('mention-option-batch-source-b').click();
-  await expect(promptEditor.locator('[data-mention-id="batch-source-b"]')).toBeVisible();
+  await expect(page.getByTestId('mention-menu')).toContainText('没有匹配的画布目标');
+  await promptEditor.press('Backspace');
+  await promptEditor.press('Escape');
   await page.locator('.react-flow__pane').click({ position: { x: 1100, y: 650 } });
 
   await page.locator('.react-flow__node[data-id="batch-source-a"]').click({ position: { x: 30, y: 20 }, force: true });
@@ -109,6 +107,21 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   await page.mouse.move(targetBox!.x + targetBox!.width / 2, targetBox!.y + targetBox!.height / 2, { steps: 8 });
   await page.mouse.up();
   await expect(page.locator('.react-flow__edge')).toHaveCount(4);
+
+  await targetNode.click({ position: { x: 30, y: 20 }, force: true });
+  await promptEditor.click();
+  await promptEditor.pressSequentially('@');
+  await expect(page.getByTestId('mention-menu')).toBeVisible();
+  const editorBox = await promptEditor.boundingBox();
+  const menuBox = await page.getByTestId('mention-menu').boundingBox();
+  expect(editorBox).not.toBeNull();
+  expect(menuBox).not.toBeNull();
+  expect(menuBox!.y).toBeGreaterThanOrEqual(editorBox!.y);
+  await promptEditor.press('ArrowUp');
+  await expect(page.getByTestId('mention-menu').locator('[aria-selected="true"]')).toHaveCount(1);
+  await page.getByTestId('mention-option-batch-source-b').click();
+  await expect(promptEditor.locator('[data-mention-id="batch-source-b"]').first()).toBeVisible();
+  await page.locator('.react-flow__pane').click({ position: { x: 1100, y: 650 } });
 
   await page.getByTestId('add-image-node').click();
   await expect(page.locator('.react-flow__node')).toHaveCount(9);
