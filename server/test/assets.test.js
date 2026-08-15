@@ -145,6 +145,7 @@ test('video assets use a short-lived direct upload and are verified before persi
       if (!object) throw new Error('missing');
       return object;
     },
+    async createDownloadUrl({ key }) { return `https://oss.example/play/${encodeURIComponent(key)}`; },
     async get() { return Buffer.from('video'); },
     async delete() {},
   };
@@ -178,11 +179,28 @@ test('video assets use a short-lived direct upload and are verified before persi
   assert.equal(asset.url, `/api/assets/public/${asset.id}`);
   assert.equal(db.read('assets').length, 1);
 
+  const playback = await fetch(`${baseUrl}/api/assets/${asset.id}/playback-url`, { headers: { cookie } });
+  assert.equal(playback.status, 200);
+  assert.match((await playback.json()).url, /^https:\/\/oss\.example\/play\//);
+
+  const imageRequested = await fetch(`${baseUrl}/api/assets/direct-upload`, {
+    method: 'POST', headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ fileName: 'frame.png', mimeType: 'image/png', byteSize: PNG_BYTES.length }),
+  });
+  assert.equal(imageRequested.status, 201);
+  const imageUpload = await imageRequested.json();
+  const imageCompleted = await fetch(`${baseUrl}/api/assets/direct-upload/complete`, {
+    method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ token: imageUpload.token }),
+  });
+  assert.equal(imageCompleted.status, 201);
+  assert.equal((await imageCompleted.json()).asset.mimeType, 'image/png');
+  assert.equal(db.read('assets').length, 2);
+
   const replayed = await fetch(`${baseUrl}/api/assets/direct-upload/complete`, {
     method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ token: upload.token }),
   });
   assert.equal(replayed.status, 200);
-  assert.equal(db.read('assets').length, 1);
+  assert.equal(db.read('assets').length, 2);
 });
 
 test('generated image URLs are archived as durable owned assets and deduplicated by content', async (t) => {
