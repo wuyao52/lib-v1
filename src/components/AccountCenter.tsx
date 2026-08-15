@@ -117,7 +117,8 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
 
   useEffect(() => {
     if (mode !== 'admin') return undefined;
-    const timer = window.setInterval(() => {
+    const refreshLiveData = () => {
+      if (document.visibilityState === 'hidden') return;
       void Promise.all([
         apiRequest<QueueOverview>('/api/admin/video-queue'),
         apiRequest<AdminMetrics>('/api/admin/metrics'),
@@ -126,8 +127,10 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
       ]).then(([queueData, metricData, operationData, securityData]) => {
         setQueue(queueData); setMetrics(metricData); setOperationsAlerts(operationData); setSecurityAlerts(securityData);
       }).catch(() => undefined);
-    }, 5000);
-    return () => window.clearInterval(timer);
+    };
+    const timer = window.setInterval(refreshLiveData, 15_000);
+    document.addEventListener('visibilitychange', refreshLiveData);
+    return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', refreshLiveData); };
   }, [mode]);
 
   useEffect(() => {
