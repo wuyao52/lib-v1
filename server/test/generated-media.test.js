@@ -115,3 +115,27 @@ test('non-streaming storage stops a body that exceeds a forged small content len
   );
   assert.equal(stored, false);
 });
+
+test('streaming storage stops actual bytes beyond the configured limit and removes partial output', async (t) => {
+  const previous = process.env.GENERATED_VIDEO_MAX_BYTES;
+  process.env.GENERATED_VIDEO_MAX_BYTES = '10';
+  t.after(() => { if (previous === undefined) delete process.env.GENERATED_VIDEO_MAX_BYTES; else process.env.GENERATED_VIDEO_MAX_BYTES = previous; });
+  let deleted = false;
+  const service = createGeneratedMediaService({
+    db: { read: () => [], mutate: async () => {} },
+    storage: {
+      async putStream({ body }) {
+        const reader = body.getReader();
+        while (!(await reader.read()).done) { /* consume to exercise the limiter */ }
+      },
+      async delete() { deleted = true; },
+    },
+    fetchImpl: async () => new Response(new Uint8Array(20), { status: 200, headers: { 'content-type': 'video/mp4', 'content-length': '5' } }),
+    resolveHost: async () => [{ address: '203.0.113.10', family: 4 }],
+  });
+  await assert.rejects(
+    () => service.archive({ id: 'stream-limit-job', userId: 'user-1' }, { url: 'https://provider.example/stream.mp4' }),
+    /超过平台归档大小限制/,
+  );
+  assert.equal(deleted, true);
+});
