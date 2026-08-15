@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow,
   Background,
@@ -18,7 +18,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Upload, Image, Video, Droplets, Wand2, Plus, Wallet, GitMerge } from 'lucide-react';
 import { useAuth } from '@/auth/AuthContext';
 import { ApiError, apiRequest } from '@/services/apiClient';
-import { materializeReferenceImages } from '@/services/assetService';
+import { materializeReferenceImages, uploadVideoAsset } from '@/services/assetService';
 
 const MAX_FILES_PER_DROP = 20;
 const UPLOAD_CONCURRENCY = 2;
@@ -94,12 +94,12 @@ export default function Canvas() {
   useEffect(() => {
     let active = true;
     const refreshBalance = () => {
-      if (user?.role === 'system') return;
-      void apiRequest<{ balanceCents: number }>('/api/billing/me').then((result) => { if (active) setBalanceCents(result.balanceCents); }).catch(() => undefined);
+      if (user?.role === 'system' || document.visibilityState === 'hidden') return;
+      void apiRequest<{ balanceCents: number }>('/api/billing/balance').then((result) => { if (active) setBalanceCents(result.balanceCents); }).catch(() => undefined);
     };
     setBalanceCents(user?.balanceCents || 0);
     refreshBalance();
-    const timer = window.setInterval(refreshBalance, 10_000);
+    const timer = window.setInterval(refreshBalance, 30_000);
     window.addEventListener('focus', refreshBalance);
     window.addEventListener('billing:changed', refreshBalance);
     return () => {
@@ -116,6 +116,14 @@ export default function Canvas() {
 
   // 检查是否有弹窗打开
   const hasModalOpen = showGenerationModal || showWatermarkModal;
+
+  const mentionableNodes = useMemo(() => project.nodes.map((node) => ({
+    id: node.id,
+    label: node.data.label,
+    type: node.data.type,
+    imageUrl: node.data.type === 'image' ? node.data.generatedContent : undefined,
+  })), [project.nodes]);
+  const largeGraph = project.nodes.length > 120 || project.edges.length > 180;
 
   const hasFiles = (event: React.DragEvent) => event.dataTransfer.types.includes('Files');
 
@@ -188,8 +196,9 @@ export default function Canvas() {
           const file = files[fileIndex];
           const fileType = getFileType(file)!;
           try {
-            const dataUrl = await readFileAsDataURL(file);
-            const storedUrl = fileType === 'image' ? await uploadImageWithRetry(dataUrl) : dataUrl;
+            const storedUrl = fileType === 'image'
+              ? await uploadImageWithRetry(await readFileAsDataURL(file))
+              : await uploadVideoAsset(file);
             const fileName = file.name.replace(/\.[^/.]+$/, '');
             const column = fileIndex % 4;
             const row = Math.floor(fileIndex / 4);
@@ -495,6 +504,7 @@ export default function Canvas() {
         onDrop={onDrop}
         nodeTypes={nodeTypes}
         fitView
+        onlyRenderVisibleElements
         snapToGrid
         snapGrid={[16, 16]}
         selectionOnDrag={isSelectionMode}
@@ -502,7 +512,7 @@ export default function Canvas() {
         selectionMode={SelectionMode.Partial}
         multiSelectionKeyCode="Shift"
         selectionKeyCode={null}
-        defaultEdgeOptions={{ type: 'smoothstep', animated: true, style: { stroke: '#8b5cf6', strokeWidth: 2 } }}
+        defaultEdgeOptions={{ type: 'smoothstep', animated: !largeGraph, style: { stroke: '#8b5cf6', strokeWidth: 2 } }}
         className="bg-dark-950"
       >
         <Background variant={BackgroundVariant.Dots} gap={24} size={1.5} color="#334155" />
@@ -555,7 +565,7 @@ export default function Canvas() {
         sourceImageUrl={sourceImageNode?.data?.generatedContent}
         sourceNodeType={sourceNode?.data?.type}
         initialReferences={generationSourceNodes.map((node) => ({ id: node.id, label: node.data.label, type: node.data.type, imageUrl: node.data.type === 'image' ? node.data.generatedContent : undefined }))}
-        mentionableNodes={project.nodes.map((node) => ({ id: node.id, label: node.data.label, type: node.data.type, imageUrl: node.data.type === 'image' ? node.data.generatedContent : undefined }))}
+        mentionableNodes={mentionableNodes}
         durationRules={{ managed: configuredVideoModel.managed, minDurationSec: configuredVideoModel.minDurationSec, maxDurationSec: configuredVideoModel.maxDurationSec, allowedDurationsSec: configuredVideoModel.allowedDurationsSec }}
       />
 
