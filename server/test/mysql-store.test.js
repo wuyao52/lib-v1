@@ -159,6 +159,51 @@ test('MySQL instances refresh route data instead of keeping startup snapshots', 
   assert.equal(second.read('users')[0].id, 'shared-user');
 });
 
+test('MySQL coalesces concurrent cached refreshes for the same collection', async () => {
+  let selects = 0;
+  const db = new MySqlDatabase('mysql://user:pass@127.0.0.1/test', { refreshTtlMs: 1000 });
+  db.pool = { async query(sql) {
+    if (/^SELECT id, username, email/i.test(sql)) { selects += 1; return [[]]; }
+    throw new Error(`Unexpected SQL: ${sql}`);
+  } };
+  await Promise.all(Array.from({ length: 25 }, () => db.refreshCollections(['users'])));
+  assert.equal(selects, 1);
+});
+
+test('scoped MySQL captcha writes avoid cloning unrelated large collections', async (t) => {
+  const connection = {
+    async beginTransaction() {}, async commit() {}, async rollback() {}, release() {},
+    async query() { return [{ affectedRows: 1 }]; },
+  };
+  const makeDatabase = () => {
+    const db = new MySqlDatabase('mysql://user:pass@127.0.0.1/test');
+    db.pool = { async getConnection() { return connection; } };
+    db.data.auditLogs = Array.from({ length: 50000 }, (_, index) => ({ id: `audit-${index}`, metadata: { index, value: 'x'.repeat(40) } }));
+    db.data.projects = Array.from({ length: 500 }, (_, index) => ({ id: `project-${index}`, projectData: { nodes: Array.from({ length: 20 }, (_unused, nodeIndex) => ({ id: `${index}-${nodeIndex}` })) } }));
+    return db;
+  };
+  const full = makeDatabase();
+  const scoped = makeDatabase();
+  const fullStarted = performance.now();
+  await full.mutate((data) => data.imageCaptchas.push({ id: 'full-captcha', expiresAt: Date.now() + 1000 }));
+  const fullMs = performance.now() - fullStarted;
+  const scopedStarted = performance.now();
+  await scoped.mutateCollections(['imageCaptchas'], (data) => data.imageCaptchas.push({ id: 'scoped-captcha', expiresAt: Date.now() + 1000 }));
+  const scopedMs = performance.now() - scopedStarted;
+  t.diagnostic(`50000 audit rows + 500 projects: full=${fullMs.toFixed(2)}ms scoped=${scopedMs.toFixed(2)}ms`);
+  assert.ok(scopedMs * 10 < fullMs, `expected scoped write (${scopedMs.toFixed(2)}ms) to beat full write (${fullMs.toFixed(2)}ms) by 10x`);
+});
+
+test('MySQL mutations restore the in-memory cache when a business callback throws', async () => {
+  const db = new MySqlDatabase('mysql://user:pass@127.0.0.1/test');
+  db.data.imageCaptchas.push({ id: 'before' });
+  await assert.rejects(db.mutateCollections(['imageCaptchas'], (data) => {
+    data.imageCaptchas.push({ id: 'partial' });
+    throw new Error('business rule rejected');
+  }), /business rule rejected/);
+  assert.deepEqual(db.data.imageCaptchas.map((item) => item.id), ['before']);
+});
+
 test('MySQL unique index resolves concurrent case-insensitive usernames to one account', async () => {
   const users = [];
   const pool = { async query(sql, params) {
