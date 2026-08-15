@@ -338,7 +338,7 @@ export async function createApp(options = {}) {
   });
   app.use('/api/admin', adminRouter);
   const systemAiRouter = express.Router();
-  registerSystemAiRoutes(systemAiRouter, { db, requireAuth: auth.requireAuth, vault, fetchImpl: options.fetchImpl, videoQueue });
+  registerSystemAiRoutes(systemAiRouter, { db, requireAuth: auth.requireAuth, vault, fetchImpl: options.fetchImpl, videoQueue, assetStorage });
   app.use('/api/system-ai', systemAiRouter);
   const userApiConfigRouter = express.Router();
   registerUserApiConfigRoutes(userApiConfigRouter, { db, requireAuth: auth.requireAuth, vault, fetchImpl: options.fetchImpl, resolveHost: options.resolveHost });
