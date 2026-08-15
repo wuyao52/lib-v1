@@ -114,11 +114,10 @@ export function createObjectStorageFromEnv(env = process.env, { clientFactory = 
         ContentLength: byteSize,
       }), { expiresIn: expiresInSeconds });
     },
-    async createDownloadUrl({ key, mimeType, expiresInSeconds = 900 }) {
+    async createDownloadUrl({ key, expiresInSeconds = 900 }) {
       return getSignedUrl(client, new GetObjectCommand({
         Bucket: config.bucket,
         Key: key,
-        ResponseContentType: mimeType,
       }), { expiresIn: expiresInSeconds });
     },
     async stat(key) {
