@@ -262,6 +262,43 @@ test('Netlify backend proxy preserves public image asset bytes', async (t) => {
   assert.deepEqual(Buffer.from(result.body, 'base64'), imageBytes);
 });
 
+test('Netlify backend proxy preserves private video range requests and responses', async (t) => {
+  const previousOrigin = process.env.API_ORIGIN;
+  const previousFetch = globalThis.fetch;
+  const videoBytes = Buffer.from([1, 2, 3, 4]);
+  process.env.API_ORIGIN = 'https://api.example.com';
+  globalThis.fetch = async (url, options) => {
+    assert.equal(String(url), 'https://api.example.com/api/generated-media/video-1');
+    assert.equal(options.headers.get('range'), 'bytes=0-3');
+    assert.equal(options.headers.get('if-range'), '"video-etag"');
+    return new Response(videoBytes, {
+      status: 206,
+      headers: {
+        'accept-ranges': 'bytes',
+        'content-range': 'bytes 0-3/100',
+        'content-length': String(videoBytes.length),
+        'content-type': 'video/mp4',
+        etag: '"video-etag"',
+      },
+    });
+  };
+  t.after(() => {
+    if (previousOrigin === undefined) delete process.env.API_ORIGIN;
+    else process.env.API_ORIGIN = previousOrigin;
+    globalThis.fetch = previousFetch;
+  });
+
+  const result = await handler(createEvent('/api/generated-media/video-1', {
+    headers: { cookie: 'ads_session=token', range: 'bytes=0-3', 'if-range': '"video-etag"' },
+  }));
+  assert.equal(result.statusCode, 206);
+  assert.equal(result.headers['accept-ranges'], 'bytes');
+  assert.equal(result.headers['content-range'], 'bytes 0-3/100');
+  assert.equal(result.headers['content-length'], '4');
+  assert.equal(result.headers.etag, '"video-etag"');
+  assert.deepEqual(Buffer.from(result.body, 'base64'), videoBytes);
+});
+
 test('Netlify backend proxy forwards private API and payment routes', async (t) => {
   const previousOrigin = process.env.API_ORIGIN;
   const previousFetch = globalThis.fetch;
