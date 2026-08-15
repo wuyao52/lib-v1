@@ -6,6 +6,7 @@ export type SceneNodeType = 'text' | 'image' | 'video' | 'audio' | 'transition';
 // AI模型配置
 export interface AIModelConfig {
   id: string;
+  apiId?: string;
   name: string;
   provider: string;
   apiKey: string;
@@ -52,6 +53,8 @@ export interface SceneNodeData {
   thumbnail?: string;
   mediaSource?: 'uploaded' | 'generated';
   generationMeta?: {
+    configId?: string;
+    apiId?: string;
     modelId?: string;
     modelName?: string;
     provider?: string;
