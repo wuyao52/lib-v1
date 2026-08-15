@@ -9,7 +9,9 @@ type AssetUploadResponse = {
 };
 
 const ASSET_PATH = /\/api\/assets\/public\/([^/?#]+)/i;
+const GENERATED_MEDIA_PATH = /\/api\/generated-media\/([^/?#]+)/i;
 const signedAssetCache = new Map<string, { url: string; expiresAt: number }>();
+const playbackUrlCache = new Map<string, { url: string; expiresAt: number }>();
 
 export async function getSignedAssetUrl(image: string, signal?: AbortSignal): Promise<string> {
   let parsed: URL;
@@ -24,6 +26,23 @@ export async function getSignedAssetUrl(image: string, signal?: AbortSignal): Pr
     url: response.url,
     expiresAt: Date.parse(response.expiresAt || '') || Date.now() + 10 * 60_000,
   });
+  return response.url;
+}
+
+export async function getPlayableMediaUrl(source: string, signal?: AbortSignal, forceRefresh = false): Promise<string> {
+  let parsed: URL;
+  try { parsed = new URL(source, window.location.origin); } catch { return source; }
+  const assetId = parsed.pathname.match(ASSET_PATH)?.[1];
+  const mediaId = parsed.pathname.match(GENERATED_MEDIA_PATH)?.[1];
+  if (!assetId && !mediaId) return source;
+  const cacheKey = `${assetId ? 'asset' : 'media'}:${decodeURIComponent(assetId || mediaId || '')}`;
+  const cached = playbackUrlCache.get(cacheKey);
+  if (!forceRefresh && cached && cached.expiresAt > Date.now() + 60_000) return cached.url;
+  const path = assetId
+    ? `/api/assets/${encodeURIComponent(assetId)}/playback-url`
+    : `/api/generated-media/${encodeURIComponent(mediaId!)}/playback-url`;
+  const response = await apiRequest<{ url: string; expiresAt?: string }>(path, { signal });
+  playbackUrlCache.set(cacheKey, { url: response.url, expiresAt: Date.parse(response.expiresAt || '') || Date.now() + 10 * 60_000 });
   return response.url;
 }
 
@@ -89,7 +108,7 @@ export async function materializeReferenceImages(images: string[], signal?: Abor
   return materialized;
 }
 
-export async function uploadVideoAsset(file: File, signal?: AbortSignal): Promise<string> {
+export async function uploadAssetFile(file: File, signal?: AbortSignal): Promise<string> {
   const request = await apiRequest<{ uploadUrl: string; token: string; headers: Record<string, string> }>('/api/assets/direct-upload', {
     method: 'POST',
     body: JSON.stringify({ fileName: file.name, mimeType: file.type, byteSize: file.size }),
@@ -100,14 +119,16 @@ export async function uploadVideoAsset(file: File, signal?: AbortSignal): Promis
     uploadResponse = await fetch(request.uploadUrl, { method: 'PUT', body: file, headers: request.headers, signal });
   } catch (error) {
     if (signal?.aborted) throw error;
-    throw new Error('视频直传 OSS 失败，请检查 OSS 跨域规则是否允许当前网站执行 PUT');
+    throw new Error('素材直传 OSS 失败，请检查 OSS 跨域规则是否允许当前网站执行 PUT');
   }
-  if (!uploadResponse.ok) throw new Error(`视频直传 OSS 失败 (${uploadResponse.status})`);
+  if (!uploadResponse.ok) throw new Error(`素材直传 OSS 失败 (${uploadResponse.status})`);
   const completed = await apiRequest<AssetUploadResponse>('/api/assets/direct-upload/complete', {
     method: 'POST', body: JSON.stringify({ token: request.token }), signal,
   });
   return completed.asset.url;
 }
+
+export const uploadVideoAsset = uploadAssetFile;
 
 export async function archiveGeneratedImage(source: string, signal?: AbortSignal): Promise<string> {
   if (/^\/api\/assets\/public\//i.test(source)) return source;
