@@ -1,11 +1,22 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createReadStream, createWriteStream } from 'node:fs';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
+import { pipeline } from 'node:stream/promises';
 
 const MAX_CLIPS = 40;
 const MAX_FRAME_BYTES = 8 * 1024 * 1024;
+const configuredBytes = (name, fallback) => {
+  const value = Number(process.env[name]);
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+};
+const maxClipBytes = () => configuredBytes('DIRECTOR_MAX_CLIP_BYTES', 512 * 1024 * 1024);
+const maxInputBytes = () => configuredBytes('DIRECTOR_MAX_INPUT_BYTES', 2 * 1024 * 1024 * 1024);
+const maxOutputBytes = () => configuredBytes('DIRECTOR_MAX_OUTPUT_BYTES', 2 * 1024 * 1024 * 1024);
+const ffmpegTimeoutMs = () => configuredBytes('DIRECTOR_FFMPEG_TIMEOUT_MS', 15 * 60 * 1000);
+const mutateCollections = (db, collections, mutator) => db.mutateCollections ? db.mutateCollections(collections, mutator) : db.mutate(mutator);
 
 function ffmpegPath() {
   return String(process.env.FFMPEG_PATH || 'ffmpeg').trim() || 'ffmpeg';
@@ -15,9 +26,16 @@ function runFfmpeg(args, cwd) {
   return new Promise((resolve, reject) => {
     const child = spawn(ffmpegPath(), args, { cwd, windowsHide: true });
     let stderr = '';
-    child.stderr.on('data', (chunk) => { stderr += chunk.toString().slice(-4000); });
-    child.on('error', (error) => reject(Object.assign(new Error('FFmpeg 不可用，请在服务端安装 FFmpeg 或设置 FFMPEG_PATH'), { code: 'FFMPEG_UNAVAILABLE', cause: error })));
-    child.on('close', (code) => code === 0 ? resolve() : reject(Object.assign(new Error(`媒体处理失败 (${code})`), { code: 'MEDIA_PROCESSING_FAILED', detail: stderr })));
+    let settled = false;
+    const finish = (callback) => { if (!settled) { settled = true; clearTimeout(timer); callback(); } };
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      finish(() => reject(Object.assign(new Error('媒体处理超时，已终止任务'), { code: 'MEDIA_PROCESSING_TIMEOUT' })));
+    }, ffmpegTimeoutMs());
+    timer.unref?.();
+    child.stderr.on('data', (chunk) => { stderr = `${stderr}${chunk.toString()}`.slice(-8000); });
+    child.on('error', (error) => finish(() => reject(Object.assign(new Error('FFmpeg 不可用，请在服务端安装 FFmpeg 或设置 FFMPEG_PATH'), { code: 'FFMPEG_UNAVAILABLE', cause: error }))));
+    child.on('close', (code) => finish(() => code === 0 ? resolve() : reject(Object.assign(new Error(`媒体处理失败 (${code})`), { code: 'MEDIA_PROCESSING_FAILED', detail: stderr }))));
   });
 }
 
@@ -27,16 +45,32 @@ function ownedMedia(db, userId, url) {
   return db.read('generatedMedia').find((item) => item.id === match[1] && item.userId === userId && Date.parse(item.expiresAt) > Date.now()) || null;
 }
 
-async function readOwnedMedia(db, storage, userId, url) {
+function requireOwnedMedia(db, storage, userId, url) {
   const record = ownedMedia(db, userId, url);
-  if (!record || !storage?.get) {
+  if (!record || (!storage?.getStream && !storage?.get)) {
     const error = new Error('只能使用当前用户已归档的视频');
     error.code = 'DIRECTOR_MEDIA_NOT_OWNED';
     throw error;
   }
-  const bytes = await storage.get(record.objectKey);
-  if (!bytes?.length) throw new Error('已归档视频内容为空');
-  return { record, bytes };
+  if (Number(record.byteSize || 0) > maxClipBytes()) {
+    throw Object.assign(new Error('单个镜头超过导演合成大小限制'), { code: 'DIRECTOR_CLIP_TOO_LARGE' });
+  }
+  return record;
+}
+
+async function downloadOwnedMedia(storage, record, destination) {
+  if (storage.getStream) {
+    const response = await storage.getStream(record.objectKey);
+    if (response.contentLength && response.contentLength > maxClipBytes()) throw Object.assign(new Error('单个镜头超过导演合成大小限制'), { code: 'DIRECTOR_CLIP_TOO_LARGE' });
+    await pipeline(response.body, createWriteStream(destination));
+  } else {
+    const bytes = await storage.get(record.objectKey);
+    if (!bytes?.length || bytes.length > maxClipBytes()) throw Object.assign(new Error('已归档视频内容为空或过大'), { code: 'DIRECTOR_CLIP_TOO_LARGE' });
+    await writeFile(destination, bytes);
+  }
+  const file = await stat(destination);
+  if (!file.size || file.size > maxClipBytes()) throw Object.assign(new Error('已归档视频内容为空或过大'), { code: 'DIRECTOR_CLIP_TOO_LARGE' });
+  return file.size;
 }
 
 async function withTempDirectory(task) {
@@ -45,11 +79,11 @@ async function withTempDirectory(task) {
 }
 
 export async function extractDirectorTailFrame({ db, storage, userId, url }) {
-  const { bytes } = await readOwnedMedia(db, storage, userId, url);
+  const record = requireOwnedMedia(db, storage, userId, url);
   return withTempDirectory(async (directory) => {
     const input = join(directory, 'input.mp4');
     const output = join(directory, 'tail.png');
-    await writeFile(input, bytes);
+    await downloadOwnedMedia(storage, record, input);
     await runFfmpeg(['-y', '-sseof', '-0.1', '-i', input, '-frames:v', '1', '-f', 'image2', output], directory);
     const frame = await readFile(output);
     if (!frame.length || frame.length > MAX_FRAME_BYTES) throw new Error('尾帧图片无效或过大');
@@ -63,15 +97,18 @@ export async function composeDirectorVideos({ db, storage, userId, clipUrls, pro
     error.code = 'DIRECTOR_COMPOSITION_INPUT_INVALID';
     throw error;
   }
-  const media = [];
-  for (const url of clipUrls) media.push(await readOwnedMedia(db, storage, userId, url));
+  const media = clipUrls.map((url) => requireOwnedMedia(db, storage, userId, url));
+  const declaredInputBytes = media.reduce((sum, item) => sum + Number(item.byteSize || 0), 0);
+  if (declaredInputBytes > maxInputBytes()) throw Object.assign(new Error('镜头总大小超过导演合成限制'), { code: 'DIRECTOR_INPUT_TOO_LARGE' });
   return withTempDirectory(async (directory) => {
     const listPath = join(directory, 'concat.txt');
     const output = join(directory, 'short-drama.mp4');
     const lines = [];
+    let actualInputBytes = 0;
     for (let index = 0; index < media.length; index += 1) {
       const file = join(directory, `clip-${String(index).padStart(3, '0')}.mp4`);
-      await writeFile(file, media[index].bytes);
+      actualInputBytes += await downloadOwnedMedia(storage, media[index], file);
+      if (actualInputBytes > maxInputBytes()) throw Object.assign(new Error('镜头总大小超过导演合成限制'), { code: 'DIRECTOR_INPUT_TOO_LARGE' });
       lines.push(`file '${file.replaceAll("'", "'\\''")}'`);
     }
     await writeFile(listPath, `${lines.join('\n')}\n`, 'utf8');
@@ -80,18 +117,19 @@ export async function composeDirectorVideos({ db, storage, userId, clipUrls, pro
     } catch {
       await runFfmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-c:v', 'libx264', '-c:a', 'aac', '-movflags', '+faststart', output], directory);
     }
-    const bytes = await readFile(output);
-    if (!bytes.length) throw new Error('合成结果为空');
+    const outputFile = await stat(output);
+    if (!outputFile.size || outputFile.size > maxOutputBytes()) throw Object.assign(new Error('合成结果为空或超过大小限制'), { code: 'DIRECTOR_OUTPUT_TOO_LARGE' });
     const id = randomUUID();
     const objectKey = `generated-videos/${userId}/director-compositions/${id}.mp4`;
-    await storage.put({ key: objectKey, bytes, mimeType: 'video/mp4' });
+    if (storage.putStream) await storage.putStream({ key: objectKey, body: createReadStream(output), mimeType: 'video/mp4', contentLength: outputFile.size });
+    else await storage.put({ key: objectKey, bytes: await readFile(output), mimeType: 'video/mp4' });
     const now = new Date().toISOString();
-    const record = { id, userId, jobId: `director-composition-${id}`, objectKey, mimeType: 'video/mp4', byteSize: bytes.length, sourceUrl: null, createdAt: now, expiresAt: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString() };
-    await db.mutate((data) => {
+    const record = { id, userId, jobId: `director-composition-${id}`, objectKey, mimeType: 'video/mp4', byteSize: outputFile.size, sourceUrl: null, createdAt: now, expiresAt: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString() };
+    await mutateCollections(db, ['generatedMedia', 'generationHistory'], (data) => {
       data.generatedMedia.push(record);
       data.generationHistory.push({ id: randomUUID(), userId, projectId: String(projectId).slice(0, 100), nodeId: null, type: 'video', prompt: '导演模式最终短剧合成', url: `/api/generated-media/${id}`, thumbnail: null, createdAt: now, expiresAt: record.expiresAt });
     });
-    return { id, url: `/api/generated-media/${id}`, byteSize: bytes.length, clipCount: media.length, createdAt: now };
+    return { id, url: `/api/generated-media/${id}`, byteSize: outputFile.size, clipCount: media.length, createdAt: now };
   });
 }
 
@@ -103,7 +141,7 @@ export function createDirectorCompositionQueue({ db, storage, autoStart = true }
     if (!accepting) return;
     const staleBefore = Date.now() - 120_000;
     const hasStaleJob = db.read('generationJobs').some((job) => job.status === 'director_processing' && !active.has(job.id) && Date.parse(job.updatedAt || 0) < staleBefore);
-    if (hasStaleJob) await db.mutate((data) => data.generationJobs.forEach((job) => {
+    if (hasStaleJob) await mutateCollections(db, ['generationJobs'], (data) => data.generationJobs.forEach((job) => {
       if (job.status === 'director_processing' && !active.has(job.id) && Date.parse(job.updatedAt || 0) < staleBefore) {
         job.status = 'director_queued'; job.updatedAt = new Date().toISOString();
       }
@@ -111,17 +149,17 @@ export function createDirectorCompositionQueue({ db, storage, autoStart = true }
     const jobs = db.read('generationJobs').filter((job) => job.status === 'director_queued' && !active.has(job.id)).slice(0, 1);
     for (const job of jobs) {
       active.add(job.id);
-      await db.mutate((data) => {
+      await mutateCollections(db, ['generationJobs'], (data) => {
         const stored = data.generationJobs.find((item) => item.id === job.id && item.status === 'director_queued');
         if (stored) { stored.status = 'director_processing'; stored.progress = 10; stored.updatedAt = new Date().toISOString(); }
       });
       void composeDirectorVideos({ db, storage, userId: job.userId, projectId: job.projectId, clipUrls: job.requestBody.clipUrls })
-        .then((result) => db.mutate((data) => {
+        .then((result) => mutateCollections(db, ['generationJobs'], (data) => {
           const stored = data.generationJobs.find((item) => item.id === job.id);
           if (!stored) return;
           stored.status = 'completed'; stored.progress = 100; stored.resultUrl = result.url; stored.completedAt = new Date().toISOString(); stored.updatedAt = stored.completedAt;
         }))
-        .catch((error) => db.mutate((data) => {
+        .catch((error) => mutateCollections(db, ['generationJobs'], (data) => {
           const stored = data.generationJobs.find((item) => item.id === job.id);
           if (!stored) return;
           stored.status = 'failed'; stored.progress = 100; stored.errorCode = error.code || 'DIRECTOR_COMPOSITION_FAILED'; stored.errorMessage = String(error.message || '短剧合成失败').slice(0, 500); stored.completedAt = new Date().toISOString(); stored.updatedAt = stored.completedAt;
@@ -135,7 +173,7 @@ export function createDirectorCompositionQueue({ db, storage, autoStart = true }
     for (const url of clipUrls) if (!ownedMedia(db, userId, url)) throw Object.assign(new Error('只能使用当前用户已归档的视频'), { code: 'DIRECTOR_MEDIA_NOT_OWNED' });
     const now = new Date().toISOString();
     const job = { id: randomUUID(), userId, apiId: 'director-composer', modelId: 'ffmpeg', requestBody: { clipUrls }, status: 'director_queued', providerTaskId: null, progress: 0, resultUrl: null, thumbnail: null, errorCode: null, errorMessage: null, chargeCents: 0, billingReference: null, projectId: String(projectId || '').slice(0, 100) || null, nodeId: null, prompt: '导演模式最终短剧合成', attemptCount: 0, nextPollAt: 0, createdAt: now, submittedAt: null, updatedAt: now, completedAt: null, leaseOwner: null, leaseUntil: 0 };
-    await db.mutate((data) => data.generationJobs.push(job));
+    await mutateCollections(db, ['generationJobs'], (data) => data.generationJobs.push(job));
     if (autoStart) void tick();
     return job;
   };
@@ -148,13 +186,21 @@ export function createDirectorCompositionQueue({ db, storage, autoStart = true }
   return { enqueue, get, tick, stop: async () => { accepting = false; if (timer) clearInterval(timer); timer = null; } };
 }
 
+function directorErrorStatus(error) {
+  if (error.code === 'DIRECTOR_MEDIA_NOT_OWNED') return 403;
+  if (error.code === 'FFMPEG_UNAVAILABLE') return 503;
+  if (error.code === 'MEDIA_PROCESSING_TIMEOUT') return 504;
+  if (['DIRECTOR_CLIP_TOO_LARGE', 'DIRECTOR_INPUT_TOO_LARGE', 'DIRECTOR_OUTPUT_TOO_LARGE'].includes(error.code)) return 413;
+  return 400;
+}
+
 export function registerDirectorMediaRoutes(router, { db, requireAuth, storage, queue = null }) {
   router.post('/tail-frame', requireAuth, async (req, res) => {
     try {
       const dataUrl = await extractDirectorTailFrame({ db, storage, userId: req.user.id, url: req.body?.url });
       return res.json({ dataUrl });
     } catch (error) {
-      const status = error.code === 'DIRECTOR_MEDIA_NOT_OWNED' ? 403 : error.code === 'FFMPEG_UNAVAILABLE' ? 503 : 400;
+      const status = directorErrorStatus(error);
       return res.status(status).json({ error: error.code || 'TAIL_FRAME_FAILED', message: error.message });
     }
   });
@@ -166,7 +212,7 @@ export function registerDirectorMediaRoutes(router, { db, requireAuth, storage, 
         : await composeDirectorVideos({ db, storage, userId: req.user.id, projectId: req.body?.projectId, clipUrls: req.body?.clipUrls });
       return res.status(queue ? 202 : 201).json(queue ? { job: { id: job.id, status: job.status, progress: 0 } } : { composition: job });
     } catch (error) {
-      const status = error.code === 'DIRECTOR_MEDIA_NOT_OWNED' ? 403 : error.code === 'FFMPEG_UNAVAILABLE' ? 503 : 400;
+      const status = directorErrorStatus(error);
       return res.status(status).json({ error: error.code || 'DIRECTOR_COMPOSITION_FAILED', message: error.message });
     }
   });
