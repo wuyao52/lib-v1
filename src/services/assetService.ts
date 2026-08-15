@@ -13,6 +13,15 @@ const GENERATED_MEDIA_PATH = /\/api\/generated-media\/([^/?#]+)/i;
 const signedAssetCache = new Map<string, { url: string; expiresAt: number }>();
 const playbackUrlCache = new Map<string, { url: string; expiresAt: number }>();
 
+export function needsResolvedMediaUrl(source: string): boolean {
+  try {
+    const path = new URL(source, window.location.origin).pathname;
+    return ASSET_PATH.test(path) || GENERATED_MEDIA_PATH.test(path);
+  } catch {
+    return false;
+  }
+}
+
 export async function getSignedAssetUrl(image: string, signal?: AbortSignal): Promise<string> {
   let parsed: URL;
   try { parsed = new URL(image, window.location.origin); } catch { return image; }
@@ -22,11 +31,12 @@ export async function getSignedAssetUrl(image: string, signal?: AbortSignal): Pr
   const cached = signedAssetCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now() + 60_000) return cached.url;
   const response = await apiRequest<{ url: string; expiresAt?: string }>(`/api/assets/${encodeURIComponent(assetId)}/signed-url`, { signal });
+  const absoluteUrl = new URL(response.url, window.location.origin).toString();
   signedAssetCache.set(cacheKey, {
-    url: response.url,
+    url: absoluteUrl,
     expiresAt: Date.parse(response.expiresAt || '') || Date.now() + 10 * 60_000,
   });
-  return response.url;
+  return absoluteUrl;
 }
 
 export async function getPlayableMediaUrl(source: string, signal?: AbortSignal, forceRefresh = false): Promise<string> {
