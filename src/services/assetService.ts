@@ -88,3 +88,31 @@ export async function materializeReferenceImages(images: string[], signal?: Abor
   }
   return materialized;
 }
+
+export async function uploadVideoAsset(file: File, signal?: AbortSignal): Promise<string> {
+  const request = await apiRequest<{ uploadUrl: string; token: string; headers: Record<string, string> }>('/api/assets/direct-upload', {
+    method: 'POST',
+    body: JSON.stringify({ fileName: file.name, mimeType: file.type, byteSize: file.size }),
+    signal,
+  });
+  let uploadResponse: Response;
+  try {
+    uploadResponse = await fetch(request.uploadUrl, { method: 'PUT', body: file, headers: request.headers, signal });
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    throw new Error('视频直传 OSS 失败，请检查 OSS 跨域规则是否允许当前网站执行 PUT');
+  }
+  if (!uploadResponse.ok) throw new Error(`视频直传 OSS 失败 (${uploadResponse.status})`);
+  const completed = await apiRequest<AssetUploadResponse>('/api/assets/direct-upload/complete', {
+    method: 'POST', body: JSON.stringify({ token: request.token }), signal,
+  });
+  return completed.asset.url;
+}
+
+export async function archiveGeneratedImage(source: string, signal?: AbortSignal): Promise<string> {
+  if (/^\/api\/assets\/public\//i.test(source)) return source;
+  const response = await apiRequest<AssetUploadResponse>('/api/assets/import-image', {
+    method: 'POST', body: JSON.stringify({ source }), signal,
+  });
+  return response.asset.url;
+}
