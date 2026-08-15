@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { X, History, ExternalLink, Film, ChevronDown } from 'lucide-react';
 import { apiRequest } from '@/services/apiClient';
 import useProjectStore from '@/store/useProjectStore';
@@ -51,11 +51,18 @@ export default function GenerationHistoryPanel({ onClose }: { onClose: () => voi
     finally { setLoadingMore(false); }
   }, [loadingMore, nextCursor]);
   useEffect(() => {
-    refresh();
-    const timer = window.setInterval(refresh, 5000);
-    return () => window.clearInterval(timer);
+    const refreshWhenVisible = () => { if (document.visibilityState === 'visible') refresh(); };
+    refreshWhenVisible();
+    const timer = window.setInterval(refreshWhenVisible, 20_000);
+    window.addEventListener('focus', refreshWhenVisible);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refreshWhenVisible);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+    };
   }, [refresh]);
-  const mentionNodes = (project?.nodes || []).map((node) => ({ id: node.id, label: node.data.label, type: node.data.type, imageUrl: node.data.type === 'image' ? node.data.generatedContent : undefined }));
+  const mentionNodes = useMemo(() => (project?.nodes || []).map((node) => ({ id: node.id, label: node.data.label, type: node.data.type, imageUrl: node.data.type === 'image' ? node.data.generatedContent : undefined })), [project?.nodes]);
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
       <button className="absolute inset-0 bg-black/70" onClick={onClose} aria-label="关闭" />
