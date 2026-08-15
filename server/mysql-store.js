@@ -408,18 +408,20 @@ const GENERATION_JOB_PATCH_COLUMNS = {
 };
 
 export class MySqlDatabase {
-  constructor(databaseUrl) {
+  constructor(databaseUrl, { refreshTtlMs } = {}) {
     this.kind = 'mysql';
     this.pool = mysql.createPool({
       uri: databaseUrl,
       waitForConnections: true,
-      connectionLimit: 5,
+      connectionLimit: Math.min(30, Math.max(5, Number.parseInt(process.env.DATABASE_POOL_SIZE || '10', 10) || 10)),
       enableKeepAlive: true,
       charset: 'utf8mb4',
       ...(String(process.env.DATABASE_SSL || '').toLowerCase() === 'true' ? { ssl: { rejectUnauthorized: true } } : {}),
     });
     this.data = structuredClone(EMPTY_DATABASE);
     this.writeQueue = Promise.resolve();
+    this.collectionRefreshedAt = new Map();
+    this.refreshTtlMs = Math.max(0, Number(refreshTtlMs ?? process.env.DATABASE_REFRESH_TTL_MS ?? 1000) || 0);
     this.schemaState = { ready: false, currentVersion: 0, expectedVersion: 0 };
   }
 
@@ -436,6 +438,8 @@ export class MySqlDatabase {
       const [rows] = await this.pool.query(spec.select);
       this.data[collection] = spec.parse ? rows.map(spec.parse) : rows;
     }
+    const refreshedAt = Date.now();
+    for (const collection of Object.keys(TABLES)) this.collectionRefreshedAt.set(collection, refreshedAt);
     return this;
   }
 
@@ -447,11 +451,18 @@ export class MySqlDatabase {
     const names = [...new Set(collections)].filter((name) => TABLES[name]);
     if (!names.length) return;
     const operation = this.writeQueue.then(async () => {
-      const refreshed = await Promise.all(names.map(async (name) => {
+      const now = Date.now();
+      const staleNames = names.filter((name) => now - Number(this.collectionRefreshedAt.get(name) || 0) >= this.refreshTtlMs);
+      if (!staleNames.length) return;
+      const refreshed = await Promise.all(staleNames.map(async (name) => {
         const spec = TABLES[name]; const [rows] = await this.pool.query(spec.select);
         return [name, spec.parse ? rows.map(spec.parse) : rows];
       }));
-      for (const [name, rows] of refreshed) this.data[name] = rows;
+      const completedAt = Date.now();
+      for (const [name, rows] of refreshed) {
+        this.data[name] = rows;
+        this.collectionRefreshedAt.set(name, completedAt);
+      }
     });
     this.writeQueue = operation.catch(() => undefined);
     await operation;
@@ -569,7 +580,8 @@ export class MySqlDatabase {
     let result;
     const operation = this.writeQueue.then(async () => {
       const before = structuredClone(this.data);
-      result = mutator(this.data);
+      try { result = mutator(this.data); }
+      catch (error) { this.data = before; throw error; }
       const changedCollections = Object.keys(TABLES).filter((name) => JSON.stringify(before[name]) !== JSON.stringify(this.data[name]));
       const connection = await this.pool.getConnection();
       try {
@@ -579,6 +591,36 @@ export class MySqlDatabase {
       } catch (error) {
         await connection.rollback();
         this.data = before;
+        throw error;
+      } finally {
+        connection.release();
+      }
+    });
+    this.writeQueue = operation.catch(() => undefined);
+    await operation;
+    return result;
+  }
+
+  async mutateCollections(collections, mutator) {
+    const names = [...new Set(collections)].filter((name) => TABLES[name]);
+    if (!names.length) return mutator(this.data);
+    let result;
+    const operation = this.writeQueue.then(async () => {
+      const before = Object.fromEntries(names.map((name) => [name, structuredClone(this.data[name])]));
+      try { result = mutator(this.data); }
+      catch (error) { for (const name of names) this.data[name] = before[name]; throw error; }
+      const changedCollections = names.filter((name) => JSON.stringify(before[name]) !== JSON.stringify(this.data[name]));
+      if (!changedCollections.length) return;
+      const connection = await this.pool.getConnection();
+      try {
+        await connection.beginTransaction();
+        for (const collection of changedCollections) await this.syncCollection(connection, collection, before[collection]);
+        await connection.commit();
+        const refreshedAt = Date.now();
+        for (const collection of changedCollections) this.collectionRefreshedAt.set(collection, refreshedAt);
+      } catch (error) {
+        await connection.rollback();
+        for (const name of names) this.data[name] = before[name];
         throw error;
       } finally {
         connection.release();
