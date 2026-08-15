@@ -6,17 +6,19 @@ import VideoDurationControl from './VideoDurationControl';
 import { videoDurationRules } from '@/services/modelDuration';
 import { isUploadedImageNode } from '@/services/nodeMediaSource';
 import { useEffect, useState } from 'react';
-import { getPlayableMediaUrl } from '@/services/assetService';
+import { getPlayableMediaUrl, needsResolvedMediaUrl } from '@/services/assetService';
 
 function ResolvedVideo({ source, poster }: { source: string; poster?: string }) {
-  const [url, setUrl] = useState(source);
+  const [url, setUrl] = useState(needsResolvedMediaUrl(source) ? '' : source);
   useEffect(() => {
     const controller = new AbortController();
-    setUrl(source);
+    setUrl(needsResolvedMediaUrl(source) ? '' : source);
     void getPlayableMediaUrl(source, controller.signal).then(setUrl).catch(() => undefined);
     return () => controller.abort();
   }, [source]);
-  return <video src={url} poster={poster} controls preload="metadata" className="aspect-video w-full rounded bg-black" />;
+  return url
+    ? <video src={url} poster={poster} controls preload="metadata" className="aspect-video w-full rounded bg-black" />
+    : <div className="flex aspect-video items-center justify-center rounded bg-black text-xs text-dark-400">正在读取视频</div>;
 }
 
 const typeIcons: Record<string, React.ReactNode> = {
