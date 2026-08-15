@@ -11,18 +11,21 @@ test('generated videos are archived to owned storage and served privately with r
   const codes = new Map();
   const objects = new Map();
   const videoBytes = Buffer.from('0123456789-video-bytes');
+  let requestedRange = null;
   const storage = {
     provider: 'r2',
     async put({ key, bytes, mimeType }) { objects.set(key, { bytes: Buffer.from(bytes), mimeType }); },
     async get(key) { return objects.get(key).bytes; },
     async read(key, range) {
+      requestedRange = range;
       const object = objects.get(key);
       const match = String(range || '').match(/^bytes=(\d+)-(\d*)$/);
       if (!match) return { bytes: object.bytes, contentLength: object.bytes.length, contentType: object.mimeType };
       const start = Number(match[1]);
-      const end = match[2] ? Number(match[2]) : object.bytes.length - 1;
+      const end = Math.min(match[2] ? Number(match[2]) : object.bytes.length - 1, object.bytes.length - 1);
       return { bytes: object.bytes.subarray(start, end + 1), contentLength: end - start + 1, contentRange: `bytes ${start}-${end}/${object.bytes.length}`, contentType: object.mimeType };
     },
+    async createDownloadUrl({ key }) { return `https://oss.example/play/${encodeURIComponent(key)}`; },
     async delete(key) { objects.delete(key); },
   };
   const fetchImpl = async () => new Response(videoBytes, { status: 200, headers: { 'content-type': 'video/mp4', 'content-length': String(videoBytes.length) } });
@@ -46,11 +49,19 @@ test('generated videos are archived to owned storage and served privately with r
   assert.equal(objects.size, 1);
   assert.equal(db.read('generatedMedia').length, 1);
 
+  const playback = await fetch(`${baseUrl}${archived.url}/playback-url`, { headers: { cookie } });
+  assert.equal(playback.status, 200);
+  assert.match((await playback.json()).url, /^https:\/\/oss\.example\/play\//);
+
   assert.equal((await fetch(`${baseUrl}${archived.url}`)).status, 401);
   const partial = await fetch(`${baseUrl}${archived.url}`, { headers: { cookie, range: 'bytes=1-3' } });
   assert.equal(partial.status, 206);
   assert.equal(partial.headers.get('content-range'), `bytes 1-3/${videoBytes.length}`);
   assert.equal(Buffer.from(await partial.arrayBuffer()).toString(), '123');
+  const openEnded = await fetch(`${baseUrl}${archived.url}`, { headers: { cookie, range: 'bytes=0-' } });
+  assert.equal(openEnded.status, 206);
+  assert.equal(requestedRange, 'bytes=0-1048575');
+  assert.equal(openEnded.headers.get('content-range'), `bytes 0-${videoBytes.length - 1}/${videoBytes.length}`);
 });
 
 test('non-streaming storage rejects a declared large video before buffering it', async () => {
