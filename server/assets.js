@@ -298,10 +298,14 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
     });
   });
 
-  router.get('/:id/signed-url', requireAuth, (req, res) => {
+  router.get('/:id/signed-url', requireAuth, async (req, res) => {
     const asset = db.read('assets').find((entry) => entry.id === req.params.id && entry.userId === req.user.id);
     if (!asset) return res.status(404).json({ error: 'ASSET_NOT_FOUND', message: '素材不存在' });
     const expires = Date.now() + SIGNED_URL_TTL_MS;
+    if (asset.objectKey && assetStorage?.createDownloadUrl) {
+      const url = await assetStorage.createDownloadUrl({ key: asset.objectKey, mimeType: asset.mimeType, expiresInSeconds: Math.floor(SIGNED_URL_TTL_MS / 1000) });
+      return res.json({ url, expiresAt: new Date(expires).toISOString() });
+    }
     const url = new URL(getStableAssetUrl(asset.id), 'http://same-origin.invalid');
     url.searchParams.set('expires', String(expires));
     url.searchParams.set('signature', signAssetAccess(asset.id, expires, signingKey));
