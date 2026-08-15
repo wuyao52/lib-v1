@@ -998,8 +998,8 @@ export class MySqlDatabase {
   }
 
   async storageStats() {
-    const [rows] = await this.pool.query('SELECT COALESCE(SUM(data_length + index_length), 0) AS bytes, COALESCE(SUM(table_rows), 0) AS rows FROM information_schema.tables WHERE table_schema = DATABASE()');
-    return { provider: 'mysql', bytes: Number(rows[0]?.bytes || 0), rows: Number(rows[0]?.rows || 0) };
+    const [rows] = await this.pool.query('SELECT COALESCE(SUM(data_length + index_length), 0) AS bytes, COALESCE(SUM(table_rows), 0) AS rowCount FROM information_schema.tables WHERE table_schema = DATABASE()');
+    return { provider: 'mysql', bytes: Number(rows[0]?.bytes || 0), rows: Number(rows[0]?.rowCount || 0) };
   }
 
   async writeRequestMetricBuckets(buckets) {
