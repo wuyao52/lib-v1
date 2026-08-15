@@ -6,7 +6,7 @@ function createEvent(overrides = {}) {
   return {
     httpMethod: 'GET',
     path: '/.netlify/functions/proxy',
-    headers: { Authorization: 'Bearer test-key', 'X-API-Key': 'test-key' },
+    headers: { Authorization: 'Bearer test-key', 'X-API-Key': 'test-key', Origin: 'http://localhost:3000' },
     queryStringParameters: { service: 'hongniaoai', path: 'v1/models' },
     body: null,
     isBase64Encoded: false,
@@ -44,7 +44,7 @@ test('Netlify AI proxy preserves query parameters, request bodies, and non-JSON 
 
   const result = await handler(createEvent({
     httpMethod: 'POST',
-    headers: { authorization: 'Bearer test-key', 'content-type': 'application/json' },
+    headers: { authorization: 'Bearer test-key', 'content-type': 'application/json', origin: 'http://localhost:3000' },
     queryStringParameters: { service: 'hongniaoai', path: 'v1/videos', include: 'usage' },
     body: '{"model":"seedance"}',
   }));
@@ -61,4 +61,12 @@ test('Netlify AI proxy rejects unknown services and path traversal', async () =>
   assert.equal(unknown.statusCode, 400);
   assert.equal(traversal.statusCode, 400);
   assert.match(unknown.body, /INVALID_PROXY_TARGET/);
+});
+
+test('Netlify AI proxy rejects cross-site and originless requests before forwarding credentials', async () => {
+  const crossSite = await handler(createEvent({ headers: { origin: 'https://attacker.example', authorization: 'Bearer stolen' } }));
+  const originless = await handler(createEvent({ headers: { authorization: 'Bearer stolen' } }));
+  assert.equal(crossSite.statusCode, 403);
+  assert.equal(originless.statusCode, 403);
+  assert.match(crossSite.body, /PROXY_ORIGIN_FORBIDDEN/);
 });
