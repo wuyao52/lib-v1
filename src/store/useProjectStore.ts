@@ -20,7 +20,7 @@ import {
 } from '@/types';
 import { createAIService, prepareReferenceImages, SeedanceService } from '@/services/aiService';
 import { ApiError, apiRequest } from '@/services/apiClient';
-import { getSignedAssetUrl, materializeReferenceImages } from '@/services/assetService';
+import { archiveGeneratedImage, getSignedAssetUrl, materializeReferenceImages } from '@/services/assetService';
 import { planGenerationTarget } from './generationPolicy';
 import { normalizeModelDuration, videoDurationRules } from '@/services/modelDuration';
 import { refreshManagedModel } from '@/services/managedModelCatalog';
@@ -479,6 +479,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
         history: [{ nodes: projectData.nodes, edges: projectData.edges }],
         historyIndex: 0,
       });
+      queueMicrotask(() => resumeInterruptedVideoGenerations(projectData!, get, set));
     }
   },
 
@@ -1244,8 +1245,12 @@ function launchGenerationTask(
         duration: requestDuration,
         seconds: requestDuration,
         _client: { projectId: latestProject.id, nodeId: execution.targetNodeId },
-        _onProgress: ({ status, progress, queuePosition }: { status: string; progress: number; queuePosition: number | null }) => get().updateNodeData(execution.targetNodeId, {
+        _onProgress: ({ taskId, status, progress, queuePosition }: { taskId: string; status: string; progress: number; queuePosition: number | null }) => get().updateNodeData(execution.targetNodeId, {
           progress: progress > 0 ? progress : status === 'queued' ? 10 : 30,
+          generationMeta: {
+            ...get().project?.nodes.find((item) => item.id === execution.targetNodeId)?.data.generationMeta,
+            taskId, configId: effectiveModel.id, apiId: effectiveModel.apiId, modelId: effectiveModel.modelId, modelName: effectiveModel.name, provider: effectiveModel.provider,
+          },
           generationMessage: status === 'queued'
             ? `视频任务排队中${queuePosition ? `，当前第 ${queuePosition} 位` : ''}`
             : status === 'submitting' ? '正在提交到视频服务...' : progress > 0 ? `视频生成中 ${progress}%` : '视频正在生成中...',
@@ -1276,10 +1281,13 @@ function launchGenerationTask(
         markGenerationFailed(execution.sourceNodeId, execution.targetNodeId, result.error || 'AI 生成失败', get, set);
         return;
       }
+      const durableImageUrl = isImage ? await archiveGeneratedImage(result.data.url, controller.signal) : result.data.url;
       get().updateNodeData(execution.targetNodeId, {
         status: 'completed', progress: 100, error: undefined, generationMessage: undefined,
-        generatedContent: result.data.url,
+        generatedContent: durableImageUrl,
         generationMeta: {
+          configId: effectiveModel.id,
+          apiId: effectiveModel.apiId,
           modelId: effectiveModel.modelId,
           modelName: effectiveModel.name,
           provider: effectiveModel.provider,
@@ -1295,7 +1303,7 @@ function launchGenerationTask(
       await apiRequest('/api/generation-history', { method: 'POST', body: JSON.stringify({
         projectId: latestProject.id, nodeId: execution.targetNodeId,
         type: execution.requestType, prompt: execution.prompt,
-        url: result.data.url, thumbnail: result.data.thumbnail,
+        url: durableImageUrl, thumbnail: isImage ? durableImageUrl : result.data.thumbnail,
       }) }).catch((error) => console.warn('保存生成历史失败:', error));
     } catch (error: any) {
       const message = controller.signal.aborted ? '用户取消生成' : error.message || 'AI 生成失败';
@@ -1340,6 +1348,56 @@ function finishGenerationTask(
   const activeGenerations = new Map(get().activeGenerations);
   activeGenerations.delete(nodeId);
   set({ activeGenerations, isGenerating: activeGenerations.size > 0 });
+}
+
+function resumeInterruptedVideoGenerations(
+  project: DramaProject,
+  get: () => ProjectStore,
+  set: (partial: Partial<ProjectStore>) => void,
+) {
+  const interrupted = project.nodes.filter((node) => (
+    node.data.type === 'video'
+    && node.data.status === 'generating'
+    && Boolean(node.data.generationMeta?.taskId)
+  ));
+  if (!interrupted.length) return;
+
+  void apiRequest<{ models: AIModelConfig[] }>('/api/catalog/models').then(({ models }) => {
+    for (const node of interrupted) {
+      const taskId = String(node.data.generationMeta?.taskId || '');
+      const model = models.find((candidate) => candidate.managed && (
+        (node.data.generationMeta?.configId && candidate.id === node.data.generationMeta.configId)
+        || (node.data.generationMeta?.apiId && candidate.apiId === node.data.generationMeta.apiId && candidate.modelId === node.data.generationMeta.modelId)
+      )) || models.find((candidate) => candidate.managed && candidate.modelId === node.data.generationMeta?.modelId);
+      if (!taskId || !model || get().activeGenerations.has(node.id)) {
+        if (!model) get().updateNodeData(node.id, { status: 'error', progress: 0, error: '原生成任务使用的系统模型已停用，无法自动恢复轮询' });
+        continue;
+      }
+      const controller = new AbortController();
+      const activeGenerations = new Map(get().activeGenerations);
+      activeGenerations.set(node.id, controller);
+      set({ activeGenerations, isGenerating: true });
+      void createAIService(model).resumeVideo(taskId, controller.signal, ({ status, progress, queuePosition }) => {
+        get().updateNodeData(node.id, {
+          progress: progress > 0 ? progress : status === 'queued' ? 10 : 30,
+          generationMessage: status === 'queued'
+            ? `视频任务排队中${queuePosition ? `，当前第 ${queuePosition} 位` : ''}`
+            : progress > 0 ? `视频生成中 ${progress}%` : '正在恢复视频生成状态...',
+        });
+      }).then((result) => {
+        if (!result.success || !result.data?.url) throw new Error(result.error || '恢复视频任务失败');
+        get().updateNodeData(node.id, {
+          status: 'completed', progress: 100, generatedContent: result.data.url, thumbnail: result.data.thumbnail,
+          error: undefined, generationMessage: undefined,
+          generationMeta: { ...node.data.generationMeta, taskId, completedAt: new Date().toISOString() },
+        });
+      }).catch((error) => {
+        if (!controller.signal.aborted) get().updateNodeData(node.id, { status: 'error', progress: 0, error: error instanceof Error ? error.message : '恢复视频任务失败', generationMessage: undefined });
+      }).finally(() => finishGenerationTask(node.id, get, set));
+    }
+  }).catch(() => {
+    interrupted.forEach((node) => get().updateNodeData(node.id, { status: 'error', progress: 0, error: '无法读取系统模型目录，请联网后重新打开项目恢复任务' }));
+  });
 }
 
 export default useProjectStore;
