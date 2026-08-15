@@ -302,7 +302,7 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
             {(nodeData.type === 'video' || nodeData.generatedContent?.includes('.mp4') ||
               nodeData.generatedContent?.includes('.webm') || nodeData.generatedContent?.includes('.mov')) && (
               <div className="relative aspect-video rounded-lg overflow-hidden bg-dark-900 group/video">
-                {nodeData.generatedContent && nodeData.generatedContent.startsWith('http') ? (
+                {nodeData.generatedContent ? (
                   <>
                     <video
                       ref={videoRef}
