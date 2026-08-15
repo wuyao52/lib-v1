@@ -1,4 +1,5 @@
-import { CopyObjectCommand, DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { CopyObjectCommand, DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 
@@ -105,9 +106,33 @@ export function createObjectStorageFromEnv(env = process.env, { clientFactory = 
     async put({ key, bytes, mimeType, signal }) {
       await client.send(new PutObjectCommand({ Bucket: config.bucket, Key: key, Body: bytes, ContentType: mimeType, ContentLength: bytes?.length }), { abortSignal: signal });
     },
+    async createUploadUrl({ key, mimeType, byteSize, expiresInSeconds = 900 }) {
+      return getSignedUrl(client, new PutObjectCommand({
+        Bucket: config.bucket,
+        Key: key,
+        ContentType: mimeType,
+        ContentLength: byteSize,
+      }), { expiresIn: expiresInSeconds });
+    },
+    async stat(key) {
+      const response = await client.send(new HeadObjectCommand({ Bucket: config.bucket, Key: key }));
+      return {
+        byteSize: Number(response.ContentLength || 0),
+        mimeType: String(response.ContentType || '').split(';')[0].toLowerCase(),
+      };
+    },
     async putStream({ key, body, mimeType, contentLength }) {
-      const stream = typeof Readable.fromWeb === 'function' ? Readable.fromWeb(body) : body;
+      const stream = body && typeof body.getReader === 'function' && typeof Readable.fromWeb === 'function' ? Readable.fromWeb(body) : body;
       await client.send(new PutObjectCommand({ Bucket: config.bucket, Key: key, Body: stream, ContentType: mimeType, ContentLength: contentLength || undefined }));
+    },
+    async getStream(key, { signal } = {}) {
+      const response = await client.send(new GetObjectCommand({ Bucket: config.bucket, Key: key }), { abortSignal: signal });
+      if (!response.Body) throw new Error('对象存储内容为空');
+      return {
+        body: response.Body,
+        contentLength: Number(response.ContentLength || 0),
+        contentType: response.ContentType || null,
+      };
     },
     async get(key, { signal } = {}) {
       const response = await client.send(new GetObjectCommand({ Bucket: config.bucket, Key: key }), { abortSignal: signal });
