@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ReactFlow,
   Background,
@@ -18,10 +18,10 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Upload, Image, Video, Droplets, Wand2, Plus, Wallet, GitMerge } from 'lucide-react';
 import { useAuth } from '@/auth/AuthContext';
 import { ApiError, apiRequest } from '@/services/apiClient';
-import { materializeReferenceImages, uploadVideoAsset } from '@/services/assetService';
+import { uploadAssetFile } from '@/services/assetService';
 
 const MAX_FILES_PER_DROP = 20;
-const UPLOAD_CONCURRENCY = 2;
+const UPLOAD_CONCURRENCY = 4;
 
 const wait = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
@@ -30,11 +30,11 @@ const shouldRetryUpload = (error: unknown) => {
   return !status || status === 408 || status === 429 || status >= 500;
 };
 
-async function uploadImageWithRetry(dataUrl: string): Promise<string> {
+async function uploadFileWithRetry(file: File): Promise<string> {
   let lastError: unknown;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      return (await materializeReferenceImages([dataUrl]))[0];
+      return await uploadAssetFile(file);
     } catch (error) {
       lastError = error;
       if (!shouldRetryUpload(error) || attempt === 2) throw error;
@@ -117,12 +117,6 @@ export default function Canvas() {
   // 检查是否有弹窗打开
   const hasModalOpen = showGenerationModal || showWatermarkModal;
 
-  const mentionableNodes = useMemo(() => project.nodes.map((node) => ({
-    id: node.id,
-    label: node.data.label,
-    type: node.data.type,
-    imageUrl: node.data.type === 'image' ? node.data.generatedContent : undefined,
-  })), [project.nodes]);
   const largeGraph = project.nodes.length > 120 || project.edges.length > 180;
 
   const hasFiles = (event: React.DragEvent) => event.dataTransfer.types.includes('Files');
@@ -132,14 +126,6 @@ export default function Canvas() {
     if (file.type.startsWith('video/')) return 'video';
     return null;
   };
-
-  const readFileAsDataURL = (file: File): Promise<string> =>
-    new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
 
   // 拖放处理
   const onDragEnter = (event: React.DragEvent) => {
@@ -196,9 +182,7 @@ export default function Canvas() {
           const file = files[fileIndex];
           const fileType = getFileType(file)!;
           try {
-            const storedUrl = fileType === 'image'
-              ? await uploadImageWithRetry(await readFileAsDataURL(file))
-              : await uploadVideoAsset(file);
+            const storedUrl = await uploadFileWithRetry(file);
             const fileName = file.name.replace(/\.[^/.]+$/, '');
             const column = fileIndex % 4;
             const row = Math.floor(fileIndex / 4);
@@ -343,6 +327,10 @@ export default function Canvas() {
     .filter((node): node is NonNullable<typeof node> => Boolean(node));
   const sourceNode = generationSourceNodes[0];
   const sourceImageNode = generationSourceNodes.find((node) => node.data.type === 'image' && node.data.generatedContent);
+  const generationMentionableNodes = generationSourceNodes.map((node) => ({
+    id: node.id, label: node.data.label, type: node.data.type,
+    imageUrl: node.data.type === 'image' ? node.data.generatedContent : undefined,
+  }));
   const configuredVideoModel = project.settings.multiModel?.videoModel || project.settings.aiModel;
   const selectedNodes = project.nodes.filter((node) => node.selected);
   const targetNodeAt = (clientX: number, clientY: number, sourceIds: string[]) => {
@@ -565,7 +553,7 @@ export default function Canvas() {
         sourceImageUrl={sourceImageNode?.data?.generatedContent}
         sourceNodeType={sourceNode?.data?.type}
         initialReferences={generationSourceNodes.map((node) => ({ id: node.id, label: node.data.label, type: node.data.type, imageUrl: node.data.type === 'image' ? node.data.generatedContent : undefined }))}
-        mentionableNodes={mentionableNodes}
+        mentionableNodes={generationMentionableNodes}
         durationRules={{ managed: configuredVideoModel.managed, minDurationSec: configuredVideoModel.minDurationSec, maxDurationSec: configuredVideoModel.maxDurationSec, allowedDurationsSec: configuredVideoModel.allowedDurationsSec }}
       />
 
