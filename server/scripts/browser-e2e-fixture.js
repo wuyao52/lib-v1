@@ -13,6 +13,7 @@ const userId = randomUUID();
 const token = `e2e-${randomUUID()}`;
 const now = new Date();
 const storedObjects = new Map();
+const storedMetadata = new Map();
 const FIXTURE_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAEAQH/2p4ZxQAAAABJRU5ErkJggg==', 'base64');
 const fixtureAssetKey = `assets/${userId}/refresh-fixture.png`;
 storedObjects.set(fixtureAssetKey, FIXTURE_PNG);
@@ -30,6 +31,15 @@ const fixtureStorage = {
     return Buffer.from(value);
   },
   async put({ key, bytes }) { storedObjects.set(key, Buffer.from(bytes)); },
+  async createUploadUrl({ key, mimeType, byteSize }) {
+    storedMetadata.set(key, { byteSize, mimeType });
+    return `http://127.0.0.1:${port}/__e2e/oss-upload?key=${encodeURIComponent(key)}`;
+  },
+  async stat(key) {
+    const metadata = storedMetadata.get(key);
+    if (!metadata) throw new Error('Fixture object not found');
+    return metadata;
+  },
   async move(sourceKey, destinationKey) {
     const value = storedObjects.get(sourceKey);
     if (!value) throw Object.assign(new Error('Fixture object not found'), { code: 'NoSuchKey' });
@@ -54,6 +64,14 @@ await db.mutate((data) => {
 const { app } = await createApp({ database: db, secureCookies: false, serveFrontend: true, videoQueue: false, maintenance: false, monitoring: false, assetStorage: fixtureStorage, backupEncryptionKey: 'browser-e2e-backup-key-32-bytes-long', sendEmailCode: async () => {} });
 const fixture = express();
 fixture.get('/__e2e/video.mp4', (_req, res) => res.status(204).set('content-type', 'video/mp4').end());
+fixture.put(
+  '/__e2e/oss-upload',
+  express.raw({ type: () => true, limit: '8mb' }),
+  (req, res) => {
+    storedObjects.set(String(req.query.key || ''), Buffer.from(req.body));
+    return res.status(200).set('ETag', 'fixture-etag').end();
+  },
+);
 fixture.get('/__e2e/login', async (_req, res, next) => {
   try {
     const tokenHash = createHash('sha256').update(token).digest('hex');
