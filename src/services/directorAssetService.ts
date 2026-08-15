@@ -2,7 +2,7 @@ import { createAIService } from '@/services/aiService';
 import type { AIModelConfig, DramaProject } from '@/types';
 import type { StoryboardPlan } from '@/types/director';
 import type { DirectorAsset, DirectorAssetKind, DirectorAssetValidation } from '@/types/directorAsset';
-import { materializeReferenceImages } from '@/services/assetService';
+import { archiveGeneratedImage, materializeReferenceImages } from '@/services/assetService';
 
 const assetLabels: Record<DirectorAssetKind, string> = {
   scene: '场景',
@@ -89,7 +89,7 @@ export async function generateDirectorAssetImage(asset: DirectorAsset, project: 
     images: asset.referenceImage ? [asset.referenceImage] : undefined,
   }, signal);
   if (!response.success || !response.data?.url) throw new Error(response.error || '图片模型未返回资产图片');
-  return response.data.url;
+  return archiveGeneratedImage(response.data.url, signal);
 }
 
 export function compileDirectorAssetContext(assets: DirectorAsset[]): string {
