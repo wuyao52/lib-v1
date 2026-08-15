@@ -101,6 +101,37 @@ test('video queue delays transient submission failures instead of refunding imme
   assert.equal(submissions, 2);
 });
 
+test('provider capacity failures return to the queue and retry without charging twice', async () => {
+  let submissions = 0;
+  const db = fakeDb({
+    users: [{ id: 'user-a', balanceCents: 25 }],
+    systemApis: [{ id: 'api-1', enabled: true, baseUrl: 'https://upstream.example', encryptedApiKey: 'secret' }],
+  });
+  const fetchImpl = async (_url, options) => {
+    if (options.method === 'POST') {
+      submissions += 1;
+      return new Response(JSON.stringify({ id: `provider-capacity-${submissions}`, status: 'queued' }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (String(_url).endsWith('/provider-capacity-1')) {
+      return new Response(JSON.stringify({ status: 'failed', error: { message: '当前用户最多同时运行 20 个图片/视频任务，当前已有 20 个任务运行中' } }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({ status: 'processing', progress: 10 }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  const queue = await createVideoQueue({ db, vault: { decrypt: (value) => value }, fetchImpl, autoStart: false });
+  await queue.enqueue({ id: 'capacity-job', userId: 'user-a', apiId: 'api-1', modelId: 'video', requestBody: { prompt: 'capacity' }, chargeCents: 25, billingReference: 'capacity-job' });
+  await waitFor(() => db.data.generationJobs[0]?.status === 'processing');
+  db.data.generationJobs[0].nextPollAt = 0;
+  await queue.tick();
+  await waitFor(() => db.data.generationJobs[0]?.status === 'queued');
+  assert.equal(db.data.generationJobs[0].providerTaskId, null);
+  assert.equal(db.data.balanceTransactions.some((item) => item.type === 'model_refund'), false);
+  db.data.generationJobs[0].nextPollAt = 0;
+  await queue.tick();
+  await waitFor(() => db.data.generationJobs[0]?.providerTaskId === 'provider-capacity-2');
+  assert.equal(submissions, 2);
+  assert.equal(db.data.balanceTransactions.some((item) => item.type === 'model_refund'), false);
+});
+
 test('video queue recovers interrupted submissions and only cleans expired terminal records', async () => {
   await withQueueEnv({ VIDEO_QUEUE_HISTORY_DAYS: '1' }, async () => {
     const old = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
