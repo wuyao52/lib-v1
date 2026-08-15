@@ -3,11 +3,20 @@ const SERVICES = {
   wuhenai: new URL('https://api.wuhenai.com/'),
 };
 
-const CORS_HEADERS = {
-  'access-control-allow-origin': '*',
+const corsHeaders = (origin) => ({
+  'access-control-allow-origin': origin,
+  vary: 'Origin',
   'access-control-allow-headers': 'Content-Type, Authorization, X-API-Key',
   'access-control-allow-methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-};
+});
+
+function allowedOrigin(event) {
+  const origin = String(getHeader(event.headers, 'origin') || '');
+  const configured = [process.env.URL, process.env.DEPLOY_PRIME_URL, process.env.LEGACY_AI_PROXY_ORIGIN]
+    .filter(Boolean).map((value) => new URL(value).origin);
+  if (process.env.NODE_ENV !== 'production') configured.push('http://localhost:3000', 'http://127.0.0.1:3000');
+  return configured.includes(origin) ? origin : null;
+}
 
 function getHeader(headers, name) {
   const key = Object.keys(headers || {}).find((candidate) => candidate.toLowerCase() === name);
@@ -35,13 +44,16 @@ function resolveTarget(event) {
 
 export async function handler(event) {
   const method = String(event.httpMethod || 'GET').toUpperCase();
-  if (method === 'OPTIONS') return { statusCode: 204, headers: CORS_HEADERS, body: '' };
+  const origin = allowedOrigin(event);
+  if (!origin) return { statusCode: 403, headers: { 'content-type': 'application/json; charset=utf-8' }, body: JSON.stringify({ error: 'PROXY_ORIGIN_FORBIDDEN', message: '请求来源不被允许' }) };
+  const cors = corsHeaders(origin);
+  if (method === 'OPTIONS') return { statusCode: 204, headers: cors, body: '' };
 
   const target = resolveTarget(event);
   if (!target) {
     return {
       statusCode: 400,
-      headers: { ...CORS_HEADERS, 'content-type': 'application/json; charset=utf-8' },
+      headers: { ...cors, 'content-type': 'application/json; charset=utf-8' },
       body: JSON.stringify({ error: 'INVALID_PROXY_TARGET', message: '不允许代理该 API 路径' }),
     };
   }
@@ -62,7 +74,7 @@ export async function handler(event) {
       redirect: 'manual',
     });
 
-    const responseHeaders = { ...CORS_HEADERS };
+    const responseHeaders = { ...cors };
     for (const name of ['cache-control', 'content-type', 'retry-after']) {
       const value = response.headers.get(name);
       if (value) responseHeaders[name] = value;
@@ -72,7 +84,7 @@ export async function handler(event) {
     console.error('AI API proxy failed:', error);
     return {
       statusCode: 502,
-      headers: { ...CORS_HEADERS, 'content-type': 'application/json; charset=utf-8' },
+      headers: { ...cors, 'content-type': 'application/json; charset=utf-8' },
       body: JSON.stringify({ error: 'UPSTREAM_UNAVAILABLE', message: 'AI API 暂时不可用' }),
     };
   }
