@@ -1,4 +1,4 @@
-import React, { memo, useState, useRef } from 'react';
+import React, { memo, useEffect, useState, useRef } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -27,6 +27,7 @@ import type { SceneNodeData } from '@/types';
 import useProjectStore from '@/store/useProjectStore';
 import { PromptMentionContent } from './PromptMentionEditor';
 import { isUploadedImageNode } from '@/services/nodeMediaSource';
+import { getPlayableMediaUrl } from '@/services/assetService';
 
 const typeIcons: Record<string, React.ReactNode> = {
   text: <Type className="w-4 h-4" />,
@@ -78,7 +79,21 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
   const [showPreview, setShowPreview] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [showSpeedMenu, setShowSpeedMenu] = useState(false);
+  const [playbackUrl, setPlaybackUrl] = useState(String(nodeData.generatedContent || ''));
+  const [videoLoadError, setVideoLoadError] = useState('');
+  const [playbackRefresh, setPlaybackRefresh] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    const source = String(nodeData.generatedContent || '');
+    const controller = new AbortController();
+    setPlaybackUrl(source);
+    setVideoLoadError('');
+    if (source) void getPlayableMediaUrl(source, controller.signal, playbackRefresh > 0)
+      .then((url) => setPlaybackUrl(url))
+      .catch((error) => setVideoLoadError(error instanceof Error ? error.message : '视频地址读取失败'));
+    return () => controller.abort();
+  }, [nodeData.generatedContent, playbackRefresh]);
 
   // @引用状态
   const [showMentionMenu, setShowMentionMenu] = useState(false);
@@ -143,9 +158,9 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
   // 下载视频
   const handleDownload = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (nodeData.generatedContent) {
+    if (playbackUrl) {
       const link = document.createElement('a');
-      link.href = nodeData.generatedContent;
+      link.href = playbackUrl;
       link.download = `${nodeData.label || 'video'}-${Date.now()}.mp4`;
       link.click();
     }
@@ -179,8 +194,9 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
   // 获取可引用的节点列表
   const getMentionableNodes = () => {
     if (!project) return [];
+    const incomingIds = new Set(project.edges.filter((edge) => edge.target === id).map((edge) => edge.source));
     return project.nodes
-      .filter(n => n.id !== id)
+      .filter((node) => incomingIds.has(node.id))
       .filter(n => {
         if (!mentionFilter) return true;
         return n.data.label?.toLowerCase().includes(mentionFilter.toLowerCase());
@@ -306,7 +322,7 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
                   <>
                     <video
                       ref={videoRef}
-                      src={nodeData.generatedContent}
+                      src={playbackUrl}
                       className="w-full h-full object-cover"
                       muted={isMuted}
                       loop
@@ -317,9 +333,15 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
                       onError={(e) => {
                         console.warn('视频加载失败:', e);
                         setIsPlaying(false);
+                        setVideoLoadError('视频加载失败');
                       }}
                       poster={nodeData.thumbnail}
                     />
+                    {videoLoadError && (
+                      <button type="button" onClick={(event) => { event.stopPropagation(); setPlaybackRefresh((value) => value + 1); }} className="absolute inset-0 z-10 flex items-center justify-center bg-black/65 text-xs text-red-200">
+                        {videoLoadError}，点击重试
+                      </button>
+                    )}
 
                     {/* 视频控制层 */}
                     <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent
@@ -667,7 +689,7 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
               {(nodeData.type === 'video' || nodeData.generatedContent?.includes('.mp4')) && (
                 <div className="relative">
                   <video
-                    src={nodeData.generatedContent}
+                    src={playbackUrl}
                     className="max-w-full max-h-[85vh] rounded-lg shadow-2xl"
                     controls
                     autoPlay
