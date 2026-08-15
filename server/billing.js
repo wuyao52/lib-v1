@@ -100,6 +100,10 @@ export function registerCatalogRoutes(router, { db, requireAuth }) {
 
 export function registerBillingRoutes(router, { db, requireAuth }) {
   router.use(requireAuth);
+  router.get('/balance', (req, res) => {
+    const user = db.read('users').find((item) => item.id === req.user.id);
+    return res.json({ balanceCents: Number(user?.balanceCents || 0) });
+  });
   router.get('/me', (req, res) => {
     const user = db.read('users').find((item) => item.id === req.user.id);
     const transactions = db.read('balanceTransactions').filter((item) => item.userId === req.user.id)
