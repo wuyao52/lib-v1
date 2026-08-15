@@ -182,6 +182,9 @@ test('video assets use a short-lived direct upload and are verified before persi
   const playback = await fetch(`${baseUrl}/api/assets/${asset.id}/playback-url`, { headers: { cookie } });
   assert.equal(playback.status, 200);
   assert.match((await playback.json()).url, /^https:\/\/oss\.example\/play\//);
+  const modelInput = await fetch(`${baseUrl}/api/assets/${asset.id}/signed-url`, { headers: { cookie } });
+  assert.equal(modelInput.status, 200);
+  assert.match((await modelInput.json()).url, /^https:\/\/oss\.example\/play\//);
 
   const imageRequested = await fetch(`${baseUrl}/api/assets/direct-upload`, {
     method: 'POST', headers: { cookie, 'content-type': 'application/json' },
