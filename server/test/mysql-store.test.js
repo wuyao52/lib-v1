@@ -115,7 +115,7 @@ test('MySQL multi-instance enqueue locks authoritative balance and pending count
 
 test('MySQL reports database bytes and estimated rows from information_schema', async () => {
   const db = new MySqlDatabase('mysql://user:pass@127.0.0.1/test');
-  db.pool = { query: async () => [[{ bytes: '314572800', rows: '12000' }]] };
+  db.pool = { query: async (sql) => { assert.match(sql, /AS rowCount/); return [[{ bytes: '314572800', rowCount: '12000' }]]; } };
   assert.deepEqual(await db.storageStats(), { provider: 'mysql', bytes: 314572800, rows: 12000 });
 });
 
