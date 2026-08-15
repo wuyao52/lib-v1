@@ -13,6 +13,7 @@ const DEFAULT_ASSET_RETENTION_DAYS = 30;
 const ASSET_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SIGNED_URL_TTL_MS = 15 * 60 * 1000;
+const MAX_PROXY_RANGE_BYTES = 1024 * 1024;
 
 function parseImageDataUrl(value) {
   const match = DATA_URL_PATTERN.exec(String(value || '').trim());
@@ -50,6 +51,10 @@ function parseImageRequest(req) {
 const getStableAssetUrl = (id) => `/api/assets/public/${id}`;
 
 const directUploadMimeTypes = new Map([
+  ['image/png', 'png'],
+  ['image/jpeg', 'jpg'],
+  ['image/webp', 'webp'],
+  ['image/gif', 'gif'],
   ['video/mp4', 'mp4'],
   ['video/webm', 'webm'],
   ['video/quicktime', 'mov'],
@@ -78,9 +83,10 @@ function parseRange(value) {
   const match = String(value || '').match(/^bytes=(\d+)-(\d*)$/);
   if (!match) return null;
   const start = Number(match[1]);
-  const end = match[2] ? Number(match[2]) : null;
+  const requestedEnd = match[2] ? Number(match[2]) : start + MAX_PROXY_RANGE_BYTES - 1;
+  const end = Math.min(requestedEnd, start + MAX_PROXY_RANGE_BYTES - 1);
   if (!Number.isSafeInteger(start) || (end !== null && (!Number.isSafeInteger(end) || end < start))) return null;
-  return { start, header: `bytes=${start}-${end ?? ''}` };
+  return { start, header: `bytes=${start}-${end}` };
 }
 
 function signAssetAccess(id, expires, secret) {
@@ -302,23 +308,35 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
     return res.json({ url: `${url.pathname}${url.search}`, expiresAt: new Date(expires).toISOString() });
   });
 
+  router.get('/:id/playback-url', requireAuth, async (req, res) => {
+    const asset = db.read('assets').find((entry) => entry.id === req.params.id && entry.userId === req.user.id);
+    if (!asset) return res.status(404).json({ error: 'ASSET_NOT_FOUND', message: '素材不存在' });
+    const expiresAt = Date.now() + SIGNED_URL_TTL_MS;
+    if (asset.objectKey && assetStorage?.createDownloadUrl) {
+      const url = await assetStorage.createDownloadUrl({ key: asset.objectKey, mimeType: asset.mimeType, expiresInSeconds: Math.floor(SIGNED_URL_TTL_MS / 1000) });
+      return res.json({ url, expiresAt: new Date(expiresAt).toISOString() });
+    }
+    return res.json({ url: getStableAssetUrl(asset.id), expiresAt: new Date(expiresAt).toISOString() });
+  });
+
   router.post('/direct-upload', requireAuth, async (req, res) => {
     if (!assetStorage?.createUploadUrl || !assetStorage?.stat) {
-      return res.status(503).json({ error: 'DIRECT_UPLOAD_UNAVAILABLE', message: '当前对象存储不支持视频直传' });
+      return res.status(503).json({ error: 'DIRECT_UPLOAD_UNAVAILABLE', message: '当前对象存储不支持素材直传' });
     }
     if (db.consumeRateLimit) {
       const bucket = await db.consumeRateLimit(`asset-direct-upload:${req.user.id}`, 60, 60 * 60 * 1000);
       if (!bucket.allowed) {
         res.setHeader('Retry-After', String(Math.max(1, Math.ceil((bucket.resetAt - Date.now()) / 1000))));
-        return res.status(429).json({ error: 'DIRECT_UPLOAD_RATE_LIMITED', message: '视频直传申请过于频繁，请稍后重试' });
+        return res.status(429).json({ error: 'DIRECT_UPLOAD_RATE_LIMITED', message: '素材直传申请过于频繁，请稍后重试' });
       }
     }
     const mimeType = String(req.body?.mimeType || '').toLowerCase().split(';')[0];
     const extension = directUploadMimeTypes.get(mimeType);
     const byteSize = Number(req.body?.byteSize);
-    const maxBytes = Math.max(1, Number(process.env.ASSET_VIDEO_MAX_BYTES) || DEFAULT_VIDEO_MAX_BYTES);
+    const isImage = ALLOWED_IMAGE_TYPES.has(mimeType);
+    const maxBytes = isImage ? MAX_ASSET_BYTES : Math.max(1, Number(process.env.ASSET_VIDEO_MAX_BYTES) || DEFAULT_VIDEO_MAX_BYTES);
     if (!extension || !Number.isSafeInteger(byteSize) || byteSize < 1 || byteSize > maxBytes) {
-      return res.status(400).json({ error: 'INVALID_DIRECT_UPLOAD', message: `仅支持 MP4、WebM、MOV，且文件不能超过 ${Math.floor(maxBytes / 1024 / 1024)} MB` });
+      return res.status(400).json({ error: 'INVALID_DIRECT_UPLOAD', message: `仅支持 JPG、PNG、WebP、GIF、MP4、WebM、MOV，且文件不能超过 ${Math.floor(maxBytes / 1024 / 1024)} MB` });
     }
     const quotaBytes = Number(process.env.ASSET_USER_QUOTA_BYTES) || DEFAULT_USER_QUOTA_BYTES;
     const usedBytes = db.read('assets').filter((asset) => asset.userId === req.user.id).reduce((sum, asset) => sum + Number(asset.byteSize || 0), 0);
@@ -335,15 +353,15 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
   router.post('/direct-upload/complete', requireAuth, async (req, res) => {
     const claim = verifyDirectUpload(req.body?.token, signingKey);
     if (!claim || claim.userId !== req.user.id || !directUploadMimeTypes.has(claim.mimeType)) {
-      return res.status(400).json({ error: 'DIRECT_UPLOAD_INVALID', message: '视频上传凭证无效或已过期' });
+      return res.status(400).json({ error: 'DIRECT_UPLOAD_INVALID', message: '素材上传凭证无效或已过期' });
     }
     const existing = db.read('assets').find((asset) => asset.id === claim.id && asset.userId === req.user.id);
     if (existing) return res.json({ asset: { id: existing.id, url: getStableAssetUrl(existing.id), mimeType: existing.mimeType, byteSize: existing.byteSize } });
     let object;
     try { object = await assetStorage.stat(claim.objectKey); }
-    catch { return res.status(409).json({ error: 'DIRECT_UPLOAD_NOT_FOUND', message: '尚未在对象存储中找到上传的视频' }); }
+    catch { return res.status(409).json({ error: 'DIRECT_UPLOAD_NOT_FOUND', message: '尚未在对象存储中找到上传的素材' }); }
     if (object.byteSize !== claim.byteSize || object.mimeType !== claim.mimeType) {
-      return res.status(409).json({ error: 'DIRECT_UPLOAD_MISMATCH', message: '对象存储中的视频大小或格式与上传申请不一致' });
+      return res.status(409).json({ error: 'DIRECT_UPLOAD_MISMATCH', message: '对象存储中的素材大小或格式与上传申请不一致' });
     }
     const quotaBytes = Number(process.env.ASSET_USER_QUOTA_BYTES) || DEFAULT_USER_QUOTA_BYTES;
     let record; let quotaExceeded = false;
