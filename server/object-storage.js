@@ -1,4 +1,4 @@
-import { CopyObjectCommand, DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { AbortMultipartUploadCommand, CompleteMultipartUploadCommand, CopyObjectCommand, CreateMultipartUploadCommand, DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client, UploadPartCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
@@ -129,7 +129,36 @@ export function createObjectStorageFromEnv(env = process.env, { clientFactory = 
     },
     async putStream({ key, body, mimeType, contentLength }) {
       const stream = body && typeof body.getReader === 'function' && typeof Readable.fromWeb === 'function' ? Readable.fromWeb(body) : body;
-      await client.send(new PutObjectCommand({ Bucket: config.bucket, Key: key, Body: stream, ContentType: mimeType, ContentLength: contentLength || undefined }));
+      if (contentLength) {
+        await client.send(new PutObjectCommand({ Bucket: config.bucket, Key: key, Body: stream, ContentType: mimeType, ContentLength: contentLength }));
+        return;
+      }
+      const created = await client.send(new CreateMultipartUploadCommand({ Bucket: config.bucket, Key: key, ContentType: mimeType }));
+      const uploadId = created.UploadId;
+      if (!uploadId) throw new Error('对象存储未返回分片上传 ID');
+      const parts = [];
+      const partSize = 8 * 1024 * 1024;
+      let buffered = Buffer.alloc(0);
+      try {
+        const uploadPart = async (bytes) => {
+          const PartNumber = parts.length + 1;
+          const result = await client.send(new UploadPartCommand({ Bucket: config.bucket, Key: key, UploadId: uploadId, PartNumber, Body: bytes, ContentLength: bytes.length }));
+          if (!result.ETag) throw new Error('对象存储未返回分片校验值');
+          parts.push({ ETag: result.ETag, PartNumber });
+        };
+        for await (const chunk of stream) {
+          buffered = Buffer.concat([buffered, Buffer.from(chunk)]);
+          while (buffered.length >= partSize) {
+            await uploadPart(buffered.subarray(0, partSize));
+            buffered = buffered.subarray(partSize);
+          }
+        }
+        if (buffered.length || !parts.length) await uploadPart(buffered);
+        await client.send(new CompleteMultipartUploadCommand({ Bucket: config.bucket, Key: key, UploadId: uploadId, MultipartUpload: { Parts: parts } }));
+      } catch (error) {
+        await client.send(new AbortMultipartUploadCommand({ Bucket: config.bucket, Key: key, UploadId: uploadId })).catch(() => undefined);
+        throw error;
+      }
     },
     async getStream(key, { signal } = {}) {
       const response = await client.send(new GetObjectCommand({ Bucket: config.bucket, Key: key }), { abortSignal: signal });
