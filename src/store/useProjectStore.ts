@@ -265,14 +265,13 @@ function collectReferenceImages(
   node: Node<SceneNodeData>,
   promptOverride = '',
   additionalNodeIds: string[] = [],
+  targetNodeId = node.id,
 ): string[] {
-  const referencedIds = new Set<string>([node.id, ...(node.data.referenceNodeIds || []), ...additionalNodeIds]);
+  const incomingIds = new Set(project.edges.filter((edge) => edge.target === targetNodeId).map((edge) => edge.source));
+  const referencedIds = new Set<string>([node.id, ...incomingIds]);
   const prompt = `${String(node.data.prompt || node.data.content || '')} ${promptOverride}`;
-  for (const match of prompt.matchAll(/@\[[^\]]+\]\(([^)]+)\)/g)) referencedIds.add(match[1]);
-  for (const edge of project.edges) {
-    if (edge.source === node.id) referencedIds.add(edge.target);
-    if (edge.target === node.id) referencedIds.add(edge.source);
-  }
+  for (const match of prompt.matchAll(/@\[[^\]]+\]\(([^)]+)\)/g)) if (incomingIds.has(match[1])) referencedIds.add(match[1]);
+  for (const candidateId of additionalNodeIds) if (incomingIds.has(candidateId)) referencedIds.add(candidateId);
   return [...new Set(project.nodes
     .filter((candidate) => referencedIds.has(candidate.id) && candidate.data.type === 'image' && candidate.data.generatedContent)
     .map((candidate) => String(candidate.data.generatedContent)))]
@@ -1257,7 +1256,7 @@ function launchGenerationTask(
         }),
       };
       const images = await materializeReferenceImages(
-        await prepareReferenceImages(collectReferenceImages(latestProject, execution.sourceNode, execution.prompt, execution.referenceNodeIds)),
+        await prepareReferenceImages(collectReferenceImages(latestProject, execution.sourceNode, execution.prompt, execution.referenceNodeIds, execution.targetNodeId)),
         controller.signal,
       );
       if (images.length) generationSettings.images = images;
