@@ -9,6 +9,7 @@ const retentionMs = () => {
 };
 const DEFAULT_MAX_VIDEO_BYTES = 1024 * 1024 * 1024;
 const DEFAULT_NON_STREAM_MAX_BYTES = 32 * 1024 * 1024;
+const MAX_PROXY_RANGE_BYTES = 1024 * 1024;
 
 const maxVideoBytes = () => {
   const configured = Number(process.env.GENERATED_VIDEO_MAX_BYTES);
@@ -35,9 +36,10 @@ function parseRange(value) {
   const match = String(value || '').match(/^bytes=(\d+)-(\d*)$/);
   if (!match) return null;
   const start = Number(match[1]);
-  const end = match[2] ? Number(match[2]) : null;
+  const requestedEnd = match[2] ? Number(match[2]) : start + MAX_PROXY_RANGE_BYTES - 1;
+  const end = Math.min(requestedEnd, start + MAX_PROXY_RANGE_BYTES - 1);
   if (!Number.isSafeInteger(start) || (end !== null && (!Number.isSafeInteger(end) || end < start))) return null;
-  return { start, end, header: `bytes=${start}-${end ?? ''}` };
+  return { start, end, header: `bytes=${start}-${end}` };
 }
 
 export function createGeneratedMediaService({ db, storage, fetchImpl = fetch, resolveHost = lookup } = {}) {
@@ -106,6 +108,13 @@ export function createGeneratedMediaService({ db, storage, fetchImpl = fetch, re
 
 export function registerGeneratedMediaRoutes(router, { db, requireAuth, storage }) {
   router.use(requireAuth);
+  router.get('/:id/playback-url', async (req, res) => {
+    const media = db.read('generatedMedia').find((item) => item.id === req.params.id && item.userId === req.user.id && Date.parse(item.expiresAt) > Date.now());
+    if (!media) return res.status(404).json({ error: 'GENERATED_MEDIA_NOT_FOUND', message: '视频不存在或已过期' });
+    if (!storage?.createDownloadUrl) return res.json({ url: `/api/generated-media/${media.id}`, expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString() });
+    const url = await storage.createDownloadUrl({ key: media.objectKey, mimeType: media.mimeType, expiresInSeconds: 900 });
+    return res.json({ url, expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString() });
+  });
   router.get('/:id', async (req, res) => {
     const media = db.read('generatedMedia').find((item) => item.id === req.params.id && item.userId === req.user.id && Date.parse(item.expiresAt) > Date.now());
     if (!media) return res.status(404).json({ error: 'GENERATED_MEDIA_NOT_FOUND', message: '视频不存在或已过期' });
