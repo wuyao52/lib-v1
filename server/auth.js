@@ -75,9 +75,10 @@ function setSessionCookie(res, token, secure) {
 }
 
 export function createAuthService(db, { secureCookies = false, sendEmailCode, generateImageCaptcha = createNumericCaptcha, systemUserEmails = new Set(), securityEvent = null } = {}) {
+  const mutate = (collections, mutator) => db.mutateCollections ? db.mutateCollections(collections, mutator) : db.mutate(mutator);
   const recordSecurityEvent = async (req, action, metadata = {}) => {
     if (securityEvent) return securityEvent(req, action, metadata);
-    return db.mutate((data) => data.auditLogs.push({ id: randomUUID(), userId: metadata.userId || req.user?.id || null, action, targetType: 'security', targetId: null, ipAddress: String(req.ip || '').slice(0, 100), userAgent: String(req.get('user-agent') || '').slice(0, 300), metadata: { requestId: req.requestId || null, ...metadata }, createdAt: new Date().toISOString() }));
+    return mutate(['auditLogs'], (data) => data.auditLogs.push({ id: randomUUID(), userId: metadata.userId || req.user?.id || null, action, targetType: 'security', targetId: null, ipAddress: String(req.ip || '').slice(0, 100), userAgent: String(req.get('user-agent') || '').slice(0, 300), metadata: { requestId: req.requestId || null, ...metadata }, createdAt: new Date().toISOString() }));
   };
   async function issueEmailCode(email, purpose) {
     const now = Date.now();
@@ -105,7 +106,7 @@ export function createAuthService(db, { secureCookies = false, sendEmailCode, ge
       expiresAt: now + EMAIL_CODE_TTL_MS,
       usedAt: null,
     };
-    await db.mutate((data) => {
+    await mutate(['emailVerifications'], (data) => {
       data.emailVerifications = data.emailVerifications.filter((item) => item.expiresAt > now && !item.usedAt);
       data.emailVerifications.push(record);
     });
@@ -113,7 +114,7 @@ export function createAuthService(db, { secureCookies = false, sendEmailCode, ge
     try {
       await sendEmailCode({ email, code, purpose, expiresInMinutes: EMAIL_CODE_TTL_MS / 60_000 });
     } catch (error) {
-      await db.mutate((data) => {
+      await mutate(['emailVerifications'], (data) => {
         data.emailVerifications = data.emailVerifications.filter((item) => item.id !== record.id);
       });
       throw error;
@@ -131,7 +132,7 @@ export function createAuthService(db, { secureCookies = false, sendEmailCode, ge
     const actual = Buffer.from(hashVerificationCode(String(code), record.salt), 'hex');
     const expected = Buffer.from(record.codeHash, 'hex');
     const valid = actual.length === expected.length && timingSafeEqual(actual, expected);
-    await db.mutate((data) => {
+    await mutate(['emailVerifications'], (data) => {
       const current = data.emailVerifications.find((item) => item.id === record.id);
       if (!current) return;
       current.attempts += 1;
@@ -157,7 +158,7 @@ export function createAuthService(db, { secureCookies = false, sendEmailCode, ge
       expiresAt: now + IMAGE_CAPTCHA_TTL_MS,
       usedAt: null,
     };
-    await db.mutate((data) => {
+    await mutate(['imageCaptchas'], (data) => {
       data.imageCaptchas = data.imageCaptchas.filter((item) => item.expiresAt > now && !item.usedAt);
       data.imageCaptchas.push(record);
     });
@@ -179,7 +180,7 @@ export function createAuthService(db, { secureCookies = false, sendEmailCode, ge
     const actual = Buffer.from(hashVerificationCode(String(code), record.salt), 'hex');
     const expected = Buffer.from(record.codeHash, 'hex');
     const valid = actual.length === expected.length && timingSafeEqual(actual, expected);
-    await db.mutate((data) => {
+    await mutate(['imageCaptchas'], (data) => {
       const current = data.imageCaptchas.find((item) => item.id === record.id);
       if (!current) return;
       current.attempts += 1;
@@ -191,7 +192,7 @@ export function createAuthService(db, { secureCookies = false, sendEmailCode, ge
   async function createSession(userId, req, res) {
     const token = randomBytes(32).toString('base64url');
     const now = Date.now();
-    await db.mutate((data) => {
+    await mutate(['sessions'], (data) => {
       data.sessions = data.sessions.filter((session) => session.expiresAt > now);
       const existing = data.sessions.filter((session) => session.userId === userId).sort((a, b) => b.createdAt - a.createdAt);
       const retained = new Set(existing.slice(0, MAX_SESSIONS_PER_USER - 1).map((session) => session.id));
@@ -343,7 +344,7 @@ export function createAuthService(db, { secureCookies = false, sendEmailCode, ge
         }
         const currentTokenHash = req.cookies?.[SESSION_COOKIE] ? hashToken(req.cookies[SESSION_COOKIE]) : '';
         const newPasswordHash = await hashPassword(req.body.newPassword);
-        await db.mutate((data) => {
+        await mutate(['users', 'sessions'], (data) => {
           const currentUser = data.users.find((item) => item.id === req.user.id);
           if (currentUser) currentUser.passwordHash = newPasswordHash;
           data.sessions = data.sessions.filter((session) => session.userId !== req.user.id || session.tokenHash === currentTokenHash);
@@ -360,7 +361,7 @@ export function createAuthService(db, { secureCookies = false, sendEmailCode, ge
         const user = db.read('users').find((item) => item.email === email);
         if (!user || !(await consumeEmailCode(email, 'reset_password', req.body.verificationCode))) return res.status(400).json({ error: 'INVALID_RESET_CODE', message: '邮箱验证码错误、已过期或尝试次数过多' });
         const newPasswordHash = await hashPassword(req.body.newPassword);
-        await db.mutate((data) => {
+        await mutate(['users', 'sessions'], (data) => {
           const currentUser = data.users.find((item) => item.id === user.id);
           if (currentUser) currentUser.passwordHash = newPasswordHash;
           data.sessions = data.sessions.filter((session) => session.userId !== user.id);
@@ -373,7 +374,7 @@ export function createAuthService(db, { secureCookies = false, sendEmailCode, ge
       const token = req.cookies?.[SESSION_COOKIE];
       if (token) {
         const tokenHash = hashToken(token);
-        await db.mutate((data) => {
+        await mutate(['sessions'], (data) => {
           data.sessions = data.sessions.filter((session) => session.tokenHash !== tokenHash);
         });
       }
