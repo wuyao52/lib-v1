@@ -130,6 +130,103 @@ test('image assets require auth, persist exact bytes, deduplicate per user and v
   assert.equal((await oversizedResponse.json()).error, 'ASSET_TOO_LARGE');
 });
 
+test('video assets use a short-lived direct upload and are verified before persistence', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'ads-video-assets-'));
+  const sentCodes = [];
+  const objects = new Map();
+  const assetStorage = {
+    provider: 'test-oss',
+    async createUploadUrl({ key, mimeType, byteSize }) {
+      objects.set(key, { mimeType, byteSize });
+      return `https://oss.example/${encodeURIComponent(key)}`;
+    },
+    async stat(key) {
+      const object = objects.get(key);
+      if (!object) throw new Error('missing');
+      return object;
+    },
+    async get() { return Buffer.from('video'); },
+    async delete() {},
+  };
+  const { app, db } = await createApp({
+    databasePath: join(directory, 'database.json'), secureCookies: false, assetStorage,
+    sendEmailCode: async (message) => sentCodes.push(message),
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  t.after(() => server.close());
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const cookie = await register(baseUrl, 'video-asset-user', sentCodes);
+
+  const requested = await fetch(`${baseUrl}/api/assets/direct-upload`, {
+    method: 'POST', headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ fileName: 'clip.mp4', mimeType: 'video/mp4', byteSize: 1024 }),
+  });
+  assert.equal(requested.status, 201);
+  const upload = await requested.json();
+  assert.match(upload.uploadUrl, /^https:\/\/oss\.example\//);
+  assert.equal(upload.headers['Content-Type'], 'video/mp4');
+  assert.equal(db.read('assets').length, 0);
+
+  const completed = await fetch(`${baseUrl}/api/assets/direct-upload/complete`, {
+    method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ token: upload.token }),
+  });
+  assert.equal(completed.status, 201);
+  const asset = (await completed.json()).asset;
+  assert.equal(asset.mimeType, 'video/mp4');
+  assert.equal(asset.byteSize, 1024);
+  assert.equal(asset.url, `/api/assets/public/${asset.id}`);
+  assert.equal(db.read('assets').length, 1);
+
+  const replayed = await fetch(`${baseUrl}/api/assets/direct-upload/complete`, {
+    method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ token: upload.token }),
+  });
+  assert.equal(replayed.status, 200);
+  assert.equal(db.read('assets').length, 1);
+});
+
+test('generated image URLs are archived as durable owned assets and deduplicated by content', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'ads-generated-image-'));
+  const sentCodes = [];
+  const objects = new Map();
+  let downloads = 0;
+  const assetStorage = {
+    provider: 'test-oss',
+    async put({ key, bytes, mimeType }) { objects.set(key, { bytes: Buffer.from(bytes), mimeType }); },
+    async get(key) { return objects.get(key)?.bytes || Buffer.alloc(0); },
+    async delete() {},
+  };
+  const { app, db } = await createApp({
+    databasePath: join(directory, 'database.json'), secureCookies: false, assetStorage,
+    sendEmailCode: async (message) => sentCodes.push(message),
+    resolveHost: async () => [{ address: '93.184.216.34', family: 4 }],
+    fetchImpl: async () => {
+      downloads += 1;
+      return new Response(PNG_BYTES, { status: 200, headers: { 'content-type': 'image/png', 'content-length': String(PNG_BYTES.length) } });
+    },
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  t.after(() => server.close());
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const cookie = await register(baseUrl, 'generated-image-user', sentCodes);
+  const archive = () => fetch(`${baseUrl}/api/assets/import-image`, {
+    method: 'POST', headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ source: 'https://provider.example/generated/result.png' }),
+  });
+  const [first, second] = await Promise.all([archive(), archive()]);
+  assert.deepEqual([first.status, second.status].sort(), [200, 201]);
+  const firstAsset = (await first.json()).asset;
+  const secondAsset = (await second.json()).asset;
+  assert.equal(firstAsset.id, secondAsset.id);
+  const asset = firstAsset;
+  assert.match(asset.url, /^\/api\/assets\/public\//);
+  assert.equal(db.read('assets').length, 1);
+  assert.equal(objects.size, 1);
+  assert.equal(db.read('assets').length, 1);
+  assert.equal(downloads, 2);
+});
+
 test('R2 asset storage keeps bytes out of the database and migrates legacy assets', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'ads-r2-assets-'));
   const sentCodes = [];
