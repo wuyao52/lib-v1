@@ -56,11 +56,25 @@ function createOriginGuard(allowedOrigins) {
 }
 
 function collectionsForRequest(pathname) {
-  const scope = String(pathname || '').split('/').filter(Boolean)[1] || '';
+  const segments = String(pathname || '').split('/').filter(Boolean);
+  const scope = segments[1] || '';
+  const route = segments[2] || '';
   const common = ['users', 'sessions'];
+  if (scope === 'billing' && route === 'balance') return common;
+  if (scope === 'admin') {
+    const adminByRoute = {
+      'video-queue': ['generationJobs'], metrics: ['generationJobs', 'balanceTransactions', 'generatedMedia'],
+      'operations-alerts': ['generationJobs', 'auditLogs'], 'security-alerts': ['auditLogs'], backups: ['auditLogs'],
+      'storage-usage': ['assets', 'generatedMedia'], 'storage-cleanup': ['assets', 'generatedMedia', 'projects', 'auditLogs'],
+      'storage-quarantine': ['storageQuarantine', 'assets', 'generatedMedia', 'projects', 'auditLogs'], users: ['balanceTransactions', 'auditLogs'],
+      'audit-logs': ['auditLogs'], 'system-apis': ['systemApis', 'modelPricing', 'auditLogs'], pricing: ['modelPricing', 'systemApis', 'auditLogs'],
+      recharges: ['rechargeRequests', 'balanceTransactions', 'auditLogs'], 'payment-reconciliation': ['paymentOrders', 'balanceTransactions'],
+    };
+    if (adminByRoute[route]) return [...common, ...adminByRoute[route]];
+  }
   const byScope = {
     auth: ['emailVerifications', 'imageCaptchas'], health: ['generationJobs', 'auditLogs'], director: [], skills: ['skills'], projects: ['projects'],
-    assets: ['assets', 'projects'], 'generated-media': ['generatedMedia'], 'generation-history': ['generationHistory'],
+    assets: ['assets', 'projects'], 'generated-media': ['generatedMedia'], 'generation-history': ['generationHistory', 'generationJobs'],
     billing: ['balanceTransactions', 'rechargeRequests'], catalog: ['systemApis', 'modelPricing'],
     admin: ['systemApis', 'modelPricing', 'balanceTransactions', 'rechargeRequests', 'generationJobs', 'generatedMedia', 'storageQuarantine', 'auditLogs', 'paymentOrders', 'paymentEvents'],
     'system-ai': ['systemApis', 'modelPricing', 'balanceTransactions', 'generationJobs'],
@@ -110,6 +124,7 @@ export async function createApp(options = {}) {
       ? new MySqlDatabase(databaseUrl).init()
       : new JsonDatabase(databasePath).init()
   );
+  const mutateCollections = (collections, mutator) => db.mutateCollections ? db.mutateCollections(collections, mutator) : db.mutate(mutator);
   const assetStorage = options.assetStorage === undefined ? createObjectStorageFromEnv() : options.assetStorage;
   const generatedMedia = createGeneratedMediaService({ db, storage: assetStorage, fetchImpl: options.fetchImpl });
   const maintenance = options.maintenance === false ? null : startMaintenanceScheduler({ db, storage: assetStorage, generatedMedia });
@@ -139,11 +154,11 @@ export async function createApp(options = {}) {
     sendEmailCode: emailSender,
     generateImageCaptcha: options.generateImageCaptcha,
     systemUserEmails,
-    securityEvent: async (req, action, metadata = {}) => db.mutate((data) => data.auditLogs.push({ id: randomUUID(), userId: metadata.userId || req.user?.id || null, action, targetType: 'security', targetId: null, ipAddress: String(req.ip || '').slice(0, 100), userAgent: String(req.get('user-agent') || '').slice(0, 300), metadata: { requestId: req.requestId || null, ...metadata }, createdAt: new Date().toISOString() })),
+    securityEvent: async (req, action, metadata = {}) => mutateCollections(['auditLogs'], (data) => data.auditLogs.push({ id: randomUUID(), userId: metadata.userId || req.user?.id || null, action, targetType: 'security', targetId: null, ipAddress: String(req.ip || '').slice(0, 100), userAgent: String(req.get('user-agent') || '').slice(0, 300), metadata: { requestId: req.requestId || null, ...metadata }, createdAt: new Date().toISOString() })),
   });
   const encryptionKey = options.encryptionKey ?? process.env.APP_ENCRYPTION_KEY;
   const vault = createSecretVault(encryptionKey || (process.env.NODE_ENV === 'production' ? '' : 'local-development-encryption-key-change-me'));
-  await db.mutate((data) => {
+  await mutateCollections(['systemApis'], (data) => {
     data.systemApis.forEach((api) => {
       try { vault.decrypt(api.baseUrl); } catch { api.baseUrl = vault.encrypt(String(api.baseUrl || '')); }
     });
@@ -203,12 +218,12 @@ export async function createApp(options = {}) {
   app.use(async (req, res, next) => {
     if (!req.path.startsWith('/api/system-ai/') && !req.path.startsWith('/api/user-ai/')) return next();
     if (!req.user) return next();
+    if (req.method === 'GET' && (req.path.endsWith('/v1/models') || /\/v1\/videos\/[^/]+$/.test(req.path))) return next();
     const bucket = await resourceGuard.rateLimit(req.user.id);
     if (!bucket.allowed) {
       res.setHeader('Retry-After', String(Math.max(1, Math.ceil((bucket.resetAt - Date.now()) / 1000))));
       return res.status(429).json({ error: 'AI_RATE_LIMITED', message: 'AI 请求次数过多，请稍后重试' });
     }
-    if (req.method === 'GET' && (req.path.endsWith('/v1/models') || /\/v1\/videos\/[^/]+$/.test(req.path))) return next();
     let release;
     try { release = await resourceGuard.acquire(req.user.id); }
     catch (error) { return res.status(429).json({ error: error.code, message: error.message }); }
@@ -300,7 +315,7 @@ export async function createApp(options = {}) {
   registerProjectRoutes(projectRouter, { db, requireAuth: auth.requireAuth });
   app.use('/api/projects', projectRouter);
   const assetRouter = express.Router();
-  registerAssetRoutes(assetRouter, { db, requireAuth: auth.requireAuth, assetStorage, assetSigningKey: encryptionKey || 'local-development-encryption-key-change-me' });
+  registerAssetRoutes(assetRouter, { db, requireAuth: auth.requireAuth, assetStorage, assetSigningKey: encryptionKey || 'local-development-encryption-key-change-me', fetchImpl: options.fetchImpl, resolveHost: options.resolveHost });
   app.use('/api/assets', assetRouter);
   const generatedMediaRouter = express.Router();
   registerGeneratedMediaRoutes(generatedMediaRouter, { db, requireAuth: auth.requireAuth, storage: assetStorage });
