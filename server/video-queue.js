@@ -80,6 +80,15 @@ function errorOf(body, statusCode) {
   return { code: 'UPSTREAM_VIDEO_FAILED', message: raw.slice(0, 500) };
 }
 
+function isProviderCapacityFailure(body) {
+  const payload = payloadOf(body);
+  const details = [
+    body?.code, body?.message, body?.msg, body?.error?.code, body?.error?.message, body?.error,
+    payload?.code, payload?.message, payload?.msg, payload?.error?.code, payload?.error?.message, payload?.error,
+  ].filter((value) => typeof value === 'string').join(' ');
+  return /最多同时运行|任务运行中|并发.*(?:已满|上限)|concurr(?:ency|ent).*(?:limit|full|exceed)|too many.*(?:tasks?|requests?)|capacity.*(?:full|limit|exceed)/i.test(details);
+}
+
 function nextPollDelay(job) {
   const age = Date.now() - Date.parse(job.createdAt);
   if (age < 5 * 60 * 1000) return 5000;
@@ -260,7 +269,10 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
         }
         return;
       }
-      if ((response.status === 429 || response.status >= 500) && Number(job.attemptCount || 0) < 3) {
+      if (isProviderCapacityFailure(body)) {
+        if (Date.now() - Date.parse(job.createdAt) > config.taskTimeoutMs) await refundJob(job.id, { code: 'VIDEO_JOB_TIMEOUT', message: '视频任务等待供应商容量超时，已自动退款' });
+        else await updateJob(job.id, { status: 'queued', providerTaskId: null, progress: 0, attemptCount: Number(job.attemptCount || 0) + 1, nextPollAt: Date.now() + 30000, leaseOwner: null, leaseUntil: 0 });
+      } else if ((response.status === 429 || response.status >= 500) && Number(job.attemptCount || 0) < 3) {
         const attemptCount = Number(job.attemptCount || 0) + 1;
         await updateJob(job.id, { status: 'queued', attemptCount, nextPollAt: Date.now() + attemptCount * 10000, leaseOwner: null, leaseUntil: 0 });
       } else if (!response.ok || isBusinessFailure(body) || ['failed', 'error', 'rejected', 'cancelled', 'canceled'].includes(status)) {
@@ -300,7 +312,10 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
       const body = await jsonResponse(response);
       const status = statusOf(body);
       const result = videoResultOf(body);
-      if (response.status === 429 || response.status >= 500) {
+      if (isProviderCapacityFailure(body)) {
+        if (Date.now() - Date.parse(job.createdAt) > config.taskTimeoutMs) await refundJob(job.id, { code: 'VIDEO_JOB_TIMEOUT', message: '视频任务等待供应商容量超时，已自动退款' });
+        else await updateJob(job.id, { status: 'queued', providerTaskId: null, progress: 0, attemptCount: Number(job.attemptCount || 0) + 1, nextPollAt: Date.now() + 30000, leaseOwner: null, leaseUntil: 0 });
+      } else if (response.status === 429 || response.status >= 500) {
         await updateJob(job.id, { attemptCount: Number(job.attemptCount || 0) + 1, nextPollAt: Date.now() + 15000 });
       } else if (!response.ok || isBusinessFailure(body) || ['failed', 'error', 'rejected', 'cancelled', 'canceled'].includes(status)) {
         await refundJob(job.id, errorOf(body, response.status));
