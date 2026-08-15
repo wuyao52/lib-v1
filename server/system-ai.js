@@ -23,6 +23,48 @@ function providerTaskId(body) {
   return String(payload?.id || payload?.task_id || payload?.taskId || body?.id || '').trim();
 }
 
+function managedAssetId(value) {
+  try {
+    const url = new URL(String(value || ''), 'https://same-origin.invalid');
+    return decodeURIComponent(url.pathname.match(/^\/api\/assets\/public\/([^/]+)$/)?.[1] || '');
+  } catch {
+    return '';
+  }
+}
+
+async function normalizeReferenceImages(body, userId, db, assetStorage) {
+  if (!body || !Object.hasOwn(body, 'images')) return body;
+  if (!Array.isArray(body.images) || !body.images.length) {
+    const error = new Error('参考图片不能为空'); error.code = 'INVALID_REFERENCE_IMAGE_URL'; throw error;
+  }
+  const normalizeUrl = async (value) => {
+    const assetId = managedAssetId(value);
+    if (assetId) {
+      const asset = db.read('assets').find((entry) => entry.id === assetId && entry.userId === userId);
+      if (!asset) { const error = new Error('参考图片不存在或不属于当前用户'); error.code = 'INVALID_REFERENCE_IMAGE_URL'; throw error; }
+      if (!asset.objectKey || !assetStorage?.createDownloadUrl) {
+        const error = new Error('参考图片尚未迁移到对象存储，请重新上传后再试'); error.code = 'REFERENCE_IMAGE_NOT_ARCHIVED'; throw error;
+      }
+      return assetStorage.createDownloadUrl({ key: asset.objectKey, mimeType: asset.mimeType, expiresInSeconds: 15 * 60 });
+    }
+    let parsed;
+    try { parsed = new URL(String(value || '')); } catch { parsed = null; }
+    if (!parsed || parsed.protocol !== 'https:') {
+      const error = new Error('视频模型的参考图片必须是可公开读取的 HTTPS 地址'); error.code = 'INVALID_REFERENCE_IMAGE_URL'; throw error;
+    }
+    return parsed.toString();
+  };
+  const images = await Promise.all(body.images.map(async (image) => {
+    if (typeof image === 'string') return normalizeUrl(image);
+    if (image && typeof image === 'object') {
+      const field = ['url', 'image_url', 'image'].find((key) => typeof image[key] === 'string');
+      if (field) return { ...image, [field]: await normalizeUrl(image[field]) };
+    }
+    const error = new Error('参考图片参数格式无效'); error.code = 'INVALID_REFERENCE_IMAGE_URL'; throw error;
+  }));
+  return { ...body, images };
+}
+
 function taskBillingReference(apiId, userId, taskId) {
   return createHash('sha256').update(`${apiId}:${userId}:${taskId}`).digest('hex');
 }
@@ -122,7 +164,7 @@ async function refundTaskCharge(db, { userId, referenceId }) {
   return refunded;
 }
 
-export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchImpl = fetch, videoQueue = null }) {
+export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchImpl = fetch, videoQueue = null, assetStorage = null }) {
   const limits = resourceGuardConfig();
   router.use(requireAuth);
   router.use('/:apiId', async (req, res, next) => {
@@ -157,6 +199,10 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
     const client = req.body?._client && typeof req.body._client === 'object' ? req.body._client : {};
     let requestBody = req.body && typeof req.body === 'object' ? { ...req.body } : req.body;
     if (requestBody && typeof requestBody === 'object') delete requestBody._client;
+    if (req.method === 'POST' && pathname === '/v1/videos') {
+      try { requestBody = await normalizeReferenceImages(requestBody, req.user.id, db, assetStorage); }
+      catch (error) { return res.status(error.code === 'REFERENCE_IMAGE_NOT_ARCHIVED' ? 409 : 400).json({ error: error.code || 'INVALID_REFERENCE_IMAGE_URL', message: error.message }); }
+    }
     let pricing; let chargeCents = 0; let transactionId;
     if (req.method === 'POST') {
       const modelId = String(requestBody?.model || '').trim();
