@@ -27,7 +27,7 @@ import type { SceneNodeData } from '@/types';
 import useProjectStore from '@/store/useProjectStore';
 import { PromptMentionContent } from './PromptMentionEditor';
 import { isUploadedImageNode } from '@/services/nodeMediaSource';
-import { getPlayableMediaUrl } from '@/services/assetService';
+import { getPlayableMediaUrl, needsResolvedMediaUrl } from '@/services/assetService';
 
 const typeIcons: Record<string, React.ReactNode> = {
   text: <Type className="w-4 h-4" />,
@@ -79,7 +79,8 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
   const [showPreview, setShowPreview] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [showSpeedMenu, setShowSpeedMenu] = useState(false);
-  const [playbackUrl, setPlaybackUrl] = useState(String(nodeData.generatedContent || ''));
+  const initialVideoSource = String(nodeData.generatedContent || '');
+  const [playbackUrl, setPlaybackUrl] = useState(needsResolvedMediaUrl(initialVideoSource) ? '' : initialVideoSource);
   const [videoLoadError, setVideoLoadError] = useState('');
   const [playbackRefresh, setPlaybackRefresh] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -87,7 +88,7 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
   useEffect(() => {
     const source = String(nodeData.generatedContent || '');
     const controller = new AbortController();
-    setPlaybackUrl(source);
+    setPlaybackUrl(needsResolvedMediaUrl(source) ? '' : source);
     setVideoLoadError('');
     if (source) void getPlayableMediaUrl(source, controller.signal, playbackRefresh > 0)
       .then((url) => setPlaybackUrl(url))
@@ -320,7 +321,7 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
               <div className="relative aspect-video rounded-lg overflow-hidden bg-dark-900 group/video">
                 {nodeData.generatedContent ? (
                   <>
-                    <video
+                    {playbackUrl ? <video
                       ref={videoRef}
                       src={playbackUrl}
                       className="w-full h-full object-cover"
@@ -336,7 +337,7 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
                         setVideoLoadError('视频加载失败');
                       }}
                       poster={nodeData.thumbnail}
-                    />
+                    /> : <div className="flex h-full w-full items-center justify-center text-xs text-dark-400"><Loader2 className="mr-2 h-4 w-4 animate-spin" />正在读取视频</div>}
                     {videoLoadError && (
                       <button type="button" onClick={(event) => { event.stopPropagation(); setPlaybackRefresh((value) => value + 1); }} className="absolute inset-0 z-10 flex items-center justify-center bg-black/65 text-xs text-red-200">
                         {videoLoadError}，点击重试
