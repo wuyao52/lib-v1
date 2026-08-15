@@ -6,7 +6,9 @@ const browserConsole = globalThis.console;
 const console = {
   log: (..._args: unknown[]) => undefined,
   warn: (..._args: unknown[]) => undefined,
-  error: (message: unknown, ..._args: unknown[]) => browserConsole.error(String(message || 'AI request failed').slice(0, 300)),
+  error: (...args: unknown[]) => browserConsole.error(args.map((value) => (
+    typeof value === 'string' ? value : value instanceof Error ? value.message : '[detail]'
+  )).join(' ').slice(0, 500) || 'AI request failed'),
 };
 
 const VIDEO_POLL_INTERVAL_MS = 5000;
