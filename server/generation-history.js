@@ -19,7 +19,10 @@ export function registerGenerationHistoryRoutes(router, { db, requireAuth }) {
   router.get('/', async (req, res) => {
     const now = Date.now();
     // Keep completed job records recoverable even if an older application version omitted their history row.
-    await db.mutate((data) => {
+    const knownHistory = new Set(db.read('generationHistory').map((item) => `${item.userId}:${item.url}`));
+    const needsRepair = db.read('generationHistory').some((item) => Date.parse(item.expiresAt) <= now)
+      || db.read('generationJobs').some((job) => job.status === 'completed' && job.resultUrl && !knownHistory.has(`${job.userId}:${job.resultUrl}`));
+    if (needsRepair) await db.mutateCollections(['generationHistory'], (data) => {
       const known = new Set(data.generationHistory.map((item) => `${item.userId}:${item.url}`));
       data.generationJobs.filter((job) => job.status === 'completed' && job.resultUrl && !known.has(`${job.userId}:${job.resultUrl}`)).forEach((job) => {
         const createdAt = job.completedAt || job.updatedAt || job.createdAt;
@@ -42,7 +45,7 @@ export function registerGenerationHistoryRoutes(router, { db, requireAuth }) {
     if (existing) return res.json({ item: existing });
     const createdAt = new Date();
     const record = { id: randomUUID(), userId: req.user.id, projectId: String(req.body.projectId || '').slice(0, 100), nodeId: String(req.body.nodeId || '').slice(0, 100) || null, type: String(req.body.type || 'video').slice(0, 20), prompt: String(req.body.prompt || '').slice(0, 10000), url, thumbnail: String(req.body.thumbnail || '').trim() || null, createdAt: createdAt.toISOString(), expiresAt: new Date(createdAt.getTime() + retentionMs()).toISOString() };
-    await db.mutate((data) => { data.generationHistory = data.generationHistory.filter((item) => Date.parse(item.expiresAt) > Date.now()); data.generationHistory.push(record); });
+    await db.mutateCollections(['generationHistory'], (data) => { data.generationHistory = data.generationHistory.filter((item) => Date.parse(item.expiresAt) > Date.now()); data.generationHistory.push(record); });
     return res.status(201).json({ item: record });
   });
 }
