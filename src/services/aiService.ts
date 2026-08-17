@@ -194,6 +194,10 @@ function isFailedVideoStatus(value: unknown): boolean {
   return ['failed', 'failure', 'error', 'rejected', 'cancelled', 'canceled'].includes(String(value || '').toLowerCase());
 }
 
+export function isCompletedVideoResponse(status: unknown, response: any): boolean {
+  return Boolean(extractVideoResult(response).url) && (!status || isCompletedVideoStatus(status));
+}
+
 // AI 服务基类
 export class AIService {
   protected config: AIModelConfig;
@@ -442,7 +446,7 @@ export class SeedanceService extends AIService {
 
         // Compatible providers may synchronously return { result: { data: [{ url }] } }
         // without a task ID. Treat that URL as the completed video immediately.
-        if (result.url && (!taskId || isCompletedVideoStatus(taskStatus))) {
+        if (result.url && !isFailedVideoStatus(taskStatus)) {
           return { success: true, data: { ...result, metadata: data } };
         }
 
@@ -550,8 +554,8 @@ export class SeedanceService extends AIService {
           queuePosition: Number(payload.queue_position || data.queue_position || 0) || null,
         });
 
-        if (isCompletedVideoStatus(status)) {
-          const result = extractVideoResult(data);
+        const result = extractVideoResult(data);
+        if (isCompletedVideoResponse(status, data)) {
           const videoUrl = result.url;
 
           console.log('找到视频 URL:', videoUrl);
