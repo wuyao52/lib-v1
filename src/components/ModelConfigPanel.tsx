@@ -277,7 +277,7 @@ export default function ModelConfigPanel() {
                 <Cpu className="w-5 h-5 text-primary-400" />
                 AI 模型配置
               </h2>
-              <button onClick={toggleModelConfig} className="p-2 hover:bg-dark-700 rounded-lg transition-colors">
+              <button aria-label="关闭 AI 模型配置" onClick={toggleModelConfig} className="p-2 hover:bg-dark-700 rounded-lg transition-colors">
                 <X className="w-4 h-4 text-dark-400" />
               </button>
             </div>
@@ -416,6 +416,35 @@ export default function ModelConfigPanel() {
                 >
                   {savingCredentials ? '正在加密保存...' : '加密保存并使用'}
                 </button>
+              )}
+
+              {activeTab === 'video' && !activeModel.managed && (
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-dark-300 flex items-center gap-2">
+                    <Video className="w-3 h-3 text-primary-400" />
+                    视频分辨率
+                  </label>
+                  <select
+                    data-testid="video-resolution"
+                    value={String(activeModel.parameters?.resolution || '')}
+                    onChange={(event) => {
+                      const resolution = event.target.value;
+                      const parameters = { ...(activeModel.parameters || {}) };
+                      if (resolution) parameters.resolution = resolution;
+                      else delete parameters.resolution;
+                      updateActiveModel({
+                        parameters,
+                      });
+                    }}
+                    className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-white text-sm focus:outline-none focus:border-primary-500"
+                  >
+                    <option value="">服务默认</option>
+                    <option value="480p">480p</option>
+                    <option value="720p">720p</option>
+                    <option value="1080p">1080p</option>
+                  </select>
+                  <p className="text-[10px] text-dark-400">请按服务商的模型计费表选择。Seedance 2.0 Mini 未选择时会自动使用 720p，避免发送不支持的 1080p。</p>
+                </div>
               )}
 
               {/* 测试连接 */}
