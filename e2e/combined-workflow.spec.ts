@@ -30,6 +30,15 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   await portraitRatio.click();
   await expect(portraitRatio).toHaveAttribute('aria-pressed', 'true');
   await projectSettings.click();
+  await page.getByRole('banner').getByTitle('AI模型配置').click();
+  await page.getByRole('button', { name: '视频生成', exact: true }).click();
+  const videoResolution = page.getByTestId('video-resolution');
+  await expect(videoResolution).toBeVisible();
+  await videoResolution.selectOption('480p');
+  await expect(videoResolution).toHaveValue('480p');
+  await videoResolution.selectOption('');
+  await expect(videoResolution).toHaveValue('');
+  await page.getByLabel('关闭 AI 模型配置').click();
   const nodes = page.locator('.react-flow__node');
   const targetNode = page.locator('.react-flow__node[data-id="batch-target"]');
 
