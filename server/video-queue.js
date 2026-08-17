@@ -55,22 +55,38 @@ function isBusinessFailure(body) {
 
 function taskIdOf(body) {
   const payload = payloadOf(body);
-  return String(payload?.id || payload?.task_id || payload?.taskId || body?.id || '').trim();
+  return String(payload?.id || payload?.task_id || payload?.taskId || payload?.job_id || payload?.jobId || body?.id || body?.task_id || body?.taskId || body?.job_id || body?.jobId || '').trim();
 }
 
 function videoResultOf(body) {
   const payload = payloadOf(body);
+  const urls = [
+    payload?.video_url, payload?.videoUrl, payload?.url, body?.video_url, body?.videoUrl, body?.url,
+    body?.result?.video_url, body?.result?.videoUrl, body?.result?.url,
+    body?.result?.data?.[0]?.video_url, body?.result?.data?.[0]?.videoUrl, body?.result?.data?.[0]?.url,
+    body?.output?.video_url, body?.output?.videoUrl, body?.output?.url,
+    body?.output?.data?.[0]?.video_url, body?.output?.data?.[0]?.videoUrl, body?.output?.data?.[0]?.url,
+    body?.data?.result?.video_url, body?.data?.result?.videoUrl, body?.data?.result?.url,
+    body?.data?.result?.data?.[0]?.url, body?.data?.output?.video_url, body?.data?.output?.url,
+    body?.videos?.[0]?.url, body?.data?.videos?.[0]?.url,
+  ];
+  const thumbnails = [payload?.thumbnail_url, payload?.thumbnailUrl, body?.thumbnail_url, body?.thumbnailUrl, body?.result?.thumbnail_url, body?.result?.thumbnailUrl, body?.output?.thumbnail_url, body?.output?.thumbnailUrl];
   return {
-    url: payload?.video_url || payload?.url || body?.result?.video_url || body?.output?.video_url
-      || body?.data?.video_url || body?.data?.url || body?.url || body?.result?.url || body?.output?.url || '',
-    thumbnail: payload?.thumbnail_url || body?.thumbnail_url || body?.result?.thumbnail_url || '',
+    url: urls.find((value) => typeof value === 'string' && /^https?:\/\//i.test(value.trim()))?.trim() || '',
+    thumbnail: thumbnails.find((value) => typeof value === 'string' && /^https?:\/\//i.test(value.trim()))?.trim() || '',
   };
 }
+
+const completedVideoStatus = (status) => ['completed', 'complete', 'success', 'succeeded', 'done', 'finished'].includes(status);
+const failedVideoStatus = (status) => ['failed', 'failure', 'error', 'rejected', 'cancelled', 'canceled'].includes(status);
 
 function errorOf(body, statusCode) {
   const payload = payloadOf(body);
   const raw = String(payload?.error?.message || payload?.error?.code || payload?.error
     || body?.error?.message || body?.error?.code || body?.message || body?.msg || body?.error || `上游请求失败 (${statusCode})`);
+  if (/privacyinformation|real\s*(?:person|human|face)|真人|人脸|肖像/i.test(raw)) {
+    return { code: 'PROVIDER_MODERATION_ERROR', message: '参考图片疑似包含真人，当前服务商不支持将真人肖像用作视频参考图。请移除该参考图，或改用原创角色素材后重试' };
+  }
   if (/moderation|content[_ -]?policy|safety|sensitive|审核|敏感/i.test(raw)) {
     return { code: 'PROVIDER_MODERATION_ERROR', message: '内容审核未通过，请检查提示词和参考图片后重试' };
   }
@@ -275,9 +291,9 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
       } else if ((response.status === 429 || response.status >= 500) && Number(job.attemptCount || 0) < 3) {
         const attemptCount = Number(job.attemptCount || 0) + 1;
         await updateJob(job.id, { status: 'queued', attemptCount, nextPollAt: Date.now() + attemptCount * 10000, leaseOwner: null, leaseUntil: 0 });
-      } else if (!response.ok || isBusinessFailure(body) || ['failed', 'error', 'rejected', 'cancelled', 'canceled'].includes(status)) {
+      } else if (!response.ok || isBusinessFailure(body) || failedVideoStatus(status)) {
         await refundJob(job.id, errorOf(body, response.status));
-      } else if (result.url && ['completed', 'success'].includes(status)) {
+      } else if (result.url && (!status || completedVideoStatus(status))) {
         await completeJob(job.id, result);
       } else {
         const providerTaskId = taskIdOf(body);
@@ -317,9 +333,9 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
         else await updateJob(job.id, { status: 'queued', providerTaskId: null, progress: 0, attemptCount: Number(job.attemptCount || 0) + 1, nextPollAt: Date.now() + 30000, leaseOwner: null, leaseUntil: 0 });
       } else if (response.status === 429 || response.status >= 500) {
         await updateJob(job.id, { attemptCount: Number(job.attemptCount || 0) + 1, nextPollAt: Date.now() + 15000 });
-      } else if (!response.ok || isBusinessFailure(body) || ['failed', 'error', 'rejected', 'cancelled', 'canceled'].includes(status)) {
+      } else if (!response.ok || isBusinessFailure(body) || failedVideoStatus(status)) {
         await refundJob(job.id, errorOf(body, response.status));
-      } else if (['completed', 'success'].includes(status) && result.url) {
+      } else if (result.url && (!status || completedVideoStatus(status))) {
         await completeJob(job.id, result);
       } else {
         await updateJob(job.id, {
