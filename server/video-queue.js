@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { createVideoProviderAdapter } from './video-provider-adapters.js';
 
 const ACTIVE_STATUSES = new Set(['submitting', 'processing', 'cancel_requested']);
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
@@ -22,16 +23,6 @@ const queueConfig = () => ({
 
 const nowIso = () => new Date().toISOString();
 
-function buildTarget(api, suffix) {
-  const base = new URL(`${api.baseUrl.replace(/\/+$/, '')}/`);
-  const target = new URL(String(suffix || '').replace(/^\/+/, ''), base);
-  const expectedPath = base.pathname.endsWith('/') ? base.pathname : `${base.pathname}/`;
-  if (target.protocol !== 'https:' || target.origin !== base.origin || !target.pathname.startsWith(expectedPath)) {
-    throw new Error('队列上游请求路径无效');
-  }
-  return target;
-}
-
 async function jsonResponse(response) {
   const text = Buffer.from(await response.arrayBuffer()).toString('utf8');
   if (!text) return {};
@@ -40,6 +31,36 @@ async function jsonResponse(response) {
 
 function payloadOf(body) {
   return body?.data && typeof body.data === 'object' ? body.data : body;
+}
+
+function nestedVideoUrl(root) {
+  const pending = [{ value: root, depth: 0 }];
+  const seen = new WeakSet();
+  let inspected = 0;
+  while (pending.length && inspected < 250) {
+    const { value, depth } = pending.shift();
+    inspected += 1;
+    if (typeof value === 'string') {
+      const text = value.trim();
+      if (/^https?:\/\//i.test(text) && /\.(?:mp4|webm|mov|m4v)(?:$|[?#])/i.test(text)) return text;
+      if (depth < 8 && text.length <= 1024 * 1024 && /^[\[{]/.test(text)) {
+        try { pending.push({ value: JSON.parse(text), depth: depth + 1 }); } catch { /* Not encoded JSON. */ }
+      }
+      continue;
+    }
+    if (!value || typeof value !== 'object' || depth >= 8 || seen.has(value)) continue;
+    seen.add(value);
+    const entries = Array.isArray(value) ? value.entries() : Object.entries(value);
+    for (const [, child] of entries) pending.push({ value: child, depth: depth + 1 });
+  }
+  return '';
+}
+
+function responseShape(value, depth = 0) {
+  if (depth >= 3) return Array.isArray(value) ? `array(${value.length})` : typeof value;
+  if (Array.isArray(value)) return { type: 'array', length: value.length, item: value.length ? responseShape(value[0], depth + 1) : null };
+  if (!value || typeof value !== 'object') return typeof value;
+  return Object.fromEntries(Object.entries(value).slice(0, 20).map(([key, child]) => [key, responseShape(child, depth + 1)]));
 }
 
 function statusOf(body) {
@@ -61,7 +82,8 @@ function taskIdOf(body) {
 function videoResultOf(body) {
   const payload = payloadOf(body);
   const urls = [
-    payload?.video_url, payload?.videoUrl, payload?.url, body?.video_url, body?.videoUrl, body?.url,
+    payload?.video_url, payload?.official_video_url, payload?.videoUrl, payload?.url,
+    body?.video_url, body?.official_video_url, body?.videoUrl, body?.url,
     body?.result?.video_url, body?.result?.videoUrl, body?.result?.url,
     body?.result?.data?.[0]?.video_url, body?.result?.data?.[0]?.videoUrl, body?.result?.data?.[0]?.url,
     body?.output?.video_url, body?.output?.videoUrl, body?.output?.url,
@@ -72,7 +94,7 @@ function videoResultOf(body) {
   ];
   const thumbnails = [payload?.thumbnail_url, payload?.thumbnailUrl, body?.thumbnail_url, body?.thumbnailUrl, body?.result?.thumbnail_url, body?.result?.thumbnailUrl, body?.output?.thumbnail_url, body?.output?.thumbnailUrl];
   return {
-    url: urls.find((value) => typeof value === 'string' && /^https?:\/\//i.test(value.trim()))?.trim() || '',
+    url: urls.find((value) => typeof value === 'string' && /^https?:\/\//i.test(value.trim()))?.trim() || nestedVideoUrl(body),
     thumbnail: thumbnails.find((value) => typeof value === 'string' && /^https?:\/\//i.test(value.trim()))?.trim() || '',
   };
 }
@@ -167,12 +189,13 @@ function publicJob(job, queuePosition = null) {
   return base;
 }
 
-export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart = true, generatedMedia = null } = {}) {
+export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart = true, generatedMedia = null, resolveHost } = {}) {
   const config = queueConfig();
   const workerId = randomUUID();
   const submitting = new Set();
   const polling = new Set();
   const controllers = new Map();
+  const unparsedCompletionLogged = new Set();
   let ticking = false;
   let lastCleanupAt = 0;
   let accepting = true;
@@ -192,6 +215,7 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
   };
 
   const refundJob = async (jobId, error, status = 'failed') => {
+    unparsedCompletionLogged.delete(jobId);
     const patch = {
       status, progress: 100, errorCode: error.code, errorMessage: error.message,
       completedAt: nowIso(), updatedAt: nowIso(), nextPollAt: 0, leaseOwner: null, leaseUntil: 0,
@@ -217,6 +241,7 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
   };
 
   const completeJob = async (jobId, result) => {
+    unparsedCompletionLogged.delete(jobId);
     const job = db.read('generationJobs').find((item) => item.id === jobId);
     if (!job || TERMINAL_STATUSES.has(job.status)) return null;
     let durableResult = result;
@@ -253,10 +278,9 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
   const cancelUpstream = async (job) => {
     if (!job.providerTaskId) return false;
     const api = apiForJob(job);
-    const headers = new Headers({ accept: 'application/json', authorization: `Bearer ${api.apiKey}`, 'x-api-key': api.apiKey });
-    const response = await fetchImpl(buildTarget(api, `/v1/videos/${encodeURIComponent(job.providerTaskId)}`), {
-      method: 'DELETE', redirect: 'manual', headers,
-    });
+    const adapter = createVideoProviderAdapter(api, { fetchImpl, resolveHost });
+    const response = await adapter.cancel(job.providerTaskId);
+    if (!response) return false;
     const body = await jsonResponse(response);
     const status = statusOf(body);
     return response.ok && !isBusinessFailure(body) && (!status || ['cancelled', 'canceled', 'success'].includes(status));
@@ -269,14 +293,8 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
     controllers.set(`submit:${job.id}`, controller);
     try {
       const api = apiForJob(job);
-      const headers = new Headers({ accept: 'application/json', 'content-type': 'application/json', authorization: `Bearer ${api.apiKey}`, 'x-api-key': api.apiKey });
-      headers.set('idempotency-key', job.id);
-      const response = await fetchImpl(buildTarget(api, '/v1/videos'), {
-        method: 'POST', redirect: 'manual',
-        headers,
-        body: JSON.stringify(job.requestBody),
-        signal: controller.signal,
-      });
+      const adapter = createVideoProviderAdapter(api, { fetchImpl, resolveHost });
+      const response = await adapter.submit(job.requestBody, job.id, controller.signal);
       const body = await jsonResponse(response);
       const status = statusOf(body);
       const result = videoResultOf(body);
@@ -328,13 +346,22 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
         return;
       }
       const api = apiForJob(job);
-      const headers = new Headers({ accept: 'application/json', authorization: `Bearer ${api.apiKey}`, 'x-api-key': api.apiKey });
-      const response = await fetchImpl(buildTarget(api, `/v1/videos/${encodeURIComponent(job.providerTaskId)}`), {
-        method: 'GET', redirect: 'manual', headers, signal: controller.signal,
-      });
-      const body = await jsonResponse(response);
-      const status = statusOf(body);
-      const result = videoResultOf(body);
+      const adapter = createVideoProviderAdapter(api, { fetchImpl, resolveHost });
+      const response = await adapter.poll(job.providerTaskId, controller.signal);
+      let body = await jsonResponse(response);
+      let status = statusOf(body);
+      let result = videoResultOf(body);
+      const progressBeforeRefresh = Number(payloadOf(body)?.progress || payloadOf(body)?.percent || job.progress || 0);
+      if (response.ok && !result.url && adapter.refreshResult && (completedVideoStatus(status) || progressBeforeRefresh >= 100)) {
+        const linkResponse = await adapter.refreshResult(job.providerTaskId, controller.signal);
+        if (linkResponse?.ok) {
+          const linkBody = await jsonResponse(linkResponse);
+          const linkResult = videoResultOf(linkBody);
+          body = { ...body, provider_video_link: linkBody, ...(linkResult.url ? { status: 'completed' } : {}) };
+          status = statusOf(body);
+          result = videoResultOf(body);
+        }
+      }
       if (isProviderCapacityFailure(body)) {
         if (Date.now() - Date.parse(job.createdAt) > config.taskTimeoutMs) await refundJob(job.id, { code: 'VIDEO_JOB_TIMEOUT', message: '视频任务等待供应商容量超时，已自动退款' });
         else await updateJob(job.id, { status: 'queued', providerTaskId: null, progress: 0, attemptCount: Number(job.attemptCount || 0) + 1, nextPollAt: Date.now() + 30000, leaseOwner: null, leaseUntil: 0 });
@@ -345,8 +372,16 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
       } else if (completedVideoResponse(status, result)) {
         await completeJob(job.id, result);
       } else {
+        const progress = Number(payloadOf(body)?.progress || payloadOf(body)?.percent || job.progress || 0);
+        if (progress >= 100 && !result.url && !unparsedCompletionLogged.has(job.id)) {
+          unparsedCompletionLogged.add(job.id);
+          console.warn(JSON.stringify({
+            event: 'video_result_unparsed', jobId: job.id, status: status || null, progress,
+            responseShape: responseShape(body),
+          }));
+        }
         await updateJob(job.id, {
-          status: 'processing', progress: Number(payloadOf(body)?.progress || payloadOf(body)?.percent || job.progress || 0),
+          status: 'processing', progress,
           attemptCount: Number(job.attemptCount || 0) + 1, nextPollAt: Date.now() + nextPollDelay(job),
           leaseOwner: workerId, leaseUntil: Date.now() + config.leaseDurationMs,
         });
