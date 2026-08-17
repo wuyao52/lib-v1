@@ -34,7 +34,6 @@ const presetModels = {
   video: [
     { id: 'sora-2', name: 'Sora2 (ToAPIs)', provider: 'ToAPIs', baseUrl: '/api/toapis', description: 'OpenAI 视频' },
     { id: 'veo-3', name: 'VEO3 (ToAPIs)', provider: 'ToAPIs', baseUrl: '/api/toapis', description: 'Google 视频' },
-    { id: 'hongniao-seedance', name: '红鸟AI Seedance', provider: '红鸟AI', baseUrl: '/api/hongniaoai', description: '🔥 推荐' },
     { id: 'wuhen-ai', name: '无痕AI', provider: '无痕AI', baseUrl: '/api/wuhenai', description: '去水印/消除' },
     { id: 'seedance-2.0', name: 'Seedance 2.0', provider: 'Seedance', baseUrl: '/api/seedance', description: 'Seedance 官方' },
     { id: 'seedream', name: 'Seedream', provider: 'Seedream', baseUrl: 'https://api.seedream.com', description: '创意视频' },
@@ -47,7 +46,6 @@ const presetModels = {
   image: [
     { id: 'gpt-4o-image', name: 'GPT-4o Image (ToAPIs)', provider: 'ToAPIs', baseUrl: '/api/toapis', description: 'OpenAI 图片' },
     { id: 'gemini-2.5-flash-image', name: 'Gemini Image (ToAPIs)', provider: 'ToAPIs', baseUrl: '/api/toapis', description: 'Google 图片' },
-    { id: 'hongniao-seedance', name: '红鸟AI Seedance', provider: '红鸟AI', baseUrl: '/api/hongniaoai', description: '🔥 推荐' },
     { id: 'wuhen-ai', name: '无痕AI', provider: '无痕AI', baseUrl: '/api/wuhenai', description: '去水印/消除' },
     { id: 'seedance-2.0', name: 'Seedance 2.0', provider: 'Seedance', baseUrl: '/api/seedance', description: 'Seedance 官方' },
     { id: 'seedream', name: 'Seedream', provider: 'Seedream', baseUrl: 'https://api.seedream.com', description: '创意图片' },
