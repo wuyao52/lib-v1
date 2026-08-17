@@ -111,6 +111,7 @@ export default function SettingsPanel() {
                     <button
                       key={ratio}
                       onClick={() => updateProjectSettings({ aspectRatio: ratio })}
+                      aria-pressed={project.settings.aspectRatio === ratio}
                       className={`
                         flex-1 py-2 rounded-lg text-sm font-medium transition-colors
                         ${project.settings.aspectRatio === ratio
