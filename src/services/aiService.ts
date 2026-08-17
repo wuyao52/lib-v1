@@ -44,8 +44,23 @@ function isValidUrl(url: string): boolean {
 }
 
 function publicProviderError(value: unknown): string {
-  const message = String(value || '').trim();
+  let message = String(value || '').trim();
+  // Some compatible gateways put their real error object into a JSON string.
+  // Extract the readable message so request IDs and provider-only payloads do
+  // not leak into the canvas error state.
+  try {
+    const parsed = JSON.parse(message);
+    message = String(parsed?.error?.message || parsed?.message || parsed?.msg || message).trim();
+  } catch {
+    // The provider returned a regular text message.
+  }
   if (message === '错误：余额不足' || message === '错误：99') return message;
+  if (/privacyinformation|real\s*(?:person|human|face)|真人|人脸|肖像/i.test(message)) {
+    return '参考图片疑似包含真人，当前服务商不支持将真人肖像用作视频参考图。请移除该参考图，或改用原创角色素材后重试';
+  }
+  if (/moderation|content[_ -]?policy|safety|sensitive|审核|敏感/i.test(message)) {
+    return '内容审核未通过，请检查提示词和参考图片后重试';
+  }
   return /余额不足|insufficient[_ -]?(?:balance|credit)|当前余额.*(?:需要|需支付)|需要\s*[¥￥]/i.test(message)
     ? '错误：99'
     : message;
@@ -128,7 +143,9 @@ function terminalProviderError(data: any): Error {
     data?.error?.message, data?.error?.code, data?.message, data?.msg, data?.error,
   ];
   const rawMessage = String(values.find((value) => typeof value === 'string' && value.trim()) || '视频生成失败');
-  const message = /moderation|content[_ -]?policy|safety|sensitive|审核|敏感/i.test(rawMessage)
+  const message = /privacyinformation|real\s*(?:person|human|face)|真人|人脸|肖像/i.test(rawMessage)
+    ? '参考图片疑似包含真人，当前服务商不支持将真人肖像用作视频参考图。请移除该参考图，或改用原创角色素材后重试'
+    : /moderation|content[_ -]?policy|safety|sensitive|审核|敏感/i.test(rawMessage)
     ? (rawMessage.includes('本次扣款') ? rawMessage : '内容审核未通过，请检查提示词、参考图片以及画面中的敏感内容后重试')
     : rawMessage;
   const error = new Error(message);
@@ -147,6 +164,34 @@ export function resolveVideoResolution(modelId: string, requested: unknown): str
     return '720p';
   }
   return requestedResolution || '1080p';
+}
+
+export function extractVideoResult(response: any): { url: string; thumbnail?: string } {
+  const payload = response?.data && typeof response.data === 'object' && !Array.isArray(response.data)
+    ? response.data
+    : response;
+  const urls = [
+    payload?.video_url, payload?.videoUrl, payload?.url, response?.video_url, response?.videoUrl, response?.url,
+    response?.result?.video_url, response?.result?.videoUrl, response?.result?.url,
+    response?.result?.data?.[0]?.video_url, response?.result?.data?.[0]?.videoUrl, response?.result?.data?.[0]?.url,
+    response?.output?.video_url, response?.output?.videoUrl, response?.output?.url,
+    response?.output?.data?.[0]?.video_url, response?.output?.data?.[0]?.videoUrl, response?.output?.data?.[0]?.url,
+    response?.data?.result?.video_url, response?.data?.result?.videoUrl, response?.data?.result?.url,
+    response?.data?.result?.data?.[0]?.url, response?.data?.output?.video_url, response?.data?.output?.url,
+    response?.videos?.[0]?.url, response?.data?.videos?.[0]?.url,
+  ];
+  const thumbnails = [payload?.thumbnail_url, payload?.thumbnailUrl, response?.thumbnail_url, response?.thumbnailUrl, response?.result?.thumbnail_url, response?.result?.thumbnailUrl, response?.output?.thumbnail_url, response?.output?.thumbnailUrl];
+  const url = urls.find((value) => typeof value === 'string' && /^https?:\/\//i.test(value.trim()))?.trim() || '';
+  const thumbnail = thumbnails.find((value) => typeof value === 'string' && /^https?:\/\//i.test(value.trim()))?.trim();
+  return { url, ...(thumbnail ? { thumbnail } : {}) };
+}
+
+function isCompletedVideoStatus(value: unknown): boolean {
+  return ['completed', 'complete', 'success', 'succeeded', 'done', 'finished'].includes(String(value || '').toLowerCase());
+}
+
+function isFailedVideoStatus(value: unknown): boolean {
+  return ['failed', 'failure', 'error', 'rejected', 'cancelled', 'canceled'].includes(String(value || '').toLowerCase());
 }
 
 // AI 服务基类
@@ -391,24 +436,25 @@ export class SeedanceService extends AIService {
         if (!response.ok || businessError) throw new Error(businessError || data.message || data.msg || data.error?.message || `请求失败: ${response.status}`);
 
         const payload = data.data && typeof data.data === 'object' ? data.data : data;
-        const taskId = payload.id || payload.task_id || payload.taskId || data.id;
+        const taskId = payload.id || payload.task_id || payload.taskId || payload.job_id || payload.jobId || data.id || data.task_id || data.taskId || data.job_id || data.jobId;
         const taskStatus = payload.status || payload.state || data.status;
+        const result = extractVideoResult(data);
+
+        // Compatible providers may synchronously return { result: { data: [{ url }] } }
+        // without a task ID. Treat that URL as the completed video immediately.
+        if (result.url && (!taskId || isCompletedVideoStatus(taskStatus))) {
+          return { success: true, data: { ...result, metadata: data } };
+        }
 
         // 异步任务 - 轮询结果
-        if (taskId && (!taskStatus || ['queued', 'pending', 'processing', 'running'].includes(String(taskStatus).toLowerCase()))) {
+        if (taskId && !isFailedVideoStatus(taskStatus)) {
           console.log('任务已创建，taskId:', taskId);
           const onProgress = typeof settings._onProgress === 'function' ? settings._onProgress : undefined;
           onProgress?.({ taskId: String(taskId), status: String(taskStatus || 'queued').toLowerCase(), progress: Number(payload.progress || 0), queuePosition: Number(payload.queue_position || 0) || null });
           return await this.pollVideoResult(String(taskId), signal, onProgress);
         }
 
-        // 同步返回
-        const videoUrl = payload.video_url || payload.url || data.video_url || data.result?.video_url || data.url;
-        if (!videoUrl) throw new Error('服务商未返回视频地址或可轮询的任务 ID');
-        return {
-          success: true,
-          data: { url: videoUrl, thumbnail: payload.thumbnail_url || data.thumbnail_url, metadata: data },
-        };
+        throw new Error('服务商未返回视频地址或可轮询的任务 ID');
       } catch (fetchError: any) {
         clearTimeout(timeoutId);
         if (fetchError.name === 'AbortError') {
@@ -504,17 +550,9 @@ export class SeedanceService extends AIService {
           queuePosition: Number(payload.queue_position || data.queue_position || 0) || null,
         });
 
-        if (status === 'completed' || status === 'success') {
-          // 尝试所有可能的视频 URL 字段
-          const videoUrl = payload.video_url ||
-                          payload.url ||
-                          data.result?.video_url ||
-                          data.output?.video_url ||
-                          data.data?.video_url ||
-                          data.data?.url ||
-                          data.url ||
-                          data.result?.url ||
-                          data.output?.url;
+        if (isCompletedVideoStatus(status)) {
+          const result = extractVideoResult(data);
+          const videoUrl = result.url;
 
           console.log('找到视频 URL:', videoUrl);
 
@@ -523,7 +561,7 @@ export class SeedanceService extends AIService {
               success: true,
               data: {
                 url: videoUrl,
-                thumbnail: payload.thumbnail_url || data.thumbnail_url || data.result?.thumbnail_url,
+                thumbnail: result.thumbnail,
                 metadata: { ...data, taskId },
               },
             };
@@ -534,7 +572,7 @@ export class SeedanceService extends AIService {
           }
         }
 
-        if (['failed', 'error', 'rejected', 'cancelled', 'canceled'].includes(String(status).toLowerCase())) {
+        if (isFailedVideoStatus(status)) {
           throw terminalProviderError(data);
         }
 
