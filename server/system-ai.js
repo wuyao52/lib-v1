@@ -76,7 +76,16 @@ function isModerationFailure(body) {
     payload?.code, payload?.message, payload?.msg, payload?.error?.code, payload?.error?.message, payload?.error,
   ]
     .filter((value) => typeof value === 'string').join(' ');
-  return /moderation|content[_ -]?policy|safety|sensitive|审核|敏感/i.test(details);
+  return /moderation|content[_ -]?policy|safety|sensitive|privacyinformation|real\s*(?:person|human|face)|审核|敏感|真人|人脸|肖像/i.test(details);
+}
+
+function providerRestrictionMessage(body, refunded = false) {
+  const details = JSON.stringify(body || '');
+  const privacyRestriction = /privacyinformation|real\s*(?:person|human|face)|真人|人脸|肖像/i.test(details);
+  const message = privacyRestriction
+    ? '参考图片疑似包含真人，当前服务商不支持将真人肖像用作视频参考图。请移除该参考图，或改用原创角色素材后重试'
+    : '内容审核未通过，请检查提示词、参考图片以及画面中的敏感内容后重试';
+  return `${message}${refunded ? '；本次扣款已自动退回' : ''}`;
 }
 
 function computeCharge(pricing, body) {
@@ -281,7 +290,7 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
         const referenceId = taskBillingReference(api.id, req.user.id, pathTaskId);
         const refunded = await refundTaskCharge(db, { userId: req.user.id, referenceId });
         if (isModerationFailure(parsedResponseBody)) {
-          const message = `内容审核未通过，请检查提示词、参考图片以及画面中的敏感内容后重试${refunded ? '；本次扣款已自动退回' : ''}`;
+          const message = providerRestrictionMessage(parsedResponseBody, refunded);
           parsedResponseBody = {
             ...parsedResponseBody,
             message,
@@ -291,6 +300,13 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
         }
       }
       const upstreamMessage = String(parsedResponseBody?.message || parsedResponseBody?.msg || parsedResponseBody?.error?.message || parsedResponseBody?.error || '');
+      if ((!upstream.ok || businessFailure) && isModerationFailure(parsedResponseBody)) {
+        const message = providerRestrictionMessage(parsedResponseBody);
+        return res.status(upstream.status >= 400 ? upstream.status : 502).json({
+          error: 'PROVIDER_MODERATION_ERROR',
+          message,
+        });
+      }
       if (/余额不足|insufficient[_ -]?(?:balance|credit)|当前余额.*(?:需要|需支付)|需要\s*[¥￥]/i.test(upstreamMessage)) {
         return res.status(upstream.status >= 400 ? upstream.status : 502).json({
           error: 'UPSTREAM_BALANCE_INSUFFICIENT',
