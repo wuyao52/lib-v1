@@ -136,9 +136,17 @@ function terminalProviderError(data: any): Error {
   return error;
 }
 
-function resolveVideoResolution(modelId: string, requested: unknown): string {
+export function resolveVideoResolution(modelId: string, requested: unknown): string {
   const modelResolution = modelId.match(/(?:^|[-_])(480|720|1080)p(?:$|[-_])/i)?.[1];
-  return modelResolution ? `${modelResolution}p` : String(requested || '1080p');
+  if (modelResolution) return `${modelResolution}p`;
+
+  const requestedResolution = String(requested || '').trim().toLowerCase();
+  // Seedance 2.0 Mini does not offer a universal 1080p tier. Third-party
+  // providers can differ, but 720p is its documented interoperable baseline.
+  if (/seedance.*(?:[-_.]2(?:[-_.]?0)?)?[-_.]?mini/i.test(modelId) && (!requestedResolution || requestedResolution === '1080p')) {
+    return '720p';
+  }
+  return requestedResolution || '1080p';
 }
 
 // AI 服务基类
