@@ -53,6 +53,12 @@ export async function discoverSystemApi({ baseUrl, apiKey, fetchImpl = fetch, re
   if (base.protocol !== 'https:' || base.username || base.password) throw new Error('自动识别只允许不含账号信息的 HTTPS 地址');
   if (String(apiKey || '').trim().length < 8) throw new Error('请先填写有效的 API Key');
   await assertPublicHost(base.hostname, resolveHost);
+  if (base.hostname.toLowerCase() === 'api.shishikeji.com') {
+    return {
+      name: '时时科技视频 API', provider: '时时科技',
+      models: [{ id: 'xinghe-2.0', name: '星河 2.0', type: 'video' }],
+    };
+  }
   const basePath = base.pathname.replace(/\/+$/, '');
   const modelsUrl = new URL(`${base.origin}${basePath.endsWith('/v1') ? basePath : `${basePath}/v1`}/models`);
   const controller = new AbortController();
