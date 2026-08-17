@@ -32,9 +32,6 @@ const presetModels = {
     { id: 'custom-text', name: '自定义文本模型', provider: 'Custom', baseUrl: '', description: 'OpenAI-compatible' },
   ],
   video: [
-    { id: 'sora-2', name: 'Sora2 (ToAPIs)', provider: 'ToAPIs', baseUrl: '/api/toapis', description: 'OpenAI 视频' },
-    { id: 'veo-3', name: 'VEO3 (ToAPIs)', provider: 'ToAPIs', baseUrl: '/api/toapis', description: 'Google 视频' },
-    { id: 'wuhen-ai', name: '无痕AI', provider: '无痕AI', baseUrl: '/api/wuhenai', description: '去水印/消除' },
     { id: 'seedance-2.0', name: 'Seedance 2.0', provider: 'Seedance', baseUrl: '/api/seedance', description: 'Seedance 官方' },
     { id: 'seedream', name: 'Seedream', provider: 'Seedream', baseUrl: 'https://api.seedream.com', description: '创意视频' },
     { id: 'gemini-video', name: 'Gemini Video', provider: 'Google', baseUrl: 'https://generativelanguage.googleapis.com', description: 'Google 视频' },
@@ -44,9 +41,6 @@ const presetModels = {
     { id: 'custom', name: '自定义模型', provider: 'Custom', baseUrl: '', description: '自定义' },
   ],
   image: [
-    { id: 'gpt-4o-image', name: 'GPT-4o Image (ToAPIs)', provider: 'ToAPIs', baseUrl: '/api/toapis', description: 'OpenAI 图片' },
-    { id: 'gemini-2.5-flash-image', name: 'Gemini Image (ToAPIs)', provider: 'ToAPIs', baseUrl: '/api/toapis', description: 'Google 图片' },
-    { id: 'wuhen-ai', name: '无痕AI', provider: '无痕AI', baseUrl: '/api/wuhenai', description: '去水印/消除' },
     { id: 'seedance-2.0', name: 'Seedance 2.0', provider: 'Seedance', baseUrl: '/api/seedance', description: 'Seedance 官方' },
     { id: 'seedream', name: 'Seedream', provider: 'Seedream', baseUrl: 'https://api.seedream.com', description: '创意图片' },
     { id: 'gemini-image', name: 'Gemini Image', provider: 'Google', baseUrl: 'https://generativelanguage.googleapis.com', description: 'Google 图片' },
