@@ -96,6 +96,32 @@ test('video queue accepts a completed ToAPIs-style result.data video response wi
   assert.equal(db.data.generationHistory[0]?.url, 'https://files.toapis.example/videos/finished.mp4');
 });
 
+test('video queue completes a polled ToAPIs task when a direct video exists at 100 percent despite a stale processing status', async () => {
+  const db = fakeDb({
+    users: [{ id: 'user-a', balanceCents: 0 }],
+    systemApis: [{ id: 'api-1', enabled: true, baseUrl: 'https://upstream.example', encryptedApiKey: 'secret' }],
+  });
+  const fetchImpl = async (_url, options) => {
+    if (options.method === 'POST') {
+      return new Response(JSON.stringify({ id: 'tsk_vid_toapis', status: 'processing', progress: 1 }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({
+      status: 'processing',
+      progress: 100,
+      generation: { ratio: '9:16', resolution: '720p' },
+      result: { type: 'video', data: [{ url: 'https://files.toapis.example/videos/polled-finished.mp4', format: 'mp4' }] },
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  const queue = await createVideoQueue({ db, vault: { decrypt: (value) => value }, fetchImpl, autoStart: false });
+  await queue.enqueue({ id: 'toapis-polled-job', userId: 'user-a', apiId: 'api-1', modelId: 'video', requestBody: { prompt: 'polled completed response' } });
+  await waitFor(() => db.data.generationJobs[0]?.status === 'processing');
+  db.data.generationJobs[0].nextPollAt = 0;
+  await queue.tick();
+  await waitFor(() => db.data.generationJobs[0]?.status === 'completed');
+  assert.equal(db.data.generationJobs[0].resultUrl, 'https://files.toapis.example/videos/polled-finished.mp4');
+  assert.equal(db.data.generationHistory[0]?.url, 'https://files.toapis.example/videos/polled-finished.mp4');
+});
+
 test('video queue delays transient submission failures instead of refunding immediately', async () => {
   let submissions = 0;
   const db = fakeDb({
