@@ -294,7 +294,7 @@ async function generateVideoWithFallback(
   onFallback();
   const firstFrame = await createAIService(imageModel).generateImage(prompt, {
     aspect_ratio: String(settings.aspect_ratio || '16:9'),
-    resolution: '1080p',
+    resolution: String(settings.resolution || imageModel.parameters?.resolution || '720p'),
   }, signal);
   if (!firstFrame.success || !firstFrame.data?.url) {
     return { success: false, error: `视频模型要求参考图，自动生成首帧失败：${firstFrame.error || '图片模型未返回图片'}` };
@@ -1242,7 +1242,7 @@ function launchGenerationTask(
       if (!isImage && requestDuration !== execution.duration) get().updateNodeData(execution.targetNodeId, { duration: requestDuration });
       const generationSettings: any = {
         style: execution.style || latestProject.settings.defaultStyle,
-        resolution: isImage ? undefined : '1080p',
+        resolution: isImage ? undefined : effectiveModel.parameters?.resolution,
         // Keep every generated asset in the project's selected frame. This also
         // reaches the generated first-frame fallback used by image-to-video models.
         aspect_ratio: latestProject.settings.aspectRatio || (isImage ? '1:1' : '16:9'),
