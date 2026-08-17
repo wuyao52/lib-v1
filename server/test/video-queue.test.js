@@ -122,6 +122,81 @@ test('video queue completes a polled ToAPIs task when a direct video exists at 1
   assert.equal(db.data.generationHistory[0]?.url, 'https://files.toapis.example/videos/polled-finished.mp4');
 });
 
+test('video queue extracts a completed video from a JSON-encoded provider wrapper', async () => {
+  const db = fakeDb({
+    users: [{ id: 'user-a', balanceCents: 0 }],
+    systemApis: [{ id: 'api-1', enabled: true, baseUrl: 'https://upstream.example', encryptedApiKey: 'secret' }],
+  });
+  const fetchImpl = async (_url, options) => options.method === 'POST'
+    ? new Response(JSON.stringify({ id: 'tsk_encoded', status: 'processing' }), { status: 200, headers: { 'content-type': 'application/json' } })
+    : new Response(JSON.stringify({
+      status: 'processing', progress: 100,
+      provider_payload: JSON.stringify({ result: { type: 'video', data: [{ url: 'https://files.toapis.example/videos/encoded-finished.mp4', format: 'mp4' }] } }),
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  const queue = await createVideoQueue({ db, vault: { decrypt: (value) => value }, fetchImpl, autoStart: false });
+  await queue.enqueue({ id: 'encoded-result-job', userId: 'user-a', apiId: 'api-1', modelId: 'video', requestBody: { prompt: 'encoded result' } });
+  await waitFor(() => db.data.generationJobs[0]?.status === 'processing');
+  db.data.generationJobs[0].nextPollAt = 0;
+  await queue.tick();
+  await waitFor(() => db.data.generationJobs[0]?.status === 'completed');
+  assert.equal(db.data.generationJobs[0].resultUrl, 'https://files.toapis.example/videos/encoded-finished.mp4');
+});
+
+test('video queue adapts Shishikeji multipart submission, license auth, polling and refreshed video links', async () => {
+  const db = fakeDb({
+    users: [{ id: 'user-a', balanceCents: 0 }],
+    systemApis: [{ id: 'api-shishikeji', enabled: true, baseUrl: 'https://api.shishikeji.com', encryptedApiKey: 'license-test-secret' }],
+  });
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    const target = String(url);
+    calls.push({ target, options });
+    if (target === 'https://assets.example/reference.jpg') {
+      return new Response(Buffer.from('reference-image-bytes'), { status: 200, headers: { 'content-type': 'image/jpeg', 'content-length': '21' } });
+    }
+    assert.equal(options.headers.get('x-license-key'), 'license-test-secret');
+    assert.equal(options.headers.has('authorization'), false);
+    if (target === 'https://api.shishikeji.com/api/generate-video') {
+      assert.equal(options.method, 'POST');
+      assert.equal(options.headers.has('content-type'), false);
+      assert.ok(options.body instanceof FormData);
+      assert.equal(options.body.get('prompt'), 'adapter prompt');
+      assert.equal(options.body.get('duration'), '5');
+      assert.equal(options.body.get('ratio'), '9:16');
+      assert.equal(options.body.get('resolution'), '720p');
+      assert.equal(options.body.get('model'), 'xinghe-2.0');
+      assert.equal(options.body.get('protect_stripe'), 'true');
+      assert.equal(options.body.getAll('files').length, 1);
+      return new Response(JSON.stringify({ task_id: 'provider-shishikeji-task', status: 'processing', progress: 1 }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (target === 'https://api.shishikeji.com/api/task/provider-shishikeji-task') {
+      return new Response(JSON.stringify({ task_id: 'provider-shishikeji-task', status: 'completed', progress: 100 }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (target === 'https://api.shishikeji.com/api/task/provider-shishikeji-task/video-link?refresh=1') {
+      return new Response(JSON.stringify({ official_video_url: 'https://cdn.shishikeji.example/results/final.mp4' }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    throw new Error(`Unexpected adapter request: ${target}`);
+  };
+  const queue = await createVideoQueue({
+    db, vault: { decrypt: (value) => value }, fetchImpl, autoStart: false,
+    resolveHost: async () => [{ address: '203.0.113.20', family: 4 }],
+  });
+  await queue.enqueue({
+    id: 'shishikeji-job', userId: 'user-a', apiId: 'api-shishikeji', modelId: 'xinghe-2.0',
+    requestBody: {
+      model: 'xinghe-2.0', prompt: 'adapter prompt', seconds: 5,
+      aspect_ratio: '9:16', resolution: '720p', images: ['https://assets.example/reference.jpg'],
+    },
+  });
+  await waitFor(() => db.data.generationJobs[0]?.status === 'processing');
+  db.data.generationJobs[0].nextPollAt = 0;
+  await queue.tick();
+  await waitFor(() => db.data.generationJobs[0]?.status === 'completed');
+  assert.equal(db.data.generationJobs[0].resultUrl, 'https://cdn.shishikeji.example/results/final.mp4');
+  assert.equal(db.data.generationHistory[0]?.url, 'https://cdn.shishikeji.example/results/final.mp4');
+  assert.equal(calls.some((call) => call.target.includes('license_key=')), false);
+});
+
 test('video queue delays transient submission failures instead of refunding immediately', async () => {
   let submissions = 0;
   const db = fakeDb({
