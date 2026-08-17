@@ -24,6 +24,12 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   const refreshedImage = page.locator('.react-flow__node[data-id="refresh-image-node"] img').first();
   await expect(refreshedImage).toBeVisible();
   await expect.poll(() => refreshedImage.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
+  const projectSettings = page.getByRole('banner').getByTitle('项目设置');
+  await projectSettings.click();
+  const portraitRatio = page.getByRole('button', { name: '9:16', exact: true });
+  await portraitRatio.click();
+  await expect(portraitRatio).toHaveAttribute('aria-pressed', 'true');
+  await projectSettings.click();
   const nodes = page.locator('.react-flow__node');
   const targetNode = page.locator('.react-flow__node[data-id="batch-target"]');
 
@@ -146,6 +152,10 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   await page.goto('/__e2e/login');
   await expect(page.getByTestId('project-browser-project-scene-count')).toContainText('9');
   await page.getByTestId('project-browser-project').click();
+  const restoredProjectSettings = page.getByRole('banner').getByTitle('项目设置');
+  await restoredProjectSettings.click();
+  await expect(page.getByRole('button', { name: '9:16', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await restoredProjectSettings.click();
   const imageAfterRefresh = page.locator('.react-flow__node[data-id="refresh-image-node"] img').first();
   await expect(imageAfterRefresh).toBeVisible();
   await expect.poll(() => imageAfterRefresh.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
