@@ -194,8 +194,18 @@ function isFailedVideoStatus(value: unknown): boolean {
   return ['failed', 'failure', 'error', 'rejected', 'cancelled', 'canceled'].includes(String(value || '').toLowerCase());
 }
 
+function isDirectVideoAssetUrl(value: string): boolean {
+  try {
+    return /\.(?:mp4|webm|mov|m4v)(?:$|[?#])/i.test(new URL(value).pathname);
+  } catch {
+    return false;
+  }
+}
+
 export function isCompletedVideoResponse(status: unknown, response: any): boolean {
-  return Boolean(extractVideoResult(response).url) && (!status || isCompletedVideoStatus(status));
+  const result = extractVideoResult(response);
+  if (!result.url || isFailedVideoStatus(status)) return false;
+  return !status || isCompletedVideoStatus(status) || isDirectVideoAssetUrl(result.url);
 }
 
 // AI 服务基类
