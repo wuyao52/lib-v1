@@ -79,6 +79,13 @@ function videoResultOf(body) {
 
 const completedVideoStatus = (status) => ['completed', 'complete', 'success', 'succeeded', 'done', 'finished'].includes(status);
 const failedVideoStatus = (status) => ['failed', 'failure', 'error', 'rejected', 'cancelled', 'canceled'].includes(status);
+const directVideoAssetUrl = (value) => {
+  try { return /\.(?:mp4|webm|mov|m4v)(?:$|[?#])/i.test(new URL(value).pathname); }
+  catch { return false; }
+};
+const completedVideoResponse = (status, result) => Boolean(result.url)
+  && !failedVideoStatus(status)
+  && (!status || completedVideoStatus(status) || directVideoAssetUrl(result.url));
 
 function errorOf(body, statusCode) {
   const payload = payloadOf(body);
@@ -293,7 +300,7 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
         await updateJob(job.id, { status: 'queued', attemptCount, nextPollAt: Date.now() + attemptCount * 10000, leaseOwner: null, leaseUntil: 0 });
       } else if (!response.ok || isBusinessFailure(body) || failedVideoStatus(status)) {
         await refundJob(job.id, errorOf(body, response.status));
-      } else if (result.url && (!status || completedVideoStatus(status))) {
+      } else if (completedVideoResponse(status, result)) {
         await completeJob(job.id, result);
       } else {
         const providerTaskId = taskIdOf(body);
@@ -335,7 +342,7 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
         await updateJob(job.id, { attemptCount: Number(job.attemptCount || 0) + 1, nextPollAt: Date.now() + 15000 });
       } else if (!response.ok || isBusinessFailure(body) || failedVideoStatus(status)) {
         await refundJob(job.id, errorOf(body, response.status));
-      } else if (result.url && (!status || completedVideoStatus(status))) {
+      } else if (completedVideoResponse(status, result)) {
         await completeJob(job.id, result);
       } else {
         await updateJob(job.id, {
