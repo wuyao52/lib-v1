@@ -7,6 +7,21 @@ const PROVIDERS = [
   ['aliyuncs.com', '阿里云'], ['siliconflow.cn', 'SiliconFlow'], ['openrouter.ai', 'OpenRouter'],
 ];
 
+const SHISHIKEJI_VIDEO_MODELS = [
+  ['transit9-fast', '9图 Fast'],
+  ['transit9-2.0', '9图 2.0'],
+  ['xinghe-mini', '星核 MINI'],
+  ['xinghe-fast', '星核 FAST'],
+  ['xinghe-2.0', '星核 2.0'],
+  ['xinghe-2.0-12s', '星核 2.0 12秒'],
+  ['xinghe-2.5-12s', '星核 2.5 12秒'],
+  ['xingmiao-2.0', '星妙 2.0'],
+  ['xingmiao-2.5', '星妙 2.5'],
+  ['canfei-fast', '残废 FAST'],
+  ['canfei-2.0', '残废 2.0'],
+  ['jiaban-2.0', '错峰加班-2.0'],
+].map(([id, name]) => ({ id, name, type: 'video' }));
+
 function isPrivateIp(address) {
   if (address === '::1' || address === '::' || address.startsWith('fc') || address.startsWith('fd') || address.startsWith('fe80:')) return true;
   if (address.startsWith('::ffff:')) return isPrivateIp(address.slice(7));
@@ -56,7 +71,7 @@ export async function discoverSystemApi({ baseUrl, apiKey, fetchImpl = fetch, re
   if (base.hostname.toLowerCase() === 'api.shishikeji.com') {
     return {
       name: '时时科技视频 API', provider: '时时科技',
-      models: [{ id: 'xinghe-2.0', name: '星河 2.0', type: 'video' }],
+      models: SHISHIKEJI_VIDEO_MODELS.map((model) => ({ ...model })),
     };
   }
   const basePath = base.pathname.replace(/\/+$/, '');
