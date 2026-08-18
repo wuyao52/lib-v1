@@ -53,6 +53,7 @@ const presetModels = {
 
 type ModelCategory = 'text' | 'video' | 'image';
 type UserApiConfig = { id: string; name: string; provider: string; baseUrl: string; hasApiKey: boolean };
+const resolutionLabel = (value: string) => value.toLowerCase() === '1080p' ? '1080p (1K)' : value.toUpperCase();
 
 export default function ModelConfigPanel() {
   const { showModelConfig, toggleModelConfig, project, updateProjectSettings } = useProjectStore();
@@ -94,6 +95,9 @@ export default function ModelConfigPanel() {
   const activeModel = activeTab === 'text'
     ? multiModel.textModel
     : activeTab === 'video' ? multiModel.videoModel : multiModel.imageModel;
+  const supportedVideoResolutions = activeTab === 'video' && activeModel.managed
+    ? [...new Set((activeModel.allowedResolutions || []).map((value) => String(value).toLowerCase()).filter(Boolean))]
+    : [];
 
   // 更新配置（独立更新当前标签对应的模型）
   const updateActiveModel = (updates: Partial<AIModelConfig>) => {
@@ -307,10 +311,17 @@ export default function ModelConfigPanel() {
                   <label className="text-xs font-medium text-dark-300">系统模型</label>
                   <div className="space-y-2">
                     {managedModels.filter((model) => model.category === activeTab).map((model) => (
-                      <button key={model.id} onClick={() => updateActiveModel({ ...model, apiKey: '', managed: true, credentialManaged: false, credentialConfigId: undefined })} className={`w-full p-3 rounded-lg border text-left ${activeModel.managed && activeModel.id === model.id ? 'border-green-500 bg-green-500/10' : 'border-dark-600 bg-dark-700 hover:border-dark-400'}`}>
+                      <button key={model.id} onClick={() => {
+                        const allowedResolutions = (model.allowedResolutions || []).map((value) => String(value).toLowerCase()).filter(Boolean);
+                        const currentResolution = String(activeModel.parameters?.resolution || '').toLowerCase();
+                        updateActiveModel({ ...model, apiKey: '', managed: true, credentialManaged: false, credentialConfigId: undefined, parameters: {
+                          ...(model.parameters || {}),
+                          ...(activeTab === 'video' && allowedResolutions.length ? { resolution: allowedResolutions.includes(currentResolution) ? currentResolution : (allowedResolutions.includes('720p') ? '720p' : allowedResolutions[0]) } : {}),
+                        } });
+                      }} className={`w-full p-3 rounded-lg border text-left ${activeModel.managed && activeModel.id === model.id ? 'border-green-500 bg-green-500/10' : 'border-dark-600 bg-dark-700 hover:border-dark-400'}`}>
                         <div className="flex items-center justify-between gap-3"><span className="text-sm text-white">{model.name}</span><span className="text-xs text-green-400">¥{((model.unitPriceCents || 0) / 100).toFixed(2)} / {model.billingUnit === 'second' ? '秒' : model.billingUnit === 'image' ? '张' : '次'}</span></div>
                         <div className="text-[10px] text-dark-400 mt-1">{model.provider} · 密钥由系统安全托管</div>
-                        {model.category === 'video' && <div className="mt-1 text-[10px] text-primary-300">{describeModelDuration(model)}</div>}
+                        {model.category === 'video' && <div className="mt-1 text-[10px] text-primary-300">{describeModelDuration(model)}{model.allowedResolutions?.length ? ` · ${model.allowedResolutions.map(resolutionLabel).join('、')}` : ''}</div>}
                       </button>
                     ))}
                   </div>
@@ -410,7 +421,7 @@ export default function ModelConfigPanel() {
                 </button>
               )}
 
-              {activeTab === 'video' && !activeModel.managed && (
+              {activeTab === 'video' && (
                 <div className="space-y-2">
                   <label className="text-xs font-medium text-dark-300 flex items-center gap-2">
                     <Video className="w-3 h-3 text-primary-400" />
@@ -430,12 +441,10 @@ export default function ModelConfigPanel() {
                     }}
                     className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-white text-sm focus:outline-none focus:border-primary-500"
                   >
-                    <option value="">服务默认</option>
-                    <option value="480p">480p</option>
-                    <option value="720p">720p</option>
-                    <option value="1080p">1080p</option>
+                    {!supportedVideoResolutions.length && <option value="">服务默认</option>}
+                    {(supportedVideoResolutions.length ? supportedVideoResolutions : ['480p', '720p', '1080p', '2k', '4k']).map((resolution) => <option key={resolution} value={resolution}>{resolutionLabel(resolution)}</option>)}
                   </select>
-                  <p className="text-[10px] text-dark-400">请按服务商的模型计费表选择。Seedance 2.0 Mini 未选择时会自动使用 720p，避免发送不支持的 1080p。</p>
+                  <p className="text-[10px] text-dark-400">{supportedVideoResolutions.length ? `当前系统模型仅支持：${supportedVideoResolutions.map(resolutionLabel).join('、')}。切换模型时会自动选择可用分辨率。` : '自定义 API 的可选分辨率取决于服务商文档。'}</p>
                 </div>
               )}
 
