@@ -8,19 +8,24 @@ const PROVIDERS = [
 ];
 
 const SHISHIKEJI_VIDEO_MODELS = [
-  ['transit9-fast', '9图 Fast'],
-  ['transit9-2.0', '9图 2.0'],
-  ['xinghe-mini', '星核 MINI'],
-  ['xinghe-fast', '星核 FAST'],
-  ['xinghe-2.0', '星核 2.0'],
-  ['xinghe-2.0-12s', '星核 2.0 12秒'],
-  ['xinghe-2.5-12s', '星核 2.5 12秒'],
-  ['xingmiao-2.0', '星妙 2.0'],
-  ['xingmiao-2.5', '星妙 2.5'],
-  ['canfei-fast', '残废 FAST'],
-  ['canfei-2.0', '残废 2.0'],
-  ['jiaban-2.0', '错峰加班-2.0'],
-].map(([id, name]) => ({ id, name, type: 'video' }));
+  ['transit9-fast', '9图 Fast', ['720p']],
+  ['transit9-2.0', '9图 2.0', ['720p', '1080p']],
+  ['xinghe-mini', '星核 MINI', ['720p']],
+  ['xinghe-fast', '星核 FAST', ['720p']],
+  ['xinghe-2.0', '星核 2.0', ['480p', '720p', '1080p', '4k']],
+  ['xinghe-2.0-12s', '星核 2.0 12秒', ['720p']],
+  ['xinghe-2.5-12s', '星核 2.5 12秒', ['720p']],
+  ['xingmiao-2.0', '星妙 2.0', ['480p', '720p', '1080p', '4k']],
+  ['xingmiao-2.5', '星妙 2.5', ['720p']],
+  ['canfei-fast', '残废 FAST', ['720p']],
+  ['canfei-2.0', '残废 2.0', ['480p', '720p', '1080p', '4k']],
+  ['jiaban-2.0', '错峰加班-2.0', ['720p']],
+].map(([id, name, supportedResolutions]) => ({ id, name, type: 'video', supportedResolutions }));
+
+export function knownVideoResolutions(provider, modelId) {
+  if (!/时时科技/i.test(String(provider || ''))) return [];
+  return SHISHIKEJI_VIDEO_MODELS.find((model) => model.id === modelId)?.supportedResolutions || [];
+}
 
 function isPrivateIp(address) {
   if (address === '::1' || address === '::' || address.startsWith('fc') || address.startsWith('fd') || address.startsWith('fe80:')) return true;
