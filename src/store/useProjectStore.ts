@@ -42,8 +42,6 @@ const defaultModel: AIModelConfig = {
 
 // 默认项目设置
 const defaultSettings: ProjectSettings = {
-  resolution: { width: 1920, height: 1080 },
-  fps: 24,
   aspectRatio: '16:9',
   defaultStyle: 'cinematic',
   aiModel: defaultModel,
@@ -69,7 +67,6 @@ export const normalizeProjectShape = (project: DramaProject): DramaProject => {
     settings: {
       ...defaultSettings,
       ...incomingSettings,
-      resolution: { ...defaultSettings.resolution, ...(incomingSettings.resolution || {}) },
       aiModel,
       multiModel: incomingMultiModel ? {
         textModel: normalizeSlot(incomingMultiModel.textModel),
