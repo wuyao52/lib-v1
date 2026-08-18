@@ -14,10 +14,10 @@ test('system API discovery exposes the public Shishikeji video catalog without r
   assert.equal(result.provider, '时时科技');
   assert.equal(result.models.length, 12);
   assert.deepEqual(result.models.find(({ id }) => id === 'xinghe-2.0'), {
-    id: 'xinghe-2.0', name: '星核 2.0', type: 'video',
+    id: 'xinghe-2.0', name: '星核 2.0', type: 'video', supportedResolutions: ['480p', '720p', '1080p', '4k'],
   });
   assert.deepEqual(result.models.find(({ id }) => id === 'xinghe-2.5-12s'), {
-    id: 'xinghe-2.5-12s', name: '星核 2.5 12秒', type: 'video',
+    id: 'xinghe-2.5-12s', name: '星核 2.5 12秒', type: 'video', supportedResolutions: ['720p'],
   });
   assert.ok(result.models.every(({ type }) => type === 'video'));
 });
