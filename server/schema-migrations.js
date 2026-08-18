@@ -57,6 +57,13 @@ const migrations = [
       ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
     },
   },
+  {
+    version: 4,
+    name: 'model_pricing_resolutions',
+    async up({ ensureColumn }) {
+      await ensureColumn('model_pricing', 'allowed_resolutions', 'JSON NULL');
+    },
+  },
 ];
 
 export async function runSchemaMigrations(pool) {
