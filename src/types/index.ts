@@ -89,11 +89,6 @@ export interface DramaProject {
 
 // 项目设置
 export interface ProjectSettings {
-  resolution: {
-    width: number;
-    height: number;
-  };
-  fps: number;
   aspectRatio: string;
   defaultStyle: string;
   aiModel: AIModelConfig;
