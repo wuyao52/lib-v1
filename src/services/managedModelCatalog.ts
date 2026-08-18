@@ -27,6 +27,13 @@ export async function refreshManagedModel(model: AIModelConfig): Promise<AIModel
     ...current,
     apiKey: '',
     managed: true,
-    parameters: model.parameters || {},
+    parameters: {
+      ...(model.parameters || {}),
+      ...(Array.isArray(current.allowedResolutions) && current.allowedResolutions.length ? {
+        resolution: current.allowedResolutions.includes(String(model.parameters?.resolution || '').toLowerCase())
+          ? model.parameters?.resolution
+          : current.allowedResolutions.includes('720p') ? '720p' : current.allowedResolutions[0],
+      } : {}),
+    },
   };
 }
