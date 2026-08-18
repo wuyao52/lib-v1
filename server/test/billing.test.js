@@ -119,10 +119,11 @@ test('system APIs, pricing, balances and managed gateway enforce roles and billi
   const missingDurationPricing = await context.request('/api/admin/pricing', admin.cookie, { method: 'POST', body: JSON.stringify({ apiId: createdApi.id, modelId: 'invalid-video-model', displayName: '未配置时长模型', category: 'video', billingUnit: 'second', unitPriceCents: 10 }) });
   assert.equal(missingDurationPricing.status, 400);
   assert.match((await missingDurationPricing.json()).message, /固定时长/);
-  const pricingResponse = await context.request('/api/admin/pricing', admin.cookie, { method: 'POST', body: JSON.stringify({ apiId: createdApi.id, modelId: 'video-model', displayName: '视频模型', category: 'video', billingUnit: 'second', unitPriceCents: 10, allowedDurationsSec: [5, 15] }) });
+  const pricingResponse = await context.request('/api/admin/pricing', admin.cookie, { method: 'POST', body: JSON.stringify({ apiId: createdApi.id, modelId: 'video-model', displayName: '视频模型', category: 'video', billingUnit: 'second', unitPriceCents: 10, allowedDurationsSec: [5, 15], allowedResolutions: ['720p'] }) });
   assert.equal(pricingResponse.status, 201);
   const catalog = await (await context.request('/api/catalog/models', normal.cookie)).json();
   assert.equal(catalog.models[0].baseUrl, `/api/system-ai/${createdApi.id}`);
+  assert.deepEqual(catalog.models[0].allowedResolutions, ['720p']);
   assert.equal(JSON.stringify(catalog).includes('secret-system-key'), false);
   assert.equal(JSON.stringify(catalog).includes('encryptedApiKey'), false);
 
@@ -138,11 +139,16 @@ test('system APIs, pricing, balances and managed gateway enforce roles and billi
   const success = await context.request(`/api/system-ai/${createdApi.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'ok', duration: 5 }) });
   assert.equal(success.status, 200);
   const generationCall = context.upstreamCalls.find((call) => call.body?.includes('"prompt":"ok"'));
+  assert.equal(JSON.parse(generationCall.body).resolution, '720p');
   assert.equal(generationCall.authorization, 'Bearer secret-system-key');
   assert.equal(generationCall.apiKey, 'secret-system-key');
   let billing = await (await context.request('/api/billing/me', normal.cookie)).json();
   assert.equal(billing.balanceCents, 950);
   assert.equal(billing.transactions.some((item) => item.type === 'model_usage' && item.amountCents === -50), true);
+
+  const unsupportedResolution = await context.request(`/api/system-ai/${createdApi.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'wrong-resolution', duration: 5, resolution: '1080p' }) });
+  assert.equal(unsupportedResolution.status, 400);
+  assert.equal((await unsupportedResolution.json()).error, 'INVALID_RESOLUTION');
 
   const upstreamInsufficient = await context.request(`/api/system-ai/${createdApi.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'upstream-balance', duration: 5 }) });
   assert.equal(upstreamInsufficient.status, 402);
