@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { discoverSystemApi } from './api-discovery.js';
+import { discoverSystemApi, knownVideoResolutions } from './api-discovery.js';
 import { verifyPassword } from './auth.js';
 import { runBackupDrill } from './backup-drill.js';
 import { summarizeStoredObjects } from './object-storage.js';
@@ -69,16 +69,24 @@ function normalizePricingInput(input, existing) {
   let maxDurationSec = parseDuration(input.maxDurationSec ?? existing?.maxDurationSec);
   const rawAllowed = input.allowedDurationsSec ?? existing?.allowedDurationsSec ?? [];
   const allowedDurationsSec = Array.isArray(rawAllowed) ? [...new Set(rawAllowed.map((v) => parseDuration(v)))].sort((a, b) => a - b) : String(rawAllowed).split(',').map((v) => v.trim()).filter(Boolean).map(parseDuration).sort((a, b) => a - b);
+  const normalizeResolution = (value) => {
+    const normalized = String(value || '').trim().toLowerCase().replace(/\s+/g, '');
+    if (normalized === '1k') return '1080p';
+    return ['480p', '720p', '1080p', '2k', '4k'].includes(normalized) ? normalized : null;
+  };
+  const rawResolutions = input.allowedResolutions ?? existing?.allowedResolutions ?? [];
+  const allowedResolutions = [...new Set((Array.isArray(rawResolutions) ? rawResolutions : String(rawResolutions).split(',')).map(normalizeResolution).filter(Boolean))];
   if (allowedDurationsSec.length) { minDurationSec = null; maxDurationSec = null; }
   if (!apiId || !modelId || !displayName) throw new Error('API、模型 ID 和显示名称不能为空');
   if (!CATEGORIES.has(category) || !BILLING_UNITS.has(billingUnit)) throw new Error('模型类别或计费单位无效');
   if (!Number.isInteger(unitPriceCents) || unitPriceCents < 0 || unitPriceCents > 10_000_000) throw new Error('模型价格必须是有效的分值');
   if ([minDurationSec, maxDurationSec, ...allowedDurationsSec].some((v) => Number.isNaN(v))) throw new Error('视频时长规则无效');
+  if (category === 'video' && rawResolutions && allowedResolutions.length !== (Array.isArray(rawResolutions) ? rawResolutions.length : String(rawResolutions).split(',').map((value) => value.trim()).filter(Boolean).length)) throw new Error('视频分辨率仅支持 480p、720p、1080p、2K 或 4K');
   if (minDurationSec && maxDurationSec && maxDurationSec < minDurationSec) throw new Error('最长时长不能小于最短时长');
   if (category === 'video' && !allowedDurationsSec.length && (!minDurationSec || !maxDurationSec)) {
     throw new Error('视频模型必须填写固定时长，或同时填写最短和最长时长');
   }
-  return { apiId, modelId, displayName, category, billingUnit, unitPriceCents, minDurationSec, maxDurationSec, allowedDurationsSec, enabled: input.enabled === undefined ? (existing?.enabled ?? true) : Boolean(input.enabled) };
+  return { apiId, modelId, displayName, category, billingUnit, unitPriceCents, minDurationSec, maxDurationSec, allowedDurationsSec, allowedResolutions, enabled: input.enabled === undefined ? (existing?.enabled ?? true) : Boolean(input.enabled) };
 }
 
 export function registerCatalogRoutes(router, { db, requireAuth }) {
@@ -92,6 +100,7 @@ export function registerCatalogRoutes(router, { db, requireAuth }) {
         provider: api.provider, category: price.category, billingUnit: price.billingUnit,
         unitPriceCents: price.unitPriceCents, baseUrl: `/api/system-ai/${api.id}`, managed: true,
         minDurationSec: price.minDurationSec, maxDurationSec: price.maxDurationSec, allowedDurationsSec: price.allowedDurationsSec,
+        allowedResolutions: (price.allowedResolutions?.length ? price.allowedResolutions : knownVideoResolutions(api.provider, price.modelId)),
       };
     });
     return res.json({ models, balanceCents: Number(req.user.balanceCents || 0), role: req.user.role });
