@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { fetchWithTimeout, readLimitedBody, resourceGuardConfig } from './resource-guard.js';
+import { knownVideoResolutions } from './api-discovery.js';
 
 const nowIso = () => new Date().toISOString();
 
@@ -107,6 +108,20 @@ function computeCharge(pricing, body) {
     throw error;
   }
   return pricing.billingUnit === 'second' ? Math.ceil(seconds * Number(pricing.unitPriceCents)) : Number(pricing.unitPriceCents);
+}
+
+function normalizeManagedVideoResolution(pricing, api, body) {
+  if (pricing.category !== 'video' || !body || typeof body !== 'object') return body;
+  const allowed = (pricing.allowedResolutions?.length ? pricing.allowedResolutions : knownVideoResolutions(api.provider, pricing.modelId))
+    .map((value) => String(value).toLowerCase());
+  if (!allowed.length) return body;
+  const supplied = String(body.resolution || '').trim().toLowerCase();
+  if (supplied && !allowed.includes(supplied)) {
+    const error = new Error(`该模型仅支持 ${allowed.join('、')} 分辨率，本次收到 ${body.resolution}`);
+    error.code = 'INVALID_RESOLUTION';
+    throw error;
+  }
+  return { ...body, resolution: supplied || (allowed.includes('720p') ? '720p' : allowed[0]) };
 }
 
 function buildTarget(api, requestUrl) {
@@ -217,7 +232,10 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
       const modelId = String(requestBody?.model || '').trim();
       pricing = db.read('modelPricing').find((item) => item.apiId === api.id && item.modelId === modelId && item.enabled);
       if (!pricing) return res.status(403).json({ error: 'MODEL_NOT_PRICED', message: '该模型未开放或尚未定价' });
-      try { chargeCents = computeCharge(pricing, requestBody); } catch (error) { return res.status(400).json({ error: error.code, message: error.message }); }
+      try {
+        requestBody = normalizeManagedVideoResolution(pricing, api, requestBody);
+        chargeCents = computeCharge(pricing, requestBody);
+      } catch (error) { return res.status(400).json({ error: error.code, message: error.message }); }
       await db.mutate((data) => data.auditLogs.push({
         id: randomUUID(), userId: req.user.id, action: 'managed_model_requested', targetType: 'model_pricing', targetId: pricing.id,
         ipAddress: String(req.ip || '').slice(0, 100), userAgent: String(req.get('user-agent') || '').slice(0, 300),
