@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Monitor, Film, Palette } from 'lucide-react';
+import { X, Monitor, Palette } from 'lucide-react';
 import useProjectStore from '@/store/useProjectStore';
 
 export default function SettingsPanel() {
@@ -34,75 +34,6 @@ export default function SettingsPanel() {
 
             {/* Content */}
             <div className="p-4 space-y-6 overflow-y-auto h-[calc(100%-60px)]">
-              {/* 分辨率设置 */}
-              <div className="space-y-3">
-                <h3 className="text-sm font-medium text-dark-200 flex items-center gap-2">
-                  <Monitor className="w-4 h-4 text-primary-400" />
-                  分辨率
-                </h3>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="text-xs text-dark-400">宽度</label>
-                    <input
-                      type="number"
-                      value={project.settings.resolution.width}
-                      onChange={(e) =>
-                        updateProjectSettings({
-                          resolution: {
-                            ...project.settings.resolution,
-                            width: Number(e.target.value),
-                          },
-                        })
-                      }
-                      className="w-full mt-1 px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg
-                        text-white text-sm focus:outline-none focus:border-primary-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-dark-400">高度</label>
-                    <input
-                      type="number"
-                      value={project.settings.resolution.height}
-                      onChange={(e) =>
-                        updateProjectSettings({
-                          resolution: {
-                            ...project.settings.resolution,
-                            height: Number(e.target.value),
-                          },
-                        })
-                      }
-                      className="w-full mt-1 px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg
-                        text-white text-sm focus:outline-none focus:border-primary-500"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* 帧率设置 */}
-              <div className="space-y-3">
-                <h3 className="text-sm font-medium text-dark-200 flex items-center gap-2">
-                  <Film className="w-4 h-4 text-primary-400" />
-                  帧率
-                </h3>
-                <div className="flex gap-2">
-                  {[24, 25, 30, 60].map((fps) => (
-                    <button
-                      key={fps}
-                      onClick={() => updateProjectSettings({ fps })}
-                      className={`
-                        flex-1 py-2 rounded-lg text-sm font-medium transition-colors
-                        ${project.settings.fps === fps
-                          ? 'bg-primary-600 text-white'
-                          : 'bg-dark-700 text-dark-300 hover:bg-dark-600'
-                        }
-                      `}
-                    >
-                      {fps}fps
-                    </button>
-                  ))}
-                </div>
-              </div>
-
               {/* 画面比例 */}
               <div className="space-y-3">
                 <h3 className="text-sm font-medium text-dark-200">画面比例</h3>
