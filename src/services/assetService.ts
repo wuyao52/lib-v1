@@ -22,14 +22,14 @@ export function needsResolvedMediaUrl(source: string): boolean {
   }
 }
 
-export async function getSignedAssetUrl(image: string, signal?: AbortSignal): Promise<string> {
+export async function getSignedAssetUrl(image: string, signal?: AbortSignal, forceRefresh = false): Promise<string> {
   let parsed: URL;
   try { parsed = new URL(image, window.location.origin); } catch { return image; }
   const assetId = parsed.pathname.match(ASSET_PATH)?.[1];
   if (!assetId) return image;
   const cacheKey = decodeURIComponent(assetId);
   const cached = signedAssetCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now() + 60_000) return cached.url;
+  if (!forceRefresh && cached && cached.expiresAt > Date.now() + 60_000) return cached.url;
   const response = await apiRequest<{ url: string; expiresAt?: string }>(`/api/assets/${encodeURIComponent(assetId)}/signed-url`, { signal });
   const absoluteUrl = new URL(response.url, window.location.origin).toString();
   signedAssetCache.set(cacheKey, {
