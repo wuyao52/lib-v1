@@ -76,17 +76,21 @@ function normalizePricingInput(input, existing) {
   };
   const rawResolutions = input.allowedResolutions ?? existing?.allowedResolutions ?? [];
   const allowedResolutions = [...new Set((Array.isArray(rawResolutions) ? rawResolutions : String(rawResolutions).split(',')).map(normalizeResolution).filter(Boolean))];
+  const rawMaxReferenceImages = input.maxReferenceImages ?? existing?.maxReferenceImages;
+  const maxReferenceImages = rawMaxReferenceImages === undefined || rawMaxReferenceImages === null || rawMaxReferenceImages === ''
+    ? 4 : integer(rawMaxReferenceImages);
   if (allowedDurationsSec.length) { minDurationSec = null; maxDurationSec = null; }
   if (!apiId || !modelId || !displayName) throw new Error('API、模型 ID 和显示名称不能为空');
   if (!CATEGORIES.has(category) || !BILLING_UNITS.has(billingUnit)) throw new Error('模型类别或计费单位无效');
   if (!Number.isInteger(unitPriceCents) || unitPriceCents < 0 || unitPriceCents > 10_000_000) throw new Error('模型价格必须是有效的分值');
   if ([minDurationSec, maxDurationSec, ...allowedDurationsSec].some((v) => Number.isNaN(v))) throw new Error('视频时长规则无效');
   if (category === 'video' && rawResolutions && allowedResolutions.length !== (Array.isArray(rawResolutions) ? rawResolutions.length : String(rawResolutions).split(',').map((value) => value.trim()).filter(Boolean).length)) throw new Error('视频分辨率仅支持 480p、720p、1080p、2K 或 4K');
+  if (!Number.isInteger(maxReferenceImages) || maxReferenceImages < 0 || maxReferenceImages > 16) throw new Error('最大参考图数量必须是 0-16 的整数');
   if (minDurationSec && maxDurationSec && maxDurationSec < minDurationSec) throw new Error('最长时长不能小于最短时长');
   if (category === 'video' && !allowedDurationsSec.length && (!minDurationSec || !maxDurationSec)) {
     throw new Error('视频模型必须填写固定时长，或同时填写最短和最长时长');
   }
-  return { apiId, modelId, displayName, category, billingUnit, unitPriceCents, minDurationSec, maxDurationSec, allowedDurationsSec, allowedResolutions, enabled: input.enabled === undefined ? (existing?.enabled ?? true) : Boolean(input.enabled) };
+  return { apiId, modelId, displayName, category, billingUnit, unitPriceCents, minDurationSec, maxDurationSec, allowedDurationsSec, allowedResolutions, maxReferenceImages, enabled: input.enabled === undefined ? (existing?.enabled ?? true) : Boolean(input.enabled) };
 }
 
 export function registerCatalogRoutes(router, { db, requireAuth }) {
@@ -101,6 +105,7 @@ export function registerCatalogRoutes(router, { db, requireAuth }) {
         unitPriceCents: price.unitPriceCents, baseUrl: `/api/system-ai/${api.id}`, managed: true,
         minDurationSec: price.minDurationSec, maxDurationSec: price.maxDurationSec, allowedDurationsSec: price.allowedDurationsSec,
         allowedResolutions: (price.allowedResolutions?.length ? price.allowedResolutions : knownVideoResolutions(api.provider, price.modelId)),
+        maxReferenceImages: Number.isInteger(Number(price.maxReferenceImages)) ? Number(price.maxReferenceImages) : 4,
       };
     });
     return res.json({ models, balanceCents: Number(req.user.balanceCents || 0), role: req.user.role });
