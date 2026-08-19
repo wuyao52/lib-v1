@@ -42,8 +42,11 @@ async function downloadReference(urlValue, index, { fetchImpl, resolveHost, sign
 
 async function shishikejiForm(requestBody, dependencies) {
   const form = new FormData();
+  // @[label](internal-node-id) is editor-only syntax. Sending the node ID to
+  // the provider can change prompt interpretation, so expose only the label.
+  const prompt = String(requestBody.prompt || '').replace(/@\[([^\]]+)\]\([^)]*\)/g, ' $1').replace(/[ \t]{2,}/g, ' ').trim();
   const fields = {
-    prompt: requestBody.prompt,
+    prompt,
     duration: requestBody.duration ?? requestBody.seconds,
     ratio: requestBody.ratio ?? requestBody.aspect_ratio,
     resolution: requestBody.resolution,
