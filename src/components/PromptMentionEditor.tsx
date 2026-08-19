@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AtSign, Image as ImageIcon } from 'lucide-react';
+import { getSignedAssetUrl, needsResolvedMediaUrl } from '@/services/assetService';
 
 export interface PromptMentionNode {
   id: string;
@@ -10,6 +11,61 @@ export interface PromptMentionNode {
 
 const MENTION_PATTERN = /@\[([^\]]+)\]\(([^)]+)\)/g;
 
+function applyMentionImage(token: HTMLSpanElement, source: string) {
+  const showImage = (imageSource: string) => {
+    const image = document.createElement('img');
+    image.src = imageSource;
+    image.alt = '';
+    image.className = 'h-full w-full object-cover';
+    image.onerror = () => {
+      image.remove();
+      if (token.isConnected) token.innerHTML = '<span aria-hidden="true" class="text-primary-300">@</span>';
+    };
+    token.replaceChildren(image);
+  };
+
+  if (!needsResolvedMediaUrl(source)) {
+    showImage(source);
+    return;
+  }
+
+  void getSignedAssetUrl(source)
+    .then((imageSource) => {
+      if (token.isConnected) showImage(imageSource);
+    })
+    .catch(() => {
+      if (token.isConnected) token.innerHTML = '<span aria-hidden="true" class="text-primary-300">@</span>';
+    });
+}
+
+function MentionThumbnail({ source, alt = '' }: { source: string; alt?: string }) {
+  const [resolvedSource, setResolvedSource] = useState(() => (
+    needsResolvedMediaUrl(source) ? '' : source
+  ));
+  const [retry, setRetry] = useState(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setResolvedSource(needsResolvedMediaUrl(source) ? '' : source);
+    if (needsResolvedMediaUrl(source)) {
+      void getSignedAssetUrl(source, controller.signal, retry > 0)
+        .then((url) => {
+          if (!controller.signal.aborted) setResolvedSource(url);
+        })
+        .catch(() => {
+          if (!controller.signal.aborted) setResolvedSource('');
+        });
+    }
+    return () => controller.abort();
+  }, [source, retry]);
+
+  if (!resolvedSource) return <ImageIcon className="h-4 w-4 text-dark-400" aria-label="图片缩略图加载中" />;
+  return <img src={resolvedSource} alt={alt} className="h-full w-full object-cover" onError={() => {
+    if (retry === 0 && needsResolvedMediaUrl(source)) setRetry(1);
+    else setResolvedSource('');
+  }} />;
+}
+
 function createMentionToken(node: PromptMentionNode) {
   const token = document.createElement('span');
   token.contentEditable = 'false';
@@ -18,11 +74,8 @@ function createMentionToken(node: PromptMentionNode) {
   token.setAttribute('aria-label', node.type === 'image' ? '图片引用' : '组件引用');
   token.className = 'mx-0.5 inline-flex h-7 w-9 select-none items-center justify-center overflow-hidden rounded border border-primary-500/50 bg-primary-500/15 align-middle';
   if (node.type === 'image' && node.imageUrl) {
-    const image = document.createElement('img');
-    image.src = node.imageUrl;
-    image.alt = '';
-    image.className = 'h-full w-full object-cover';
-    token.appendChild(image);
+    token.innerHTML = '<span aria-hidden="true" class="text-primary-300">@</span>';
+    applyMentionImage(token, node.imageUrl);
   } else {
     token.innerHTML = '<span aria-hidden="true" class="text-primary-300">@</span>';
   }
@@ -66,7 +119,7 @@ export function PromptMentionContent({ value, nodes, className = '' }: { value: 
     parts.push(
       <span key={`${match.index}-${match[2]}`} aria-label={node?.type === 'image' ? '图片引用' : '组件引用'} className="mx-0.5 inline-flex h-7 w-9 items-center justify-center overflow-hidden rounded border border-primary-500/50 bg-primary-500/15 align-middle">
         {node?.type === 'image' && node.imageUrl
-          ? <img src={node.imageUrl} alt="" className="h-full w-full object-cover" />
+          ? <MentionThumbnail source={node.imageUrl} />
           : <AtSign className="h-3.5 w-3.5 text-primary-300" />}
       </span>,
     );
@@ -218,7 +271,7 @@ export default function PromptMentionEditor({ value, onChange, nodes, placeholde
               data-testid={`mention-option-${node.id}`}
             >
               <span className="flex h-8 w-10 shrink-0 items-center justify-center overflow-hidden rounded border border-dark-600 bg-dark-800">
-                {node.type === 'image' && node.imageUrl ? <img src={node.imageUrl} alt="" className="h-full w-full object-cover" /> : <ImageIcon className="h-4 w-4 text-dark-400" />}
+                {node.type === 'image' && node.imageUrl ? <MentionThumbnail source={node.imageUrl} /> : <ImageIcon className="h-4 w-4 text-dark-400" />}
               </span>
               <span className="truncate">{node.label}</span>
             </button>
