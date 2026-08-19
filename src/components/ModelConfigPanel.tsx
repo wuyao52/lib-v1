@@ -321,7 +321,7 @@ export default function ModelConfigPanel() {
                       }} className={`w-full p-3 rounded-lg border text-left ${activeModel.managed && activeModel.id === model.id ? 'border-green-500 bg-green-500/10' : 'border-dark-600 bg-dark-700 hover:border-dark-400'}`}>
                         <div className="flex items-center justify-between gap-3"><span className="text-sm text-white">{model.name}</span><span className="text-xs text-green-400">¥{((model.unitPriceCents || 0) / 100).toFixed(2)} / {model.billingUnit === 'second' ? '秒' : model.billingUnit === 'image' ? '张' : '次'}</span></div>
                         <div className="text-[10px] text-dark-400 mt-1">{model.provider} · 密钥由系统安全托管</div>
-                        {model.category === 'video' && <div className="mt-1 text-[10px] text-primary-300">{describeModelDuration(model)}{model.allowedResolutions?.length ? ` · ${model.allowedResolutions.map(resolutionLabel).join('、')}` : ''}</div>}
+                        {model.category === 'video' && <div className="mt-1 text-[10px] text-primary-300">{describeModelDuration(model)}{model.allowedResolutions?.length ? ` · ${model.allowedResolutions.map(resolutionLabel).join('、')}` : ''} · 最多 {Number.isInteger(model.maxReferenceImages) ? model.maxReferenceImages : 4} 张参考图</div>}
                       </button>
                     ))}
                   </div>
@@ -391,7 +391,7 @@ export default function ModelConfigPanel() {
 
               {/* API 地址 */}
               {activeModel.managed ? (
-                <div className="space-y-1 p-3 rounded-lg border border-green-500/30 bg-green-500/5 text-sm text-green-300"><p>系统模型已启用。API 地址和 API Key 由服务端安全托管，当前用户不可查看、复制或修改。</p>{activeTab === 'video' && <p className="text-xs text-primary-300">{describeModelDuration(activeModel)}</p>}</div>
+                <div className="space-y-1 p-3 rounded-lg border border-green-500/30 bg-green-500/5 text-sm text-green-300"><p>系统模型已启用。API 地址和 API Key 由服务端安全托管，当前用户不可查看、复制或修改。</p>{activeTab === 'video' && <p className="text-xs text-primary-300">{describeModelDuration(activeModel)} · 最多 {Number.isInteger(activeModel.maxReferenceImages) ? activeModel.maxReferenceImages : 4} 张参考图</p>}</div>
               ) : activeModel.credentialManaged ? (
                 <div className="space-y-1 border border-primary-500/30 bg-primary-500/5 p-3 text-sm text-primary-300">
                   <p>自定义 API 凭据已加密托管，项目只保存配置 ID 和代理地址。</p>
@@ -445,6 +445,22 @@ export default function ModelConfigPanel() {
                     {(supportedVideoResolutions.length ? supportedVideoResolutions : ['480p', '720p', '1080p', '2k', '4k']).map((resolution) => <option key={resolution} value={resolution}>{resolutionLabel(resolution)}</option>)}
                   </select>
                   <p className="text-[10px] text-dark-400">{supportedVideoResolutions.length ? `当前系统模型仅支持：${supportedVideoResolutions.map(resolutionLabel).join('、')}。切换模型时会自动选择可用分辨率。` : '自定义 API 的可选分辨率取决于服务商文档。'}</p>
+                </div>
+              )}
+
+              {activeTab === 'video' && !activeModel.managed && (
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-dark-300">最大参考图数量</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="16"
+                    step="1"
+                    value={Number.isInteger(activeModel.maxReferenceImages) ? activeModel.maxReferenceImages : 4}
+                    onChange={(event) => updateActiveModel({ maxReferenceImages: Math.max(0, Math.min(16, Math.trunc(Number(event.target.value) || 0))) })}
+                    className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-white text-sm focus:outline-none focus:border-primary-500"
+                  />
+                  <p className="text-[10px] text-dark-400">按服务商文档填写。0 表示该模型不支持参考图；未填写的旧配置默认最多 4 张。</p>
                 </div>
               )}
 
