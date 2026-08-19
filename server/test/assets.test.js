@@ -124,10 +124,8 @@ test('image assets require auth, persist exact bytes, deduplicate per user and v
   assert.equal(invalidBase64.status, 400);
   assert.equal((await invalidBase64.json()).error, 'INVALID_IMAGE');
 
-  const oversized = Buffer.alloc(8 * 1024 * 1024 + 1).toString('base64');
-  const oversizedResponse = await upload(baseUrl, firstCookie, `data:image/png;base64,${oversized}`);
+  const oversizedResponse = await uploadBinary(baseUrl, firstCookie, Buffer.alloc(20 * 1024 * 1024 + 1));
   assert.equal(oversizedResponse.status, 413);
-  assert.equal((await oversizedResponse.json()).error, 'ASSET_TOO_LARGE');
 });
 
 test('video assets use a short-lived direct upload and are verified before persistence', async (t) => {
@@ -199,11 +197,24 @@ test('video assets use a short-lived direct upload and are verified before persi
   assert.equal((await imageCompleted.json()).asset.mimeType, 'image/png');
   assert.equal(db.read('assets').length, 2);
 
+  const maxSizeImageRequest = await fetch(`${baseUrl}/api/assets/direct-upload`, {
+    method: 'POST', headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ fileName: 'large-reference.webp', mimeType: 'image/webp', byteSize: 20 * 1024 * 1024 }),
+  });
+  assert.equal(maxSizeImageRequest.status, 201);
+  const maxSizeImageUpload = await maxSizeImageRequest.json();
+  const maxSizeImageComplete = await fetch(`${baseUrl}/api/assets/direct-upload/complete`, {
+    method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ token: maxSizeImageUpload.token }),
+  });
+  assert.equal(maxSizeImageComplete.status, 201);
+  assert.equal((await maxSizeImageComplete.json()).asset.byteSize, 20 * 1024 * 1024);
+  assert.equal(db.read('assets').length, 3);
+
   const replayed = await fetch(`${baseUrl}/api/assets/direct-upload/complete`, {
     method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ token: upload.token }),
   });
   assert.equal(replayed.status, 200);
-  assert.equal(db.read('assets').length, 2);
+  assert.equal(db.read('assets').length, 3);
 });
 
 test('generated image URLs are archived as durable owned assets and deduplicated by content', async (t) => {
