@@ -257,12 +257,18 @@ const createNewProject = (title: string, description: string): DramaProject => {
 const requiresReferenceImage = (result: { success: boolean; error?: string }) =>
   !result.success && /images?\s*(?:不能为空|cannot be empty|required)|参数\s*images/i.test(result.error || '');
 
+function maxReferenceImages(model?: AIModelConfig | null): number {
+  const configured = Number(model?.maxReferenceImages);
+  return Number.isSafeInteger(configured) && configured >= 0 && configured <= 16 ? configured : 4;
+}
+
 function collectReferenceImages(
   project: DramaProject,
   node: Node<SceneNodeData>,
   promptOverride = '',
   additionalNodeIds: string[] = [],
   targetNodeId = node.id,
+  limit = 4,
 ): string[] {
   const incomingIds = new Set(project.edges.filter((edge) => edge.target === targetNodeId).map((edge) => edge.source));
   const referencedIds = new Set<string>([node.id, ...incomingIds]);
@@ -272,7 +278,7 @@ function collectReferenceImages(
   return [...new Set(project.nodes
     .filter((candidate) => referencedIds.has(candidate.id) && candidate.data.type === 'image' && candidate.data.generatedContent)
     .map((candidate) => String(candidate.data.generatedContent)))]
-    .slice(0, 4);
+    .slice(0, Math.max(0, limit));
 }
 
 async function generateVideoWithFallback(
@@ -1258,7 +1264,7 @@ function launchGenerationTask(
         }),
       };
       const images = await materializeReferenceImages(
-        await prepareReferenceImages(collectReferenceImages(latestProject, execution.sourceNode, execution.prompt, execution.referenceNodeIds, execution.targetNodeId)),
+        await prepareReferenceImages(collectReferenceImages(latestProject, execution.sourceNode, execution.prompt, execution.referenceNodeIds, execution.targetNodeId, maxReferenceImages(effectiveModel))),
         controller.signal,
       );
       if (images.length) generationSettings.images = images;
