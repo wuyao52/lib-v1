@@ -23,6 +23,7 @@ interface GenerationModalProps {
   mentionableNodes?: PromptMentionNode[];
   initialReferences?: Array<{ id: string; label: string; type: string; imageUrl?: string }>;
   durationRules?: DurationRules;
+  maxReferenceImages?: number;
 }
 
 export interface GenerationSettings {
@@ -55,6 +56,7 @@ export default function GenerationModal({
   mentionableNodes = [],
   initialReferences = [],
   durationRules,
+  maxReferenceImages = 4,
 }: GenerationModalProps) {
   const [selectedType, setSelectedType] = useState<'video' | 'image' | 'img2img'>('video');
   const [prompt, setPrompt] = useState('');
@@ -240,7 +242,7 @@ export default function GenerationModal({
                       : '描述你想要生成的图片内容...'
                   }
                 />
-                {mentionableNodes.length > 0 && <div className="mt-1 text-[10px] text-dark-500">输入 @ 可引用画布目标</div>}
+                {mentionableNodes.length > 0 && <div className="mt-1 text-[10px] text-dark-500">输入 @ 可引用画布目标；当前视频模型最多使用 {maxReferenceImages} 张参考图</div>}
               </div>
 
               {/* 反向提示词 */}
