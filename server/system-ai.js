@@ -124,6 +124,17 @@ function normalizeManagedVideoResolution(pricing, api, body) {
   return { ...body, resolution: supplied || (allowed.includes('720p') ? '720p' : allowed[0]) };
 }
 
+function enforceReferenceImageLimit(pricing, body) {
+  if (pricing.category !== 'video' || !body || typeof body !== 'object') return;
+  const images = Array.isArray(body.images) ? body.images : [];
+  const maximum = Number.isInteger(Number(pricing.maxReferenceImages)) ? Number(pricing.maxReferenceImages) : 4;
+  if (images.length > maximum) {
+    const error = new Error(`该模型最多支持 ${maximum} 张参考图，本次收到 ${images.length} 张`);
+    error.code = 'REFERENCE_IMAGE_LIMIT_EXCEEDED';
+    throw error;
+  }
+}
+
 function buildTarget(api, requestUrl) {
   const base = new URL(`${api.baseUrl.replace(/\/+$/, '')}/`);
   const suffix = String(requestUrl || '/').replace(/^\/+/, '');
@@ -216,7 +227,7 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
     }
     if (req.method === 'GET' && pathname === '/v1/models') {
       const data = db.read('modelPricing').filter((item) => item.apiId === api.id && item.enabled)
-        .map((item) => ({ id: item.modelId, object: 'model', name: item.displayName, category: item.category, billingUnit: item.billingUnit, unitPriceCents: item.unitPriceCents }));
+        .map((item) => ({ id: item.modelId, object: 'model', name: item.displayName, category: item.category, billingUnit: item.billingUnit, unitPriceCents: item.unitPriceCents, maxReferenceImages: Number.isInteger(Number(item.maxReferenceImages)) ? Number(item.maxReferenceImages) : 4 }));
       return res.json({ object: 'list', data });
     }
 
@@ -234,6 +245,7 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
       if (!pricing) return res.status(403).json({ error: 'MODEL_NOT_PRICED', message: '该模型未开放或尚未定价' });
       try {
         requestBody = normalizeManagedVideoResolution(pricing, api, requestBody);
+        enforceReferenceImageLimit(pricing, requestBody);
         chargeCents = computeCharge(pricing, requestBody);
       } catch (error) { return res.status(400).json({ error: error.code, message: error.message }); }
       await db.mutate((data) => data.auditLogs.push({
