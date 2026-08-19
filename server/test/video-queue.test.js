@@ -151,7 +151,7 @@ test('video queue adapts Shishikeji multipart submission, license auth, polling 
   const fetchImpl = async (url, options) => {
     const target = String(url);
     calls.push({ target, options });
-    if (target === 'https://assets.example/reference.jpg') {
+    if (/^https:\/\/assets\.example\/reference-?\d*\.jpg$/.test(target)) {
       return new Response(Buffer.from('reference-image-bytes'), { status: 200, headers: { 'content-type': 'image/jpeg', 'content-length': '21' } });
     }
     assert.equal(options.headers.get('x-license-key'), 'license-test-secret');
@@ -166,7 +166,7 @@ test('video queue adapts Shishikeji multipart submission, license auth, polling 
       assert.equal(options.body.get('resolution'), '720p');
       assert.equal(options.body.get('model'), 'xinghe-2.0');
       assert.equal(options.body.get('protect_stripe'), 'true');
-      assert.equal(options.body.getAll('files').length, 1);
+      assert.equal(options.body.getAll('files').length, 5);
       return new Response(JSON.stringify({ task_id: 'provider-shishikeji-task', status: 'processing', progress: 1 }), { status: 200, headers: { 'content-type': 'application/json' } });
     }
     if (target === 'https://api.shishikeji.com/api/task/provider-shishikeji-task') {
@@ -185,7 +185,13 @@ test('video queue adapts Shishikeji multipart submission, license auth, polling 
     id: 'shishikeji-job', userId: 'user-a', apiId: 'api-shishikeji', modelId: 'xinghe-2.0',
     requestBody: {
       model: 'xinghe-2.0', prompt: 'adapter prompt', seconds: 5,
-      aspect_ratio: '9:16', resolution: '720p', images: ['https://assets.example/reference.jpg'],
+      aspect_ratio: '9:16', resolution: '720p', images: [
+        'https://assets.example/reference-1.jpg',
+        'https://assets.example/reference-2.jpg',
+        'https://assets.example/reference-3.jpg',
+        'https://assets.example/reference-4.jpg',
+        'https://assets.example/reference-5.jpg',
+      ],
     },
   });
   await waitFor(() => db.data.generationJobs[0]?.status === 'processing');
