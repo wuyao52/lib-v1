@@ -115,7 +115,9 @@ export async function prepareReferenceImages(images: unknown): Promise<string[]>
   if (!Array.isArray(images)) return [];
   const prepared: string[] = [];
   let embeddedBytes = 0;
-  for (const value of images.slice(0, 4)) {
+  // The caller has already applied the active model's reference-image capability.
+  // Do not reintroduce a provider-agnostic hard limit here.
+  for (const value of images) {
     if (typeof value !== 'string' || !value.trim()) continue;
     const image = await compressReferenceImage(value.trim());
     if (/^data:/i.test(image)) {
