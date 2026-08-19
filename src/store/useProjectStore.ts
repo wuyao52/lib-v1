@@ -271,13 +271,21 @@ function collectReferenceImages(
   limit = 4,
 ): string[] {
   const incomingIds = new Set(project.edges.filter((edge) => edge.target === targetNodeId).map((edge) => edge.source));
-  const referencedIds = new Set<string>([node.id, ...incomingIds]);
   const prompt = `${String(node.data.prompt || node.data.content || '')} ${promptOverride}`;
-  for (const match of prompt.matchAll(/@\[[^\]]+\]\(([^)]+)\)/g)) if (incomingIds.has(match[1])) referencedIds.add(match[1]);
-  for (const candidateId of additionalNodeIds) if (incomingIds.has(candidateId)) referencedIds.add(candidateId);
-  return [...new Set(project.nodes
-    .filter((candidate) => referencedIds.has(candidate.id) && candidate.data.type === 'image' && candidate.data.generatedContent)
-    .map((candidate) => String(candidate.data.generatedContent)))]
+  // 图片顺序会影响多数视频模型对“人物/场景/道具”的理解：先按提示词中
+  // @引用出现的顺序上传，再补充其他已连线图片，避免画布节点顺序改变语义。
+  const orderedIds: string[] = [];
+  const addIfIncoming = (candidateId: string) => {
+    if (incomingIds.has(candidateId) && !orderedIds.includes(candidateId)) orderedIds.push(candidateId);
+  };
+  for (const match of prompt.matchAll(/@\[[^\]]+\]\(([^)]+)\)/g)) addIfIncoming(match[1]);
+  for (const candidateId of additionalNodeIds) addIfIncoming(candidateId);
+  for (const candidate of project.nodes) addIfIncoming(candidate.id);
+  if (node.data.type === 'image' && node.data.generatedContent) addIfIncoming(node.id);
+  return orderedIds
+    .map((id) => project.nodes.find((candidate) => candidate.id === id))
+    .filter((candidate): candidate is Node<SceneNodeData> => Boolean(candidate) && candidate.data.type === 'image' && Boolean(candidate.data.generatedContent))
+    .map((candidate) => String(candidate.data.generatedContent))
     .slice(0, Math.max(0, limit));
 }
 
