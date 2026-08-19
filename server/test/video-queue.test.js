@@ -160,7 +160,7 @@ test('video queue adapts Shishikeji multipart submission, license auth, polling 
       assert.equal(options.method, 'POST');
       assert.equal(options.headers.has('content-type'), false);
       assert.ok(options.body instanceof FormData);
-      assert.equal(options.body.get('prompt'), 'adapter prompt');
+      assert.equal(options.body.get('prompt'), 'adapter prompt 人物 场景');
       assert.equal(options.body.get('duration'), '5');
       assert.equal(options.body.get('ratio'), '9:16');
       assert.equal(options.body.get('resolution'), '720p');
@@ -184,7 +184,7 @@ test('video queue adapts Shishikeji multipart submission, license auth, polling 
   await queue.enqueue({
     id: 'shishikeji-job', userId: 'user-a', apiId: 'api-shishikeji', modelId: 'xinghe-2.0',
     requestBody: {
-      model: 'xinghe-2.0', prompt: 'adapter prompt', seconds: 5,
+      model: 'xinghe-2.0', prompt: 'adapter prompt @[人物](scene-person) @[场景](scene-location)', seconds: 5,
       aspect_ratio: '9:16', resolution: '720p', images: [
         'https://assets.example/reference-1.jpg',
         'https://assets.example/reference-2.jpg',
