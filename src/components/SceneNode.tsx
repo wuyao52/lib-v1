@@ -27,7 +27,7 @@ import type { SceneNodeData } from '@/types';
 import useProjectStore from '@/store/useProjectStore';
 import { PromptMentionContent } from './PromptMentionEditor';
 import { isUploadedImageNode } from '@/services/nodeMediaSource';
-import { getPlayableMediaUrl, needsResolvedMediaUrl } from '@/services/assetService';
+import { getPlayableMediaUrl, getSignedAssetUrl, needsResolvedMediaUrl } from '@/services/assetService';
 
 const typeIcons: Record<string, React.ReactNode> = {
   text: <Type className="w-4 h-4" />,
@@ -85,6 +85,14 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
   const [playbackRefresh, setPlaybackRefresh] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
 
+  // 私有对象存储素材必须先换取短期签名地址，不能直接把稳定 API 地址交给 img。
+  const initialImageSource = String(nodeData.generatedContent || '');
+  const [imageUrl, setImageUrl] = useState(
+    needsResolvedMediaUrl(initialImageSource) ? '' : initialImageSource,
+  );
+  const [imageLoadError, setImageLoadError] = useState('');
+  const [imageRefresh, setImageRefresh] = useState(0);
+
   useEffect(() => {
     const source = String(nodeData.generatedContent || '');
     const controller = new AbortController();
@@ -95,6 +103,23 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
       .catch((error) => setVideoLoadError(error instanceof Error ? error.message : '视频地址读取失败'));
     return () => controller.abort();
   }, [nodeData.generatedContent, playbackRefresh]);
+
+  useEffect(() => {
+    const source = String(nodeData.generatedContent || '');
+    const controller = new AbortController();
+    setImageUrl(needsResolvedMediaUrl(source) ? '' : source);
+    setImageLoadError('');
+    if (nodeData.type === 'image' && source) {
+      void getSignedAssetUrl(source, controller.signal, imageRefresh > 0)
+        .then((url) => setImageUrl(url))
+        .catch((error) => {
+          if (!controller.signal.aborted) {
+            setImageLoadError(error instanceof Error ? error.message : '图片地址读取失败');
+          }
+        });
+    }
+    return () => controller.abort();
+  }, [nodeData.type, nodeData.generatedContent, imageRefresh]);
 
   // @引用状态
   const [showMentionMenu, setShowMentionMenu] = useState(false);
@@ -450,12 +475,27 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
             {/* 图片预览区域 */}
             {nodeData.type === 'image' && nodeData.generatedContent && !nodeData.generatedContent?.includes('.mp4') && (
               <div className="relative aspect-video rounded-lg overflow-hidden bg-dark-900 group/image">
-                <img
-                  src={nodeData.generatedContent}
+                {imageUrl ? <img
+                  src={imageUrl}
                   alt={nodeData.label}
                   className="w-full h-full object-cover cursor-pointer"
                   onClick={openPreview}
+                  onError={() => {
+                    if (imageRefresh === 0 && needsResolvedMediaUrl(String(nodeData.generatedContent || ''))) {
+                      setImageRefresh(1);
+                      return;
+                    }
+                    setImageLoadError('图片加载失败');
+                    setImageUrl('');
+                  }}
                 />
+                : <div className="flex h-full w-full items-center justify-center text-xs text-dark-400">
+                  {imageLoadError ? (
+                    <button type="button" onClick={(event) => { event.stopPropagation(); setImageRefresh((value) => value + 1); }} className="text-red-200">
+                      {imageLoadError}，点击重试
+                    </button>
+                  ) : <><Loader2 className="mr-2 h-4 w-4 animate-spin" />正在读取图片</>}
+                </div>}
                 {/* 图片控制层 */}
                 <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent
                   opacity-0 group-hover/image:opacity-100 transition-opacity flex flex-col justify-end p-2">
@@ -465,9 +505,9 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (nodeData.generatedContent) {
+                        if (imageUrl) {
                           const link = document.createElement('a');
-                          link.href = nodeData.generatedContent;
+                          link.href = imageUrl;
                           link.download = `${nodeData.label || 'image'}-${Date.now()}.png`;
                           link.click();
                         }
@@ -713,7 +753,7 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
               {nodeData.type === 'image' && !nodeData.generatedContent?.includes('.mp4') && (
                 <div className="relative">
                   <img
-                    src={nodeData.generatedContent}
+                    src={imageUrl || nodeData.generatedContent}
                     alt={nodeData.label}
                     className="max-w-full max-h-[85vh] rounded-lg shadow-2xl object-contain"
                   />
@@ -723,7 +763,7 @@ function SceneNodeComponent({ id, data, selected }: NodeProps) {
                       e.stopPropagation();
                       if (nodeData.generatedContent) {
                         const link = document.createElement('a');
-                        link.href = nodeData.generatedContent;
+                        link.href = imageUrl || nodeData.generatedContent;
                         link.download = `${nodeData.label || 'image'}-${Date.now()}.png`;
                         link.click();
                       }
