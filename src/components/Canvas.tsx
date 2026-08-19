@@ -383,7 +383,7 @@ export default function Canvas() {
     const top = selectedNodes.reduce((sum, node) => sum + node.position.y, 0) / selectedNodes.length;
     const id = `scene-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     addNode({ id, type: 'sceneNode', position: { x: right + 120, y: top }, data: {
-      label: `批量组件 ${project.nodes.length + 1}`, type: 'transition', content: '', duration: 5,
+      label: `批量视频 ${project.nodes.length + 1}`, type: 'video', content: '', duration: 5,
       prompt: selectedNodes.map((node) => `@[${node.data.label}](${node.id})`).join(' '),
       referenceNodeIds: selectedNodes.map((node) => node.id),
       settings: { style: project.settings.defaultStyle, mood: '', camera: '', lighting: '' }, status: 'idle', progress: 0,
