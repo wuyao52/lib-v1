@@ -739,6 +739,9 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     if (node.data.status === 'generating' || hasActiveGenerationFromSource(project, nodeId, get().activeGenerations)) return;
     const nodePrompt = String(node.data.prompt || node.data.content || '').trim();
     if (!nodePrompt && !node.data.generatedContent) return;
+    // 文本、转场和已有视频节点都走视频生成；只有图片节点走图片生成。
+    // 结果节点类型必须与实际请求类型一致，不能直接复制源节点类型。
+    const requestType = node.data.type === 'image' ? 'image' : 'video';
 
     // 创建新的生成结果节点
     const generationTarget = planGenerationTarget(nodeId, node.data.type, generateId);
@@ -762,7 +765,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
       },
       data: {
         label: `${node.data.label} - 生成结果`,
-        type: node.data.type === 'text' ? 'video' : node.data.type,
+        type: requestType,
         content: '',
         duration: node.data.duration,
         prompt: node.data.prompt || node.data.content,
@@ -790,7 +793,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
 
     launchGenerationTask({
       sourceNodeId: nodeId, targetNodeId: newNodeId, sourceNode: node,
-      requestType: node.data.type === 'image' ? 'image' : 'video',
+      requestType,
       prompt: nodePrompt,
       style: node.data.settings?.style,
       duration: node.data.duration,
