@@ -61,16 +61,20 @@ test('managed video replaces owned asset paths with public OSS URLs before calli
     data.users.find((item) => item.id === admin.user.id).role = 'system';
     data.users.find((item) => item.id === normal.user.id).balanceCents = 1000;
     data.assets.push({ id: 'owned-image', userId: normal.user.id, objectKey: 'assets/owned-image.png', mimeType: 'image/png', byteSize: 10, createdAt: new Date().toISOString() });
+    data.assets.push({ id: 'owned-image-2', userId: normal.user.id, objectKey: 'assets/owned-image-2.png', mimeType: 'image/png', byteSize: 10, createdAt: new Date().toISOString() });
     data.assets.push({ id: 'other-image', userId: admin.user.id, objectKey: 'assets/other-image.png', mimeType: 'image/png', byteSize: 10, createdAt: new Date().toISOString() });
   });
   const apiResponse = await context.request('/api/admin/system-apis', admin.cookie, { method: 'POST', body: JSON.stringify({ name: 'Managed', provider: 'Compatible', baseUrl: 'https://upstream.example', apiKey: 'secret-system-key' }) });
   const api = (await apiResponse.json()).api;
-  await context.request('/api/admin/pricing', admin.cookie, { method: 'POST', body: JSON.stringify({ apiId: api.id, modelId: 'video-model', displayName: '视频模型', category: 'video', billingUnit: 'second', unitPriceCents: 1, allowedDurationsSec: [5] }) });
+  await context.request('/api/admin/pricing', admin.cookie, { method: 'POST', body: JSON.stringify({ apiId: api.id, modelId: 'video-model', displayName: '视频模型', category: 'video', billingUnit: 'second', unitPriceCents: 1, allowedDurationsSec: [5], maxReferenceImages: 1 }) });
   const generated = await context.request(`/api/system-ai/${api.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'asset-url', seconds: 5, images: ['/api/assets/public/owned-image'] }) });
   assert.equal(generated.status, 200);
   const providerBody = JSON.parse(context.upstreamCalls.find((call) => call.body?.includes('asset-url')).body);
   assert.deepEqual(providerBody.images, ['https://oss.example.test/assets%2Fowned-image.png?signed=1']);
   assert.deepEqual(signedKeys, ['assets/owned-image.png']);
+  const tooManyReferences = await context.request(`/api/system-ai/${api.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'too-many', seconds: 5, images: ['/api/assets/public/owned-image', '/api/assets/public/owned-image-2'] }) });
+  assert.equal(tooManyReferences.status, 400);
+  assert.equal((await tooManyReferences.json()).error, 'REFERENCE_IMAGE_LIMIT_EXCEEDED');
   const stolen = await context.request(`/api/system-ai/${api.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'stolen', seconds: 5, images: ['/api/assets/public/other-image'] }) });
   assert.equal(stolen.status, 400);
   assert.equal((await stolen.json()).error, 'INVALID_REFERENCE_IMAGE_URL');
@@ -119,11 +123,12 @@ test('system APIs, pricing, balances and managed gateway enforce roles and billi
   const missingDurationPricing = await context.request('/api/admin/pricing', admin.cookie, { method: 'POST', body: JSON.stringify({ apiId: createdApi.id, modelId: 'invalid-video-model', displayName: '未配置时长模型', category: 'video', billingUnit: 'second', unitPriceCents: 10 }) });
   assert.equal(missingDurationPricing.status, 400);
   assert.match((await missingDurationPricing.json()).message, /固定时长/);
-  const pricingResponse = await context.request('/api/admin/pricing', admin.cookie, { method: 'POST', body: JSON.stringify({ apiId: createdApi.id, modelId: 'video-model', displayName: '视频模型', category: 'video', billingUnit: 'second', unitPriceCents: 10, allowedDurationsSec: [5, 15], allowedResolutions: ['720p'] }) });
+  const pricingResponse = await context.request('/api/admin/pricing', admin.cookie, { method: 'POST', body: JSON.stringify({ apiId: createdApi.id, modelId: 'video-model', displayName: '视频模型', category: 'video', billingUnit: 'second', unitPriceCents: 10, allowedDurationsSec: [5, 15], allowedResolutions: ['720p'], maxReferenceImages: 2 }) });
   assert.equal(pricingResponse.status, 201);
   const catalog = await (await context.request('/api/catalog/models', normal.cookie)).json();
   assert.equal(catalog.models[0].baseUrl, `/api/system-ai/${createdApi.id}`);
   assert.deepEqual(catalog.models[0].allowedResolutions, ['720p']);
+  assert.equal(catalog.models[0].maxReferenceImages, 2);
   assert.equal(JSON.stringify(catalog).includes('secret-system-key'), false);
   assert.equal(JSON.stringify(catalog).includes('encryptedApiKey'), false);
 
