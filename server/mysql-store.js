@@ -177,14 +177,15 @@ const TABLES = {
       max_duration_sec INT NULL,
       allowed_durations_sec JSON NULL,
       allowed_resolutions JSON NULL,
+      max_reference_images INT NULL,
       enabled TINYINT(1) NOT NULL DEFAULT 1,
       created_at VARCHAR(35) NOT NULL,
       updated_at VARCHAR(35) NOT NULL,
       UNIQUE KEY model_pricing_api_model_unique (api_id, model_id)
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
-    select: 'SELECT id, api_id AS apiId, model_id AS modelId, display_name AS displayName, category, billing_unit AS billingUnit, unit_price_cents AS unitPriceCents, min_duration_sec AS minDurationSec, max_duration_sec AS maxDurationSec, allowed_durations_sec AS allowedDurationsSec, allowed_resolutions AS allowedResolutions, enabled, created_at AS createdAt, updated_at AS updatedAt FROM model_pricing',
-    insert: 'INSERT INTO model_pricing (id, api_id, model_id, display_name, category, billing_unit, unit_price_cents, min_duration_sec, max_duration_sec, allowed_durations_sec, allowed_resolutions, enabled, created_at, updated_at) VALUES ?',
-    values: (row) => [row.id, row.apiId, row.modelId, row.displayName, row.category, row.billingUnit, row.unitPriceCents, row.minDurationSec || null, row.maxDurationSec || null, JSON.stringify(row.allowedDurationsSec || []), JSON.stringify(row.allowedResolutions || []), row.enabled ? 1 : 0, row.createdAt, row.updatedAt],
+    select: 'SELECT id, api_id AS apiId, model_id AS modelId, display_name AS displayName, category, billing_unit AS billingUnit, unit_price_cents AS unitPriceCents, min_duration_sec AS minDurationSec, max_duration_sec AS maxDurationSec, allowed_durations_sec AS allowedDurationsSec, allowed_resolutions AS allowedResolutions, max_reference_images AS maxReferenceImages, enabled, created_at AS createdAt, updated_at AS updatedAt FROM model_pricing',
+    insert: 'INSERT INTO model_pricing (id, api_id, model_id, display_name, category, billing_unit, unit_price_cents, min_duration_sec, max_duration_sec, allowed_durations_sec, allowed_resolutions, max_reference_images, enabled, created_at, updated_at) VALUES ?',
+    values: (row) => [row.id, row.apiId, row.modelId, row.displayName, row.category, row.billingUnit, row.unitPriceCents, row.minDurationSec || null, row.maxDurationSec || null, JSON.stringify(row.allowedDurationsSec || []), JSON.stringify(row.allowedResolutions || []), Number.isInteger(Number(row.maxReferenceImages)) ? Number(row.maxReferenceImages) : 4, row.enabled ? 1 : 0, row.createdAt, row.updatedAt],
     parse: (row) => ({ ...row, enabled: Boolean(row.enabled), allowedDurationsSec: typeof row.allowedDurationsSec === 'string' ? JSON.parse(row.allowedDurationsSec || '[]') : (row.allowedDurationsSec || []), allowedResolutions: typeof row.allowedResolutions === 'string' ? JSON.parse(row.allowedResolutions || '[]') : (row.allowedResolutions || []) }),
   },
   balanceTransactions: {
