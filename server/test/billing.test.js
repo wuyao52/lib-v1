@@ -132,6 +132,16 @@ test('system APIs, pricing, balances and managed gateway enforce roles and billi
   assert.equal(JSON.stringify(catalog).includes('secret-system-key'), false);
   assert.equal(JSON.stringify(catalog).includes('encryptedApiKey'), false);
 
+  const pricingId = (await pricingResponse.clone().json()).pricing.id;
+  const unpublished = await context.request(`/api/admin/pricing/${pricingId}`, admin.cookie, { method: 'PUT', body: JSON.stringify({ enabled: false }) });
+  assert.equal(unpublished.status, 200);
+  assert.equal((await (await context.request('/api/catalog/models', normal.cookie)).json()).models.length, 0);
+  const hiddenCall = await context.request(`/api/system-ai/${createdApi.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'hidden', duration: 5 }) });
+  assert.equal(hiddenCall.status, 403);
+  const republished = await context.request(`/api/admin/pricing/${pricingId}`, admin.cookie, { method: 'PUT', body: JSON.stringify({ enabled: true }) });
+  assert.equal(republished.status, 200);
+  assert.equal((await (await context.request('/api/catalog/models', normal.cookie)).json()).models.length, 1);
+
   const insufficient = await context.request(`/api/system-ai/${createdApi.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'ok', duration: 5 }) });
   assert.equal(insufficient.status, 402);
   const insufficientBody = await insufficient.json();
@@ -207,7 +217,7 @@ test('system APIs, pricing, balances and managed gateway enforce roles and billi
   assert.equal(billing.balanceCents, 950);
   assert.equal(billing.transactions.filter((item) => item.type === 'model_refund' && item.description.includes('异步任务失败')).length, 1);
 
-  const pricing = (await pricingResponse.json()).pricing;
+  const pricing = { id: pricingId };
   const fixedPricingResponse = await context.request(`/api/admin/pricing/${pricing.id}`, admin.cookie, { method: 'PUT', body: JSON.stringify({ allowedDurationsSec: [15], minDurationSec: 20, maxDurationSec: 30 }) });
   assert.equal(fixedPricingResponse.status, 200);
   const fixedPricing = (await fixedPricingResponse.json()).pricing;
