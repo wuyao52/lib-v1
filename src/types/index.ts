@@ -22,6 +22,7 @@ export interface AIModelConfig {
   maxDurationSec?: number | null;
   allowedDurationsSec?: number[];
   allowedResolutions?: string[];
+  maxReferenceImages?: number;
 }
 
 // 生成进度
