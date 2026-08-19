@@ -3,7 +3,7 @@ import { lookup } from 'node:dns/promises';
 import { assertPublicHost } from './api-discovery.js';
 import { readLimitedBody } from './resource-guard.js';
 
-const MAX_ASSET_BYTES = 8 * 1024 * 1024;
+const MAX_ASSET_BYTES = 20 * 1024 * 1024;
 const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 const DATA_URL_PATTERN = /^data:([^;,]+);base64,([A-Za-z0-9+/]+={0,2})$/;
 const DEFAULT_USER_QUOTA_BYTES = 2 * 1024 * 1024 * 1024;
@@ -30,7 +30,7 @@ function parseImageDataUrl(value) {
     return { error: 'INVALID_IMAGE', message: '图片 Base64 数据无效' };
   }
   if (bytes.length > MAX_ASSET_BYTES) {
-    return { error: 'ASSET_TOO_LARGE', message: '图片大小不能超过 8 MB' };
+    return { error: 'ASSET_TOO_LARGE', message: '图片大小不能超过 20 MB' };
   }
   return { bytes, mimeType: match[1].toLowerCase() };
 }
@@ -42,7 +42,7 @@ function parseImageRequest(req) {
       return { error: 'INVALID_IMAGE', message: '仅支持 PNG、JPEG、WebP 或 GIF 图片' };
     }
     if (!req.body.length) return { error: 'INVALID_IMAGE', message: '图片内容不能为空' };
-    if (req.body.length > MAX_ASSET_BYTES) return { error: 'ASSET_TOO_LARGE', message: '图片大小不能超过 8 MB' };
+    if (req.body.length > MAX_ASSET_BYTES) return { error: 'ASSET_TOO_LARGE', message: '图片大小不能超过 20 MB' };
     return { bytes: Buffer.from(req.body), mimeType };
   }
   return parseImageDataUrl(req.body?.dataUrl);
