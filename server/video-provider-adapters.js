@@ -3,7 +3,6 @@ import { assertPublicHost } from './api-discovery.js';
 import { readLimitedBody } from './resource-guard.js';
 
 const MAX_REFERENCE_FILE_BYTES = 12 * 1024 * 1024;
-const MAX_REFERENCE_FILES = 4;
 
 function buildTarget(api, suffix) {
   const base = new URL(`${api.baseUrl.replace(/\/+$/, '')}/`);
@@ -54,7 +53,8 @@ async function shishikejiForm(requestBody, dependencies) {
   for (const [key, value] of Object.entries(fields)) {
     if (value !== undefined && value !== null && String(value).trim()) form.append(key, String(value));
   }
-  const images = Array.isArray(requestBody.images) ? requestBody.images.slice(0, MAX_REFERENCE_FILES) : [];
+  // The managed gateway validates the configured per-model limit before a job is queued.
+  const images = Array.isArray(requestBody.images) ? requestBody.images : [];
   for (let index = 0; index < images.length; index += 1) {
     const url = referenceUrl(images[index]);
     if (!url) throw new Error('时时科技参考图片参数格式无效');
