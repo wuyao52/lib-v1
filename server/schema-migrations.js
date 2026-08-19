@@ -64,6 +64,13 @@ const migrations = [
       await ensureColumn('model_pricing', 'allowed_resolutions', 'JSON NULL');
     },
   },
+  {
+    version: 5,
+    name: 'model_pricing_reference_images',
+    async up({ ensureColumn }) {
+      await ensureColumn('model_pricing', 'max_reference_images', 'INT NULL');
+    },
+  },
 ];
 
 export async function runSchemaMigrations(pool) {
