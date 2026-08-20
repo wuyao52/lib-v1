@@ -13,12 +13,27 @@ import {
   Shield,
   KeyRound,
   HardDrive,
+  History,
+  RotateCcw,
+  Loader2,
+  X,
 } from 'lucide-react';
 import useProjectStore from '@/store/useProjectStore';
 import { useAuth } from '@/auth/AuthContext';
+import { ApiError, apiRequest } from '@/services/apiClient';
+import { ProjectInfo } from '@/types';
 import AccountCenter from './AccountCenter';
 import SecurityPanel from './SecurityPanel';
 import AssetManager from './AssetManager';
+
+type Revision = {
+  id: string;
+  version: number;
+  createdAt: string;
+  reason: string;
+  title: string;
+  sceneCount: number;
+};
 
 export default function ProjectSelector() {
   const { projects, createProject, openProject, deleteProject, refreshProjects } = useProjectStore();
@@ -27,6 +42,12 @@ export default function ProjectSelector() {
   const [newTitle, setNewTitle] = useState('');
   const [newDescription, setNewDescription] = useState('');
   const [accountMode, setAccountMode] = useState<'billing' | 'admin' | 'security' | 'assets' | null>(null);
+  const [revisionProject, setRevisionProject] = useState<ProjectInfo | null>(null);
+  const [revisions, setRevisions] = useState<Revision[]>([]);
+  const [currentVersion, setCurrentVersion] = useState(0);
+  const [loadingRevisions, setLoadingRevisions] = useState(false);
+  const [restoringRevisionId, setRestoringRevisionId] = useState('');
+  const [revisionError, setRevisionError] = useState('');
 
   useEffect(() => {
     refreshProjects();
@@ -45,6 +66,58 @@ export default function ProjectSelector() {
     e.stopPropagation();
     if (confirm('确定要删除这个项目吗？此操作不可撤销。')) {
       deleteProject(projectId);
+    }
+  };
+
+  const closeRevisionDialog = () => {
+    if (loadingRevisions || restoringRevisionId) return;
+    setRevisionProject(null);
+    setRevisions([]);
+    setRevisionError('');
+  };
+
+  const handleOpenRevisions = async (e: React.MouseEvent, project: ProjectInfo) => {
+    e.stopPropagation();
+    setRevisionProject(project);
+    setRevisions([]);
+    setRevisionError('');
+    setCurrentVersion(Number(project.version || 0));
+    setLoadingRevisions(true);
+    try {
+      const result = await apiRequest<{ currentVersion: number; revisions: Revision[] }>(
+        `/api/projects/${encodeURIComponent(project.id)}/revisions`,
+      );
+      setCurrentVersion(result.currentVersion);
+      setRevisions(Array.isArray(result.revisions) ? result.revisions : []);
+    } catch (error) {
+      setRevisionError(error instanceof Error ? error.message : '历史版本读取失败，请稍后重试');
+    } finally {
+      setLoadingRevisions(false);
+    }
+  };
+
+  const handleRestoreRevision = async (revision: Revision) => {
+    if (!revisionProject || restoringRevisionId) return;
+    if (!confirm(`确定恢复到版本 ${revision.version} 吗？当前版本会被保留为新的历史记录。`)) return;
+    setRestoringRevisionId(revision.id);
+    setRevisionError('');
+    try {
+      await apiRequest(`/api/projects/${encodeURIComponent(revisionProject.id)}/revisions/${encodeURIComponent(revision.id)}/restore`, {
+        method: 'POST',
+        body: JSON.stringify({ expectedVersion: currentVersion }),
+      });
+      setRestoringRevisionId('');
+      closeRevisionDialog();
+      await openProject(revisionProject.id);
+      await refreshProjects();
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'PROJECT_VERSION_CONFLICT') {
+        setRevisionError('项目已在其他页面或设备更新，请重新打开历史版本列表后再试。');
+      } else {
+        setRevisionError(error instanceof Error ? error.message : '版本恢复失败，请稍后重试');
+      }
+    } finally {
+      setRestoringRevisionId('');
     }
   };
 
@@ -200,8 +273,19 @@ export default function ProjectSelector() {
                           </div>
 
                           <button
+                            onClick={(e) => handleOpenRevisions(e, project)}
+                            className="p-1 hover:bg-primary-500/20 rounded transition-colors opacity-0 group-hover:opacity-100"
+                            title="历史版本"
+                            aria-label={`查看 ${project.title} 的历史版本`}
+                          >
+                            <History className="w-4 h-4 text-primary-300" />
+                          </button>
+
+                          <button
                             onClick={(e) => handleDelete(e, project.id)}
                             className="p-1 hover:bg-red-500/20 rounded transition-colors opacity-0 group-hover:opacity-100"
+                            title="删除项目"
+                            aria-label={`删除项目 ${project.title}`}
                           >
                             <Trash2 className="w-4 h-4 text-red-400" />
                           </button>
@@ -324,6 +408,89 @@ export default function ProjectSelector() {
                 >
                   创建
                 </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {revisionProject && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="revision-dialog-title"
+          >
+            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={closeRevisionDialog} />
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0, y: 12 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 12 }}
+              className="relative flex w-full max-w-2xl max-h-[80vh] flex-col overflow-hidden rounded-2xl border border-dark-600/60 bg-dark-800 shadow-2xl"
+            >
+              <div className="flex items-center justify-between border-b border-dark-600/50 px-6 py-4">
+                <div>
+                  <h3 id="revision-dialog-title" className="flex items-center gap-2 text-lg font-semibold text-white">
+                    <History className="h-5 w-5 text-primary-400" />
+                    历史版本
+                  </h3>
+                  <p className="mt-1 max-w-[28rem] truncate text-xs text-dark-400">{revisionProject.title}</p>
+                </div>
+                <button
+                  onClick={closeRevisionDialog}
+                  disabled={Boolean(restoringRevisionId)}
+                  className="rounded-lg p-2 text-dark-400 transition-colors hover:bg-dark-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                  title="关闭"
+                  aria-label="关闭历史版本"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between border-b border-dark-700/60 px-6 py-3 text-xs text-dark-400">
+                <span>当前版本：<strong className="text-primary-300">v{currentVersion || '—'}</strong></span>
+                <span>{revisions.length} 个历史版本</span>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-y-auto p-6">
+                {loadingRevisions && (
+                  <div className="flex items-center justify-center gap-2 py-12 text-sm text-dark-300">
+                    <Loader2 className="h-4 w-4 animate-spin text-primary-400" />正在读取历史版本...
+                  </div>
+                )}
+                {!loadingRevisions && revisionError && (
+                  <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">{revisionError}</div>
+                )}
+                {!loadingRevisions && !revisionError && revisions.length === 0 && (
+                  <div className="py-12 text-center text-sm text-dark-400">暂无可恢复的历史版本</div>
+                )}
+                {!loadingRevisions && !revisionError && revisions.length > 0 && (
+                  <div className="space-y-3">
+                    {revisions.map((revision) => (
+                      <div key={revision.id} className="flex items-center justify-between gap-4 rounded-xl border border-dark-600/70 bg-dark-900/50 p-4">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="font-semibold text-white">版本 v{revision.version}</span>
+                            {revision.version === currentVersion && <span className="rounded border border-primary-500/40 bg-primary-500/10 px-1.5 py-0.5 text-[10px] text-primary-300">当前</span>}
+                          </div>
+                          <p className="mt-1 truncate text-sm text-dark-300">{revision.title || revisionProject.title}</p>
+                          <p className="mt-1 text-xs text-dark-500">{formatDate(revision.createdAt)} · {revision.sceneCount} 个场景 · {revision.reason || '保存'}</p>
+                        </div>
+                        <button
+                          onClick={() => void handleRestoreRevision(revision)}
+                          disabled={Boolean(restoringRevisionId) || revision.version === currentVersion}
+                          className="flex shrink-0 items-center gap-1.5 rounded-lg border border-primary-500/40 px-3 py-2 text-xs text-primary-200 transition-colors hover:bg-primary-500/15 disabled:cursor-not-allowed disabled:border-dark-600 disabled:text-dark-500"
+                        >
+                          {restoringRevisionId === revision.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+                          {restoringRevisionId === revision.id ? '恢复中...' : revision.version === currentVersion ? '当前版本' : '恢复此版本'}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </motion.div>
           </motion.div>
