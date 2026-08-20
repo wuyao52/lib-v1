@@ -10,6 +10,7 @@ const DEFAULT_USER_QUOTA_BYTES = 2 * 1024 * 1024 * 1024;
 const DEFAULT_VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 const DIRECT_UPLOAD_TTL_MS = 15 * 60 * 1000;
 const DEFAULT_ASSET_RETENTION_DAYS = 30;
+const SOFT_DELETE_RETENTION_DAYS = 7;
 const ASSET_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SIGNED_URL_TTL_MS = 15 * 60 * 1000;
@@ -147,6 +148,7 @@ export async function cleanupExpiredAssets({
   const normalizedRetentionDays = parseRetentionDays(retentionDays);
   const cutoff = now - normalizedRetentionDays * DAY_MS;
   const candidates = db.read('assets').filter((asset) => {
+    if (asset.deletedAt) return false;
     const createdAt = Date.parse(asset.createdAt);
     return Number.isFinite(createdAt)
       && createdAt <= cutoff
@@ -157,10 +159,6 @@ export async function cleanupExpiredAssets({
 
   for (const asset of candidates) {
     try {
-      if (asset.objectKey) {
-        if (!assetStorage) throw new Error('Object storage is not configured');
-        await assetStorage.delete(asset.objectKey);
-      }
       deletedIds.push(asset.id);
     } catch (error) {
       failedAssets.push({ id: asset.id, error });
@@ -171,10 +169,26 @@ export async function cleanupExpiredAssets({
   if (deletedIds.length) {
     const deletedIdSet = new Set(deletedIds);
     await db.mutate((data) => {
-      data.assets = data.assets.filter((asset) => !deletedIdSet.has(asset.id));
+      data.assets.forEach((asset) => { if (deletedIdSet.has(asset.id)) asset.deletedAt = new Date(now).toISOString(); });
     });
   }
-  return { deleted: deletedIds.length, failed: failedAssets.length, deletedIds, failedAssets };
+  const purgeCutoff = now - SOFT_DELETE_RETENTION_DAYS * DAY_MS;
+  const purgeCandidates = db.read('assets').filter((asset) => asset.deletedAt && Date.parse(asset.deletedAt) <= purgeCutoff);
+  const purgedIds = [];
+  for (const asset of purgeCandidates) {
+    try {
+      if (asset.objectKey) {
+        if (!assetStorage) throw new Error('Object storage is not configured');
+        await assetStorage.delete(asset.objectKey);
+      }
+      purgedIds.push(asset.id);
+    } catch (error) { failedAssets.push({ id: asset.id, error }); }
+  }
+  if (purgedIds.length) {
+    const ids = new Set(purgedIds);
+    await db.mutate((data) => { data.assets = data.assets.filter((asset) => !ids.has(asset.id)); });
+  }
+  return { deleted: deletedIds.length, purged: purgedIds.length, failed: failedAssets.length, deletedIds, failedAssets };
 }
 
 export async function migrateLegacyAssets({ db, assetStorage, onError = console.error } = {}) {
@@ -227,7 +241,7 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
   cleanupTimer.unref?.();
 
   router.get('/public/:id', async (req, res) => {
-    const asset = db.read('assets').find((entry) => entry.id === req.params.id);
+    const asset = db.read('assets').find((entry) => entry.id === req.params.id && !entry.deletedAt);
     if (!asset) return res.status(404).json({ error: 'ASSET_NOT_FOUND', message: '图片不存在' });
     const ownedBySession = req.user?.id === asset.userId;
     const signedAccess = validAssetSignature(asset.id, req.query.expires, req.query.signature, signingKey);
@@ -274,7 +288,7 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
       return next(error);
     }
     const quotaBytes = Number(process.env.ASSET_USER_QUOTA_BYTES) || DEFAULT_USER_QUOTA_BYTES;
-    const assets = db.read('assets').filter((asset) => asset.userId === req.user.id)
+    const assets = db.read('assets').filter((asset) => asset.userId === req.user.id && !asset.deletedAt)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .map((asset) => {
         const referenced = assetIsReferenced(db, req.user.id, asset.id);
@@ -343,11 +357,17 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
       return res.status(400).json({ error: 'INVALID_DIRECT_UPLOAD', message: `仅支持 JPG、PNG、WebP、GIF、MP4、WebM、MOV，且文件不能超过 ${Math.floor(maxBytes / 1024 / 1024)} MB` });
     }
     const quotaBytes = Number(process.env.ASSET_USER_QUOTA_BYTES) || DEFAULT_USER_QUOTA_BYTES;
-    const usedBytes = db.read('assets').filter((asset) => asset.userId === req.user.id).reduce((sum, asset) => sum + Number(asset.byteSize || 0), 0);
+    const usedBytes = db.read('assets').filter((asset) => asset.userId === req.user.id && !asset.deletedAt).reduce((sum, asset) => sum + Number(asset.byteSize || 0), 0);
     if (usedBytes + byteSize > quotaBytes) return res.status(413).json({ error: 'ASSET_QUOTA_EXCEEDED', message: '云端素材容量已满', usedBytes, quotaBytes });
+    const suppliedHash = String(req.body?.sha256 || '').toLowerCase();
+    const sha256 = /^[a-f0-9]{64}$/.test(suppliedHash) ? suppliedHash : randomBytes(32).toString('hex');
+    const duplicate = db.read('assets').find((asset) => asset.userId === req.user.id && asset.sha256 === sha256);
+    if (duplicate) {
+      if (duplicate.deletedAt) await mutateAssets((data) => { const stored = data.assets.find((asset) => asset.id === duplicate.id); if (stored) stored.deletedAt = null; });
+      return res.json({ duplicate: true, asset: { id: duplicate.id, url: getStableAssetUrl(duplicate.id), mimeType: duplicate.mimeType, byteSize: duplicate.byteSize } });
+    }
     const id = randomUUID();
-    const sha256 = randomBytes(32).toString('hex');
-    const objectKey = `assets/${req.user.id}/direct/${id}.${extension}`;
+    const objectKey = `assets/${req.user.id}/${sha256}.${extension}`;
     const expiresAt = Date.now() + DIRECT_UPLOAD_TTL_MS;
     const uploadUrl = await assetStorage.createUploadUrl({ key: objectKey, mimeType, byteSize, expiresInSeconds: Math.floor(DIRECT_UPLOAD_TTL_MS / 1000) });
     const token = signDirectUpload({ id, userId: req.user.id, sha256, objectKey, mimeType, byteSize, expiresAt }, signingKey);
@@ -359,7 +379,8 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
     if (!claim || claim.userId !== req.user.id || !directUploadMimeTypes.has(claim.mimeType)) {
       return res.status(400).json({ error: 'DIRECT_UPLOAD_INVALID', message: '素材上传凭证无效或已过期' });
     }
-    const existing = db.read('assets').find((asset) => asset.id === claim.id && asset.userId === req.user.id);
+    const existing = db.read('assets').find((asset) => (asset.id === claim.id || asset.sha256 === claim.sha256) && asset.userId === req.user.id);
+    if (existing?.deletedAt) await mutateAssets((data) => { const stored = data.assets.find((asset) => asset.id === existing.id); if (stored) stored.deletedAt = null; });
     if (existing) return res.json({ asset: { id: existing.id, url: getStableAssetUrl(existing.id), mimeType: existing.mimeType, byteSize: existing.byteSize } });
     let object;
     try { object = await assetStorage.stat(claim.objectKey); }
@@ -370,7 +391,7 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
     const quotaBytes = Number(process.env.ASSET_USER_QUOTA_BYTES) || DEFAULT_USER_QUOTA_BYTES;
     let record; let quotaExceeded = false;
     await mutateAssets((data) => {
-      const usedBytes = data.assets.filter((asset) => asset.userId === req.user.id).reduce((sum, asset) => sum + Number(asset.byteSize || 0), 0);
+      const usedBytes = data.assets.filter((asset) => asset.userId === req.user.id && !asset.deletedAt).reduce((sum, asset) => sum + Number(asset.byteSize || 0), 0);
       if (usedBytes + claim.byteSize > quotaBytes) { quotaExceeded = true; return; }
       record = { id: claim.id, userId: req.user.id, sha256: claim.sha256, mimeType: claim.mimeType, dataBase64: null, objectKey: claim.objectKey, storageProvider: assetStorage.provider, byteSize: claim.byteSize, createdAt: new Date().toISOString() };
       data.assets.push(record);
@@ -407,6 +428,7 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
     if (parsed?.error) return res.status(parsed.error === 'ASSET_TOO_LARGE' ? 413 : 400).json(parsed);
     const sha256 = createHash('sha256').update(parsed.bytes).digest('hex');
     const existing = db.read('assets').find((asset) => asset.userId === req.user.id && asset.sha256 === sha256);
+    if (existing?.deletedAt) await mutateAssets((data) => { const stored = data.assets.find((asset) => asset.id === existing.id); if (stored) stored.deletedAt = null; });
     if (existing) return res.json({ asset: { id: existing.id, url: getStableAssetUrl(existing.id), mimeType: existing.mimeType, byteSize: existing.byteSize } });
     const quotaBytes = Number(process.env.ASSET_USER_QUOTA_BYTES) || DEFAULT_USER_QUOTA_BYTES;
     const objectKey = assetStorage ? objectKeyFor(req.user.id, sha256, parsed.mimeType) : null;
@@ -416,9 +438,9 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
     }
     let record; let duplicate = false; let quotaExceeded = false;
     await mutateAssets((data) => {
-      record = data.assets.find((asset) => asset.userId === req.user.id && asset.sha256 === sha256);
+      record = data.assets.find((asset) => asset.userId === req.user.id && asset.sha256 === sha256 && !asset.deletedAt);
       if (record) { duplicate = true; return; }
-      const usedBytes = data.assets.filter((asset) => asset.userId === req.user.id).reduce((sum, asset) => sum + Number(asset.byteSize || 0), 0);
+      const usedBytes = data.assets.filter((asset) => asset.userId === req.user.id && !asset.deletedAt).reduce((sum, asset) => sum + Number(asset.byteSize || 0), 0);
       if (usedBytes + parsed.bytes.length > quotaBytes) { quotaExceeded = true; return; }
       record = { id: randomUUID(), userId: req.user.id, sha256, mimeType: parsed.mimeType, dataBase64: assetStorage ? null : parsed.bytes.toString('base64'), objectKey, storageProvider: assetStorage?.provider || 'database', byteSize: parsed.bytes.length, createdAt: new Date().toISOString() };
       data.assets.push(record);
@@ -431,22 +453,33 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
   });
 
   router.delete('/:id', requireAuth, async (req, res) => {
-    const asset = db.read('assets').find((entry) => entry.id === req.params.id && entry.userId === req.user.id);
+    const asset = db.read('assets').find((entry) => entry.id === req.params.id && entry.userId === req.user.id && !entry.deletedAt);
     if (!asset) return res.status(404).json({ error: 'ASSET_NOT_FOUND', message: '素材不存在' });
     if (assetIsReferenced(db, req.user.id, asset.id)) {
       return res.status(409).json({ error: 'ASSET_IN_USE', message: '该素材仍被项目或生成历史使用，不能删除' });
     }
-    if (asset.objectKey) {
-      if (!assetStorage) return storageError(res);
-      try {
-        await assetStorage.delete(asset.objectKey);
-      } catch (error) {
-        console.error('删除云端素材失败:', error);
-        return storageError(res);
-      }
-    }
-    await mutateAssets((data) => { data.assets = data.assets.filter((entry) => entry.id !== asset.id); });
-    return res.status(204).end();
+    await mutateAssets((data) => { const stored = data.assets.find((entry) => entry.id === asset.id); if (stored) stored.deletedAt = new Date().toISOString(); });
+    return res.status(202).json({ deleted: true, recoverableUntil: new Date(Date.now() + SOFT_DELETE_RETENTION_DAYS * DAY_MS).toISOString() });
+  });
+
+  router.post('/bulk-delete', requireAuth, async (req, res) => {
+    const ids = [...new Set(Array.isArray(req.body?.ids) ? req.body.ids.map((value) => String(value)) : [])].slice(0, 100);
+    if (!ids.length) return res.status(400).json({ error: 'INVALID_ASSET_SELECTION', message: '请选择要删除的素材' });
+    const idSet = new Set(ids);
+    const owned = db.read('assets').filter((asset) => asset.userId === req.user.id && idSet.has(asset.id) && !asset.deletedAt);
+    const removable = owned.filter((asset) => !assetIsReferenced(db, req.user.id, asset.id));
+    const skipped = owned.filter((asset) => assetIsReferenced(db, req.user.id, asset.id)).map((asset) => asset.id);
+    const deletedAt = new Date().toISOString();
+    await mutateAssets((data) => data.assets.forEach((asset) => { if (removable.some((item) => item.id === asset.id)) asset.deletedAt = deletedAt; }));
+    return res.json({ deleted: removable.length, skipped, recoverableUntil: new Date(Date.now() + SOFT_DELETE_RETENTION_DAYS * DAY_MS).toISOString() });
+  });
+
+  router.post('/:id/restore', requireAuth, async (req, res) => {
+    const asset = db.read('assets').find((entry) => entry.id === req.params.id && entry.userId === req.user.id && entry.deletedAt);
+    if (!asset) return res.status(404).json({ error: 'ASSET_NOT_FOUND', message: '未找到可恢复的素材' });
+    if (Date.parse(asset.deletedAt) + SOFT_DELETE_RETENTION_DAYS * DAY_MS < Date.now()) return res.status(410).json({ error: 'ASSET_RECOVERY_EXPIRED', message: '素材恢复期已结束' });
+    await mutateAssets((data) => { const stored = data.assets.find((entry) => entry.id === asset.id); if (stored) stored.deletedAt = null; });
+    return res.json({ asset: { id: asset.id, url: getStableAssetUrl(asset.id), mimeType: asset.mimeType, byteSize: asset.byteSize } });
   });
 
   router.post('/', requireAuth, async (req, res, next) => {
@@ -457,8 +490,9 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
       const sha256 = createHash('sha256').update(parsed.bytes).digest('hex');
       const now = new Date().toISOString();
       const existing = db.read('assets').find((asset) => asset.userId === req.user.id && asset.sha256 === sha256);
+      if (existing?.deletedAt) await mutateAssets((data) => { const stored = data.assets.find((asset) => asset.id === existing.id); if (stored) stored.deletedAt = null; });
       const quotaBytes = Number(process.env.ASSET_USER_QUOTA_BYTES) || DEFAULT_USER_QUOTA_BYTES;
-      const usedBytes = db.read('assets').filter((asset) => asset.userId === req.user.id)
+      const usedBytes = db.read('assets').filter((asset) => asset.userId === req.user.id && !asset.deletedAt)
         .reduce((sum, asset) => sum + Number(asset.byteSize || 0), 0);
       if (!existing && usedBytes + parsed.bytes.length > quotaBytes) {
         return res.status(413).json({
@@ -481,6 +515,7 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
 
       const result = await mutateAssets((data) => {
         const stored = data.assets.find((asset) => asset.userId === req.user.id && asset.sha256 === sha256);
+        if (stored?.deletedAt) stored.deletedAt = null;
         if (stored) {
           if (assetStorage && !stored.objectKey) {
             stored.objectKey = objectKey;
