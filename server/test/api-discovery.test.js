@@ -22,14 +22,18 @@ test('system API discovery exposes the public Shishikeji video catalog without r
   assert.ok(result.models.every(({ type }) => type === 'video'));
 });
 
-test('system API discovery exposes the documented WeijinAPI chat model without requiring /v1/models', async () => {
-  let fetched = false;
+test('system API discovery reads WeijinAPI video capabilities from /v1/models', async () => {
+  let requestedUrl = '';
   const result = await discoverSystemApi({
     baseUrl: 'https://www.weijinapi.top', apiKey: 'weijin-test-secret',
-    fetchImpl: async () => { fetched = true; throw new Error('should not call /v1/models'); },
+    fetchImpl: async (url, options) => {
+      requestedUrl = String(url);
+      assert.equal(options.headers.get('authorization'), 'Bearer weijin-test-secret');
+      return new Response(JSON.stringify({ data: [{ id: 'seedance2.0-one-full-flex-720p', display_name: 'Seedance ONE Full', type: 'video', resolution: '720p', durations_seconds: [15], ratios: ['16:9', '9:16'], max_images: 9, max_videos: 3, max_audios: 3 }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    },
     resolveHost: async () => [{ address: '203.0.113.21', family: 4 }],
   });
-  assert.equal(fetched, false);
+  assert.equal(requestedUrl, 'https://www.weijinapi.top/v1/models');
   assert.equal(result.provider, 'WeijinAPI');
-  assert.deepEqual(result.models, [{ id: 'seedance2.0', name: 'Seedance 2.0（WeijinAPI 文本端点）', type: 'text' }]);
+  assert.deepEqual(result.models[0], { id: 'seedance2.0-one-full-flex-720p', name: 'Seedance ONE Full', type: 'video', supportedResolutions: ['720p'], allowedDurationsSec: [15], supportedRatios: ['16:9', '9:16'], maxReferenceImages: 9, maxReferenceVideos: 3, maxReferenceAudios: 3 });
 });
