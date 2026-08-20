@@ -23,6 +23,8 @@ export interface AIModelConfig {
   allowedDurationsSec?: number[];
   allowedResolutions?: string[];
   maxReferenceImages?: number;
+  maxReferenceAudios?: number;
+  maxReferenceVideos?: number;
 }
 
 // 生成进度
