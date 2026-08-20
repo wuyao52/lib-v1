@@ -21,3 +21,15 @@ test('system API discovery exposes the public Shishikeji video catalog without r
   });
   assert.ok(result.models.every(({ type }) => type === 'video'));
 });
+
+test('system API discovery exposes the documented WeijinAPI chat model without requiring /v1/models', async () => {
+  let fetched = false;
+  const result = await discoverSystemApi({
+    baseUrl: 'https://www.weijinapi.top', apiKey: 'weijin-test-secret',
+    fetchImpl: async () => { fetched = true; throw new Error('should not call /v1/models'); },
+    resolveHost: async () => [{ address: '203.0.113.21', family: 4 }],
+  });
+  assert.equal(fetched, false);
+  assert.equal(result.provider, 'WeijinAPI');
+  assert.deepEqual(result.models, [{ id: 'seedance2.0', name: 'Seedance 2.0（WeijinAPI 文本端点）', type: 'text' }]);
+});
