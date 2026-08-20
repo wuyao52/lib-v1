@@ -64,6 +64,26 @@ test('generated videos are archived to owned storage and served privately with r
   assert.equal(openEnded.headers.get('content-range'), `bytes 0-${videoBytes.length - 1}/${videoBytes.length}`);
 });
 
+test('generated-media archive forwards provider authentication only to the server-side download', async () => {
+  const seen = [];
+  const bytes = Buffer.from('authenticated-video');
+  const service = createGeneratedMediaService({
+    db: { read: () => [], mutate: async () => {} },
+    storage: { async put({ bytes: value }) { assert.deepEqual(Buffer.from(value), bytes); } },
+    fetchImpl: async (_url, options) => {
+      seen.push(options.headers?.get('authorization'));
+      return new Response(bytes, { status: 200, headers: { 'content-type': 'video/mp4', 'content-length': String(bytes.length) } });
+    },
+    resolveHost: async () => [{ address: '203.0.113.10', family: 4 }],
+  });
+  await service.archive(
+    { id: 'auth-job', userId: 'user-1' },
+    { url: 'https://www.weijinapi.top/v1/videos/task-auth/content' },
+    { headers: { authorization: 'Bearer server-only-secret' } },
+  );
+  assert.deepEqual(seen, ['Bearer server-only-secret']);
+});
+
 test('non-streaming storage rejects a declared large video before buffering it', async () => {
   let stored = false;
   const storage = {
