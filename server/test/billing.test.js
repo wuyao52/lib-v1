@@ -77,6 +77,14 @@ test('managed video replaces owned asset paths with public OSS URLs before calli
   assert.equal((await tooManyReferences.json()).error, 'REFERENCE_IMAGE_LIMIT_EXCEEDED');
   const stolen = await context.request(`/api/system-ai/${api.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'stolen', seconds: 5, images: ['/api/assets/public/other-image'] }) });
   assert.equal(stolen.status, 400);
+
+  await context.request('/api/admin/pricing', admin.cookie, { method: 'POST', body: JSON.stringify({ apiId: api.id, modelId: 'media-model', displayName: '多媒体模型', category: 'video', billingUnit: 'second', unitPriceCents: 1, allowedDurationsSec: [5], maxReferenceImages: 1, maxReferenceAudios: 1, maxReferenceVideos: 2 }) });
+  const tooManyAudio = await context.request(`/api/system-ai/${api.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'media-model', prompt: 'audio', seconds: 5, audios: ['a', 'b'] }) });
+  assert.equal(tooManyAudio.status, 400);
+  assert.equal((await tooManyAudio.json()).error, 'REFERENCE_AUDIO_LIMIT_EXCEEDED');
+  const tooManyVideo = await context.request(`/api/system-ai/${api.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'media-model', prompt: 'video', seconds: 5, videos: ['a', 'b', 'c'] }) });
+  assert.equal(tooManyVideo.status, 400);
+  assert.equal((await tooManyVideo.json()).error, 'REFERENCE_VIDEO_LIMIT_EXCEEDED');
   assert.equal((await stolen.json()).error, 'INVALID_REFERENCE_IMAGE_URL');
 });
 
