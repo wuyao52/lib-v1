@@ -4,7 +4,7 @@ import { isIP } from 'node:net';
 const PROVIDERS = [
   ['openai.com', 'OpenAI'], ['deepseek.com', 'DeepSeek'], ['anthropic.com', 'Anthropic'],
   ['googleapis.com', 'Google'], ['volcengineapi.com', '火山引擎'], ['byteplusapi.com', 'BytePlus'],
-  ['aliyuncs.com', '阿里云'], ['siliconflow.cn', 'SiliconFlow'], ['openrouter.ai', 'OpenRouter'],
+  ['aliyuncs.com', '阿里云'], ['siliconflow.cn', 'SiliconFlow'], ['openrouter.ai', 'OpenRouter'], ['weijinapi.top', 'WeijinAPI'],
 ];
 
 const SHISHIKEJI_VIDEO_MODELS = [
@@ -21,13 +21,6 @@ const SHISHIKEJI_VIDEO_MODELS = [
   ['canfei-2.0', '残废 2.0', ['480p', '720p', '1080p', '4k']],
   ['jiaban-2.0', '错峰加班-2.0', ['720p']],
 ].map(([id, name, supportedResolutions]) => ({ id, name, type: 'video', supportedResolutions }));
-
-// WeijinAPI exposes an OpenAI-compatible chat endpoint. Its public example
-// documents this model, but does not guarantee that a /v1/models catalogue is
-// available, so keep discovery deterministic for this host.
-const WEIJINAPI_TEXT_MODELS = [
-  { id: 'seedance2.0', name: 'Seedance 2.0（WeijinAPI 文本端点）', type: 'text' },
-];
 
 export function knownVideoResolutions(provider, modelId) {
   if (!/时时科技/i.test(String(provider || ''))) return [];
@@ -55,11 +48,26 @@ function modelsFromPayload(payload) {
     if (typeof model === 'string') return { id: model, name: model, type: '' };
     const id = String(model?.id ?? model?.model ?? model?.name ?? '').trim().slice(0, 160);
     if (!id) return null;
+    const durations = model?.durations_seconds ?? model?.durationsSeconds ?? model?.allowed_durations_sec;
+    const ratios = model?.ratios ?? model?.aspect_ratios ?? model?.aspectRatios;
+    const maxImages = model?.max_images ?? model?.maxReferenceImages;
+    const maxVideos = model?.max_videos ?? model?.maxReferenceVideos;
+    const maxAudios = model?.max_audios ?? model?.maxReferenceAudios;
+    const type = String(model?.type ?? model?.category ?? model?.task ?? '').trim().slice(0, 80)
+      || (durations || ratios || maxImages !== undefined || maxVideos !== undefined || maxAudios !== undefined ? 'video' : '');
     return {
       id,
       name: String(model?.display_name ?? model?.displayName ?? model?.name ?? id).trim().slice(0, 160),
-      type: String(model?.type ?? model?.category ?? model?.task ?? '').trim().slice(0, 80),
+      type,
       owner: String(model?.owned_by ?? model?.provider ?? model?.organization ?? '').trim().slice(0, 80),
+      ...(Array.isArray(durations) ? { allowedDurationsSec: durations.map(Number).filter(Number.isFinite) } : {}),
+      ...(Array.isArray(ratios) ? { supportedRatios: ratios.map((value) => String(value).trim()).filter(Boolean) } : {}),
+      ...(model?.resolution ? { supportedResolutions: [String(model.resolution).trim().toLowerCase()] } : {}),
+      ...(Number.isFinite(Number(maxImages)) ? { maxReferenceImages: Number(maxImages) } : {}),
+      ...(Number.isFinite(Number(maxVideos)) ? { maxReferenceVideos: Number(maxVideos) } : {}),
+      ...(Number.isFinite(Number(maxAudios)) ? { maxReferenceAudios: Number(maxAudios) } : {}),
+      ...(model?.audio_requires_image !== undefined ? { audioRequiresImage: Boolean(model.audio_requires_image) } : {}),
+      ...(model?.pricing && typeof model.pricing === 'object' ? { pricing: model.pricing } : {}),
     };
   }).filter(Boolean);
 }
@@ -84,12 +92,6 @@ export async function discoverSystemApi({ baseUrl, apiKey, fetchImpl = fetch, re
     return {
       name: '时时科技视频 API', provider: '时时科技',
       models: SHISHIKEJI_VIDEO_MODELS.map((model) => ({ ...model })),
-    };
-  }
-  if (base.hostname.toLowerCase() === 'www.weijinapi.top' || base.hostname.toLowerCase() === 'weijinapi.top') {
-    return {
-      name: 'WeijinAPI', provider: 'WeijinAPI',
-      models: WEIJINAPI_TEXT_MODELS.map((model) => ({ ...model })),
     };
   }
   const basePath = base.pathname.replace(/\/+$/, '');
