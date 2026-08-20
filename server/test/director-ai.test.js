@@ -39,13 +39,14 @@ test('AI storyboard uses the configured text model and clamps each shot to 5-15 
   let request;
   const progressUpdates = [];
   globalThis.fetch = async (url, options) => {
-    request = { url, body: JSON.parse(options.body), authorization: options.headers.Authorization };
+    request = { url, body: JSON.parse(options.body), authorization: options.headers.Authorization, apiKey: options.headers['x-api-key'] };
     return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(rawPlan) } }] }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
   try {
     const plan = await service.generateAIStoryboard({ project, story: '这是一个足够长的完整测试剧本，人物在房间里发现一封信并决定面对过去。', voice: 'naturalist', durationMode: 'ai', skills: [], onProgress: (message, progress) => progressUpdates.push({ message, progress }) });
     assert.equal(request.url, 'https://mock.example/v1/chat/completions');
     assert.equal(request.authorization, 'Bearer session-key');
+    assert.equal(request.apiKey, 'session-key');
     assert.equal(request.body.model, 'mock-chat');
     assert.match(request.body.messages[1].content, /本批唯一可拍摄的剧情正文/);
     assert.equal(request.body.max_tokens, 12000);
