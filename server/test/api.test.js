@@ -84,6 +84,16 @@ test('skill and director APIs require auth and isolate user data', async (t) => 
   });
   assert.equal(firstTabSave.status, 200);
   assert.equal((await firstTabSave.json()).project.version, 2);
+  const revisions = await fetch(`${baseUrl}/api/projects/${cloudProject.id}/revisions`, { headers: { cookie: firstCookie } });
+  assert.equal(revisions.status, 200);
+  const revisionList = await revisions.json();
+  assert.equal(revisionList.revisions.length, 1);
+  assert.equal(revisionList.revisions[0].version, 1);
+  const restored = await fetch(`${baseUrl}/api/projects/${cloudProject.id}/revisions/${revisionList.revisions[0].id}/restore`, {
+    method: 'POST', headers: { cookie: firstCookie, 'content-type': 'application/json' }, body: JSON.stringify({ expectedVersion: 2 }),
+  });
+  assert.equal(restored.status, 200);
+  assert.equal((await restored.json()).project.title, 'Cloud project');
   const staleTabSave = await fetch(`${baseUrl}/api/projects/${cloudProject.id}`, {
     method: 'PUT', headers: { cookie: firstCookie, 'content-type': 'application/json' },
     body: JSON.stringify({ project: { ...cloudProject, title: 'Stale tab edit', version: 1 }, expectedVersion: 1 }),
@@ -91,12 +101,12 @@ test('skill and director APIs require auth and isolate user data', async (t) => 
   assert.equal(staleTabSave.status, 409);
   assert.equal((await staleTabSave.json()).error, 'PROJECT_VERSION_CONFLICT');
   const firstProjects = await fetch(`${baseUrl}/api/projects`, { headers: { cookie: firstCookie } });
-  assert.equal((await firstProjects.json()).projects[0].title, 'First tab edit');
+  assert.equal((await firstProjects.json()).projects[0].title, 'Cloud project');
   const loadedProject = await fetch(`${baseUrl}/api/projects/${cloudProject.id}`, { headers: { cookie: firstCookie } });
   const loadedProjectBody = await loadedProject.json();
   assert.equal(loadedProjectBody.project.settings.aiModel.apiKey, '');
-  assert.equal(loadedProjectBody.project.title, 'First tab edit');
-  assert.equal(loadedProjectBody.project.version, 2);
+  assert.equal(loadedProjectBody.project.title, 'Cloud project');
+  assert.equal(loadedProjectBody.project.version, 3);
   const isolatedProject = await fetch(`${baseUrl}/api/projects/${cloudProject.id}`, { headers: { cookie: secondCookie } });
   assert.equal(isolatedProject.status, 404);
   const docxForm = new FormData();
