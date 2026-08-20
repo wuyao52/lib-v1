@@ -125,6 +125,18 @@ const TABLES = {
     values: (row) => [row.id, row.userId, row.title, row.description, JSON.stringify(row.projectData), Number(row.version || 1), row.createdAt, row.updatedAt],
     parse: (row) => ({ ...row, projectData: typeof row.projectData === 'string' ? JSON.parse(row.projectData) : row.projectData }),
   },
+  projectRevisions: {
+    table: 'project_revisions',
+    create: `CREATE TABLE IF NOT EXISTS project_revisions (
+      id CHAR(36) PRIMARY KEY, project_id VARCHAR(100) NOT NULL, user_id CHAR(36) NOT NULL,
+      version INT NOT NULL, project_data JSON NOT NULL, created_at VARCHAR(35) NOT NULL, reason VARCHAR(32) NOT NULL,
+      INDEX project_revisions_lookup_idx (project_id, user_id, version)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+    select: 'SELECT id, project_id AS projectId, user_id AS userId, version, project_data AS projectData, created_at AS createdAt, reason FROM project_revisions',
+    insert: 'INSERT INTO project_revisions (id, project_id, user_id, version, project_data, created_at, reason) VALUES ?',
+    values: (row) => [row.id, row.projectId, row.userId, Number(row.version), JSON.stringify(row.projectData), row.createdAt, row.reason],
+    parse: (row) => ({ ...row, projectData: typeof row.projectData === 'string' ? JSON.parse(row.projectData) : row.projectData }),
+  },
   systemApis: {
     table: 'system_apis',
     create: `CREATE TABLE IF NOT EXISTS system_apis (
@@ -178,14 +190,16 @@ const TABLES = {
       allowed_durations_sec JSON NULL,
       allowed_resolutions JSON NULL,
       max_reference_images INT NULL,
+      max_reference_audios INT NULL,
+      max_reference_videos INT NULL,
       enabled TINYINT(1) NOT NULL DEFAULT 1,
       created_at VARCHAR(35) NOT NULL,
       updated_at VARCHAR(35) NOT NULL,
       UNIQUE KEY model_pricing_api_model_unique (api_id, model_id)
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
-    select: 'SELECT id, api_id AS apiId, model_id AS modelId, display_name AS displayName, category, billing_unit AS billingUnit, unit_price_cents AS unitPriceCents, min_duration_sec AS minDurationSec, max_duration_sec AS maxDurationSec, allowed_durations_sec AS allowedDurationsSec, allowed_resolutions AS allowedResolutions, max_reference_images AS maxReferenceImages, enabled, created_at AS createdAt, updated_at AS updatedAt FROM model_pricing',
-    insert: 'INSERT INTO model_pricing (id, api_id, model_id, display_name, category, billing_unit, unit_price_cents, min_duration_sec, max_duration_sec, allowed_durations_sec, allowed_resolutions, max_reference_images, enabled, created_at, updated_at) VALUES ?',
-    values: (row) => [row.id, row.apiId, row.modelId, row.displayName, row.category, row.billingUnit, row.unitPriceCents, row.minDurationSec || null, row.maxDurationSec || null, JSON.stringify(row.allowedDurationsSec || []), JSON.stringify(row.allowedResolutions || []), Number.isInteger(Number(row.maxReferenceImages)) ? Number(row.maxReferenceImages) : 4, row.enabled ? 1 : 0, row.createdAt, row.updatedAt],
+    select: 'SELECT id, api_id AS apiId, model_id AS modelId, display_name AS displayName, category, billing_unit AS billingUnit, unit_price_cents AS unitPriceCents, min_duration_sec AS minDurationSec, max_duration_sec AS maxDurationSec, allowed_durations_sec AS allowedDurationsSec, allowed_resolutions AS allowedResolutions, max_reference_images AS maxReferenceImages, max_reference_audios AS maxReferenceAudios, max_reference_videos AS maxReferenceVideos, enabled, created_at AS createdAt, updated_at AS updatedAt FROM model_pricing',
+    insert: 'INSERT INTO model_pricing (id, api_id, model_id, display_name, category, billing_unit, unit_price_cents, min_duration_sec, max_duration_sec, allowed_durations_sec, allowed_resolutions, max_reference_images, max_reference_audios, max_reference_videos, enabled, created_at, updated_at) VALUES ?',
+    values: (row) => [row.id, row.apiId, row.modelId, row.displayName, row.category, row.billingUnit, row.unitPriceCents, row.minDurationSec || null, row.maxDurationSec || null, JSON.stringify(row.allowedDurationsSec || []), JSON.stringify(row.allowedResolutions || []), Number.isInteger(Number(row.maxReferenceImages)) ? Number(row.maxReferenceImages) : 4, Number.isInteger(Number(row.maxReferenceAudios)) ? Number(row.maxReferenceAudios) : 0, Number.isInteger(Number(row.maxReferenceVideos)) ? Number(row.maxReferenceVideos) : 0, row.enabled ? 1 : 0, row.createdAt, row.updatedAt],
     parse: (row) => ({ ...row, enabled: Boolean(row.enabled), allowedDurationsSec: typeof row.allowedDurationsSec === 'string' ? JSON.parse(row.allowedDurationsSec || '[]') : (row.allowedDurationsSec || []), allowedResolutions: typeof row.allowedResolutions === 'string' ? JSON.parse(row.allowedResolutions || '[]') : (row.allowedResolutions || []) }),
   },
   balanceTransactions: {
@@ -334,11 +348,12 @@ const TABLES = {
       storage_provider VARCHAR(20) NOT NULL DEFAULT 'database',
       byte_size INT NOT NULL,
       created_at VARCHAR(35) NOT NULL,
+      deleted_at VARCHAR(35) NULL,
       UNIQUE KEY assets_user_hash_unique (user_id, sha256)
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
-    select: 'SELECT id, user_id AS userId, sha256, mime_type AS mimeType, data_base64 AS dataBase64, object_key AS objectKey, storage_provider AS storageProvider, byte_size AS byteSize, created_at AS createdAt FROM assets',
-    insert: 'INSERT INTO assets (id, user_id, sha256, mime_type, data_base64, object_key, storage_provider, byte_size, created_at) VALUES ?',
-    values: (row) => [row.id, row.userId, row.sha256, row.mimeType, row.dataBase64 || null, row.objectKey || null, row.storageProvider || 'database', row.byteSize, row.createdAt],
+    select: 'SELECT id, user_id AS userId, sha256, mime_type AS mimeType, data_base64 AS dataBase64, object_key AS objectKey, storage_provider AS storageProvider, byte_size AS byteSize, created_at AS createdAt, deleted_at AS deletedAt FROM assets',
+    insert: 'INSERT INTO assets (id, user_id, sha256, mime_type, data_base64, object_key, storage_provider, byte_size, created_at, deleted_at) VALUES ?',
+    values: (row) => [row.id, row.userId, row.sha256, row.mimeType, row.dataBase64 || null, row.objectKey || null, row.storageProvider || 'database', row.byteSize, row.createdAt, row.deletedAt || null],
   },
   generatedMedia: {
     table: 'generated_media',
@@ -567,6 +582,12 @@ export class MySqlDatabase {
         [record.title, record.description, JSON.stringify(record.projectData), nextVersion, record.updatedAt, record.id, record.userId, expectedVersion],
       );
       if (!update.affectedRows) { result = { record: null, conflict: true }; return; }
+      const previous = this.data.projects.find((item) => item.id === record.id && item.userId === record.userId);
+      if (previous) {
+        const revision = { id: randomUUID(), projectId: previous.id, userId: previous.userId, version: Number(previous.version || expectedVersion), projectData: previous.projectData, createdAt: new Date().toISOString(), reason: 'save' };
+        await this.pool.query(TABLES.projectRevisions.insert, [[TABLES.projectRevisions.values(revision)]]);
+        this.data.projectRevisions.push(revision);
+      }
       const stored = { ...record, version: nextVersion };
       const index = this.data.projects.findIndex((item) => item.id === record.id);
       if (index >= 0) this.data.projects[index] = stored;
