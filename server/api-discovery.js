@@ -22,6 +22,13 @@ const SHISHIKEJI_VIDEO_MODELS = [
   ['jiaban-2.0', '错峰加班-2.0', ['720p']],
 ].map(([id, name, supportedResolutions]) => ({ id, name, type: 'video', supportedResolutions }));
 
+// WeijinAPI exposes an OpenAI-compatible chat endpoint. Its public example
+// documents this model, but does not guarantee that a /v1/models catalogue is
+// available, so keep discovery deterministic for this host.
+const WEIJINAPI_TEXT_MODELS = [
+  { id: 'seedance2.0', name: 'Seedance 2.0（WeijinAPI 文本端点）', type: 'text' },
+];
+
 export function knownVideoResolutions(provider, modelId) {
   if (!/时时科技/i.test(String(provider || ''))) return [];
   return SHISHIKEJI_VIDEO_MODELS.find((model) => model.id === modelId)?.supportedResolutions || [];
@@ -77,6 +84,12 @@ export async function discoverSystemApi({ baseUrl, apiKey, fetchImpl = fetch, re
     return {
       name: '时时科技视频 API', provider: '时时科技',
       models: SHISHIKEJI_VIDEO_MODELS.map((model) => ({ ...model })),
+    };
+  }
+  if (base.hostname.toLowerCase() === 'www.weijinapi.top' || base.hostname.toLowerCase() === 'weijinapi.top') {
+    return {
+      name: 'WeijinAPI', provider: 'WeijinAPI',
+      models: WEIJINAPI_TEXT_MODELS.map((model) => ({ ...model })),
     };
   }
   const basePath = base.pathname.replace(/\/+$/, '');
