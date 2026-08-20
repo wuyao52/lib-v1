@@ -119,11 +119,14 @@ export async function materializeReferenceImages(images: string[], signal?: Abor
 }
 
 export async function uploadAssetFile(file: File, signal?: AbortSignal): Promise<string> {
-  const request = await apiRequest<{ uploadUrl: string; token: string; headers: Record<string, string> }>('/api/assets/direct-upload', {
+  const sha256 = await crypto.subtle.digest('SHA-256', await file.arrayBuffer()).then((value) => Array.from(new Uint8Array(value)).map((byte) => byte.toString(16).padStart(2, '0')).join(''));
+  const request = await apiRequest<{ uploadUrl?: string; token?: string; headers?: Record<string, string>; asset?: { url: string } }>('/api/assets/direct-upload', {
     method: 'POST',
-    body: JSON.stringify({ fileName: file.name, mimeType: file.type, byteSize: file.size }),
+    body: JSON.stringify({ fileName: file.name, mimeType: file.type, byteSize: file.size, sha256 }),
     signal,
   });
+  if ('asset' in request && request.asset) return request.asset.url;
+  if (!request.uploadUrl || !request.token || !request.headers) throw new Error('素材直传凭证无效');
   let uploadResponse: Response;
   try {
     uploadResponse = await fetch(request.uploadUrl, { method: 'PUT', body: file, headers: request.headers, signal });
