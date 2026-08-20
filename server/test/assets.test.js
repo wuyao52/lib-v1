@@ -337,9 +337,13 @@ test('R2 asset storage keeps bytes out of the database and migrates legacy asset
 
   await db.mutate((data) => { data.projects = []; });
   const deleted = await fetch(`${baseUrl}/api/assets/${migrated.id}`, { method: 'DELETE', headers: { cookie } });
-  assert.equal(deleted.status, 204);
-  assert.equal(db.read('assets').length, 0);
-  assert.equal(objects.size, 0);
+  assert.equal(deleted.status, 202);
+  assert.equal(db.read('assets').length, 1);
+  assert.equal(db.read('assets')[0].deletedAt !== null, true);
+  assert.equal(objects.size, 1);
+  const restored = await fetch(`${baseUrl}/api/assets/${migrated.id}/restore`, { method: 'POST', headers: { cookie } });
+  assert.equal(restored.status, 200);
+  assert.equal(db.read('assets')[0].deletedAt, null);
 });
 
 test('expired unreferenced assets are cleaned while active, referenced and failed objects remain', async () => {
@@ -390,12 +394,34 @@ test('expired unreferenced assets are cleaned while active, referenced and faile
     db, assetStorage, retentionDays: 30, now, onError: () => {},
   });
 
-  assert.equal(result.deleted, 3);
-  assert.equal(result.failed, 1);
-  assert.deepEqual(deletedKeys, ['expired-key', 'expired-history-key']);
+  assert.equal(result.deleted, 4);
+  assert.equal(result.failed, 0);
+  assert.deepEqual(deletedKeys, []);
   assert.deepEqual(data.assets.map((asset) => asset.id), [
-    'referenced', 'fresh', 'delete-fails', 'active-history',
+    'expired', 'referenced', 'fresh', 'delete-fails', 'active-history', 'expired-history', 'legacy-expired',
   ]);
+  assert.deepEqual(data.assets.filter((asset) => asset.deletedAt).map((asset) => asset.id), ['expired', 'delete-fails', 'expired-history', 'legacy-expired']);
+});
+
+test('bulk asset deletion soft-deletes only unreferenced assets', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'ads-bulk-assets-'));
+  const sentCodes = [];
+  const { app, db } = await createApp({ databasePath: join(directory, 'database.json'), secureCookies: false, videoQueue: false, maintenance: false, sendEmailCode: async (message) => sentCodes.push(message) });
+  const server = app.listen(0, '127.0.0.1'); await new Promise((resolve) => server.once('listening', resolve)); t.after(() => server.close());
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const email = 'bulk-assets@example.com';
+  await fetch(`${origin}/api/auth/email-code`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, purpose: 'register' }) });
+  const cookie = (await fetch(`${origin}/api/auth/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'bulk-assets', email, password: 'strong-pass-123', verificationCode: sentCodes.at(-1).code }) })).headers.get('set-cookie').split(';')[0];
+  await db.mutate((data) => data.assets.push(
+    { id: 'bulk-free', userId: data.users[0].id, mimeType: 'image/png', byteSize: 1, createdAt: new Date().toISOString() },
+    { id: 'bulk-used', userId: data.users[0].id, mimeType: 'image/png', byteSize: 1, createdAt: new Date().toISOString() },
+  ));
+  await db.mutate((data) => data.projects.push({ id: 'bulk-project', userId: data.users[0].id, title: 'p', description: '', projectData: { nodes: [{ data: { generatedContent: '/api/assets/public/bulk-used' } }] }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
+  const response = await fetch(`${origin}/api/assets/bulk-delete`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ ids: ['bulk-free', 'bulk-used'] }) });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json().then((body) => ({ deleted: body.deleted, skipped: body.skipped })), { deleted: 1, skipped: ['bulk-used'] });
+  assert.ok(db.read('assets').find((asset) => asset.id === 'bulk-free').deletedAt);
+  assert.equal(db.read('assets').find((asset) => asset.id === 'bulk-used').deletedAt, undefined);
 });
 
 test('maintenance migrates legacy database image bytes before clearing their payload', async () => {
