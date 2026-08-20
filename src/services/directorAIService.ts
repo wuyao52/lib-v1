@@ -415,9 +415,16 @@ function buildMessages(input: GenerateAIStoryboardInput, segments: StorySourceSe
 type ChatMessage = { role: string; content: string };
 
 async function requestCompletion(model: AIModelConfig, input: GenerateAIStoryboardInput, messages: ChatMessage[], structured: boolean) {
+  const apiKey = String(model.apiKey || '').trim();
   const response = await fetch(chatCompletionUrl(model.baseUrl), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${model.apiKey.trim()}` },
+    headers: {
+      'Content-Type': 'application/json',
+      // OpenAI-compatible gateways use Authorization; WeijinAPI also accepts
+      // x-api-key. Managed models are authenticated by the same-origin proxy
+      // session, so an empty bearer value is intentionally omitted.
+      ...(apiKey ? { Authorization: `Bearer ${apiKey}`, 'x-api-key': apiKey } : {}),
+    },
     body: JSON.stringify({
       model: model.modelId,
       messages,
