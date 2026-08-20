@@ -83,12 +83,16 @@ function videoResultOf(body) {
   const payload = payloadOf(body);
   const urls = [
     payload?.video_url, payload?.official_video_url, payload?.videoUrl, payload?.url,
+    payload?.result_url, payload?.content,
     body?.video_url, body?.official_video_url, body?.videoUrl, body?.url,
+    body?.result_url, body?.content,
     body?.result?.video_url, body?.result?.videoUrl, body?.result?.url,
+    body?.result?.result_url, body?.result?.content,
     body?.result?.data?.[0]?.video_url, body?.result?.data?.[0]?.videoUrl, body?.result?.data?.[0]?.url,
     body?.output?.video_url, body?.output?.videoUrl, body?.output?.url,
     body?.output?.data?.[0]?.video_url, body?.output?.data?.[0]?.videoUrl, body?.output?.data?.[0]?.url,
     body?.data?.result?.video_url, body?.data?.result?.videoUrl, body?.data?.result?.url,
+    body?.data?.result?.result_url, body?.data?.result?.content,
     body?.data?.result?.data?.[0]?.url, body?.data?.output?.video_url, body?.data?.output?.url,
     body?.videos?.[0]?.url, body?.data?.videos?.[0]?.url,
   ];
@@ -246,7 +250,14 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
     if (!job || TERMINAL_STATUSES.has(job.status)) return null;
     let durableResult = result;
     if (generatedMedia) {
-      try { durableResult = await generatedMedia.archive(job, result); }
+      try {
+        // Authenticated provider result URLs are downloaded only on the
+        // server. The credentials never enter the persisted job or browser.
+        const api = apiForJob(job);
+        const adapter = createVideoProviderAdapter(api, { fetchImpl, resolveHost });
+        const downloadHeaders = adapter.resultHeaders ? adapter.resultHeaders() : undefined;
+        durableResult = await generatedMedia.archive(job, result, { headers: downloadHeaders });
+      }
       catch (error) { console.error(`视频 ${job.id} 归档失败，暂时保留供应商地址:`, error); }
     }
     const completedAt = nowIso();
