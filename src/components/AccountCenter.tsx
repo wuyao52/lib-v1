@@ -8,7 +8,7 @@ type Recharge = { id: string; amountCents: number; status: string; note: string;
 type PaymentOrder = { id: string; userId?: string; provider: 'alipay' | 'wechat'; amountCents: number; status: string; payUrl: string; createdAt: string; paidAt?: string | null };
 type SystemApi = { id: string; name: string; provider: string; baseUrl: string; apiKey: string; enabled: boolean };
 type Pricing = { id: string; apiId: string; modelId: string; displayName: string; category: string; billingUnit: string; unitPriceCents: number; minDurationSec?: number | null; maxDurationSec?: number | null; allowedDurationsSec?: number[]; allowedResolutions?: string[]; maxReferenceImages?: number; maxReferenceAudios?: number; maxReferenceVideos?: number; enabled: boolean };
-type DiscoveredModel = { id: string; name: string; type: string; supportedResolutions?: string[] };
+type DiscoveredModel = { id: string; name: string; type: string; supportedResolutions?: string[]; allowedDurationsSec?: number[]; supportedRatios?: string[]; maxReferenceImages?: number; maxReferenceAudios?: number; maxReferenceVideos?: number };
 type QueueOverview = {
   counts: Record<'queued' | 'submitting' | 'processing' | 'completed' | 'failed', number>;
   config: { globalConcurrency: number; userConcurrency: number; apiConcurrency: number; maxQueuePerUser: number } | null;
@@ -245,7 +245,7 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
 
   const selectDiscoveredModel = (modelId: string) => {
     const model = discoveredModels.find((item) => item.id === modelId);
-    setPriceForm((current) => ({ ...current, modelId, displayName: model?.name || current.displayName, category: model?.type || current.category, allowedResolutions: model?.supportedResolutions?.join(',') || current.allowedResolutions }));
+    setPriceForm((current) => ({ ...current, modelId, displayName: model?.name || current.displayName, category: model?.type || current.category, allowedDurations: model?.allowedDurationsSec?.join(',') || current.allowedDurations, allowedResolutions: model?.supportedResolutions?.join(',') || current.allowedResolutions, maxReferenceImages: model?.maxReferenceImages === undefined ? current.maxReferenceImages : String(model.maxReferenceImages), maxReferenceAudios: model?.maxReferenceAudios === undefined ? current.maxReferenceAudios : String(model.maxReferenceAudios), maxReferenceVideos: model?.maxReferenceVideos === undefined ? current.maxReferenceVideos : String(model.maxReferenceVideos) }));
   };
 
   const loadModelsForPricing = async (apiId: string, resetSelection = true) => {
@@ -271,7 +271,7 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
     try {
       await apiRequest(editingPriceId ? `/api/admin/pricing/${editingPriceId}` : '/api/admin/pricing', {
         method: editingPriceId ? 'PUT' : 'POST',
-        body: JSON.stringify({ ...priceForm, unitPriceCents, minDurationSec: fixedDurations.length ? null : priceForm.minDurationSec, maxDurationSec: fixedDurations.length ? null : priceForm.maxDurationSec, allowedDurationsSec: fixedDurations, allowedResolutions: priceForm.allowedResolutions.split(',').map((value) => value.trim()).filter(Boolean), maxReferenceImages: priceForm.maxReferenceImages }),
+        body: JSON.stringify({ ...priceForm, unitPriceCents, minDurationSec: fixedDurations.length ? null : priceForm.minDurationSec, maxDurationSec: fixedDurations.length ? null : priceForm.maxDurationSec, allowedDurationsSec: fixedDurations, allowedResolutions: priceForm.allowedResolutions.split(',').map((value) => value.trim()).filter(Boolean), maxReferenceImages: priceForm.maxReferenceImages, maxReferenceAudios: priceForm.maxReferenceAudios, maxReferenceVideos: priceForm.maxReferenceVideos }),
       });
       const selectedApiId = priceForm.apiId;
       const wasEditing = Boolean(editingPriceId);
