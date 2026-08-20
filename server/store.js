@@ -8,6 +8,7 @@ const EMPTY_DATABASE = {
   imageCaptchas: [],
   skills: [],
   projects: [],
+  projectRevisions: [],
   systemApis: [],
   modelPricing: [],
   balanceTransactions: [],
