@@ -44,7 +44,7 @@ function parseRange(value) {
 
 export function createGeneratedMediaService({ db, storage, fetchImpl = fetch, resolveHost = lookup } = {}) {
   const mutateMedia = (mutator) => db.mutateCollections ? db.mutateCollections(['generatedMedia'], mutator) : db.mutate(mutator);
-  const archive = async (job, result) => {
+  const archive = async (job, result, options = {}) => {
     if (!storage || !result?.url) return result;
     const existing = db.read('generatedMedia').find((item) => item.jobId === job.id);
     if (existing) return { ...result, url: `/api/generated-media/${existing.id}` };
@@ -56,7 +56,10 @@ export function createGeneratedMediaService({ db, storage, fetchImpl = fetch, re
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 120000);
     try {
-      const response = await fetchImpl(target, { method: 'GET', redirect: 'error', signal: controller.signal });
+      const headers = options?.headers instanceof Headers
+        ? options.headers
+        : options?.headers && typeof options.headers === 'object' ? new Headers(options.headers) : undefined;
+      const response = await fetchImpl(target, { method: 'GET', redirect: 'error', headers, signal: controller.signal });
       if (!response.ok || !response.body) throw new Error(`下载成功视频失败 (${response.status})`);
       const contentLength = Number(response.headers.get('content-length') || 0);
       if (contentLength > maxVideoBytes()) throw new Error('生成视频超过平台归档大小限制');
