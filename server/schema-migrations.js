@@ -71,6 +71,32 @@ const migrations = [
       await ensureColumn('model_pricing', 'max_reference_images', 'INT NULL');
     },
   },
+  {
+    version: 6,
+    name: 'project_revisions',
+    async up({ query }) {
+      await query(`CREATE TABLE IF NOT EXISTS project_revisions (
+        id CHAR(36) PRIMARY KEY, project_id VARCHAR(100) NOT NULL, user_id CHAR(36) NOT NULL,
+        version INT NOT NULL, project_data JSON NOT NULL, created_at VARCHAR(35) NOT NULL, reason VARCHAR(32) NOT NULL,
+        INDEX project_revisions_lookup_idx (project_id, user_id, version)
+      ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
+    },
+  },
+  {
+    version: 7,
+    name: 'asset_soft_delete',
+    async up({ ensureColumn }) {
+      await ensureColumn('assets', 'deleted_at', 'VARCHAR(35) NULL');
+    },
+  },
+  {
+    version: 8,
+    name: 'model_reference_audio_video_limits',
+    async up({ ensureColumn }) {
+      await ensureColumn('model_pricing', 'max_reference_audios', 'INT NULL');
+      await ensureColumn('model_pricing', 'max_reference_videos', 'INT NULL');
+    },
+  },
 ];
 
 export async function runSchemaMigrations(pool) {
