@@ -135,6 +135,17 @@ function enforceReferenceImageLimit(pricing, body) {
   }
 }
 
+function enforceReferenceMediaLimits(pricing, body) {
+  if (pricing.category !== 'video' || !body || typeof body !== 'object') return;
+  const count = (keys) => keys.reduce((total, key) => total + (Array.isArray(body[key]) ? body[key].length : body[key] ? 1 : 0), 0);
+  const audioCount = count(['audios', 'audio', 'reference_audios', 'reference_audio']);
+  const videoCount = count(['videos', 'video', 'reference_videos', 'reference_video']);
+  const audioLimit = Number.isInteger(Number(pricing.maxReferenceAudios)) ? Number(pricing.maxReferenceAudios) : 0;
+  const videoLimit = Number.isInteger(Number(pricing.maxReferenceVideos)) ? Number(pricing.maxReferenceVideos) : 0;
+  if (audioCount > audioLimit) { const error = new Error(`该模型最多支持 ${audioLimit} 个参考音频，本次收到 ${audioCount} 个`); error.code = 'REFERENCE_AUDIO_LIMIT_EXCEEDED'; throw error; }
+  if (videoCount > videoLimit) { const error = new Error(`该模型最多支持 ${videoLimit} 个参考视频，本次收到 ${videoCount} 个`); error.code = 'REFERENCE_VIDEO_LIMIT_EXCEEDED'; throw error; }
+}
+
 function buildTarget(api, requestUrl) {
   const base = new URL(`${api.baseUrl.replace(/\/+$/, '')}/`);
   const suffix = String(requestUrl || '/').replace(/^\/+/, '');
@@ -246,6 +257,7 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
       try {
         requestBody = normalizeManagedVideoResolution(pricing, api, requestBody);
         enforceReferenceImageLimit(pricing, requestBody);
+        enforceReferenceMediaLimits(pricing, requestBody);
         chargeCents = computeCharge(pricing, requestBody);
       } catch (error) { return res.status(400).json({ error: error.code, message: error.message }); }
       await db.mutate((data) => data.auditLogs.push({
