@@ -93,6 +93,9 @@ export function createVideoProviderAdapter(api, { fetchImpl = fetch, resolveHost
           method: 'DELETE', redirect: 'manual', headers: headers(), signal,
         });
       },
+      resultHeaders() {
+        return headers();
+      },
       refreshResult: null,
     };
   }
@@ -115,6 +118,9 @@ export function createVideoProviderAdapter(api, { fetchImpl = fetch, resolveHost
     },
     cancel() {
       return null;
+    },
+    resultHeaders() {
+      return headers();
     },
     refreshResult(taskId, signal) {
       return fetchImpl(buildTarget(api, `/api/task/${encodeURIComponent(taskId)}/video-link?refresh=1`), {
