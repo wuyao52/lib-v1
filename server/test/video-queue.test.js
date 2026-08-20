@@ -96,6 +96,26 @@ test('video queue accepts a completed ToAPIs-style result.data video response wi
   assert.equal(db.data.generationHistory[0]?.url, 'https://files.toapis.example/videos/finished.mp4');
 });
 
+test('video queue accepts WeijinAPI completed result_url/content endpoints without an mp4 suffix', async () => {
+  const db = fakeDb({
+    users: [{ id: 'user-a', balanceCents: 0 }],
+    systemApis: [{ id: 'api-1', enabled: true, baseUrl: 'https://www.weijinapi.top', encryptedApiKey: 'weijin-secret' }],
+  });
+  const fetchImpl = async (_url, options) => {
+    assert.equal(options.method, 'POST');
+    assert.equal(options.headers.get('authorization'), 'Bearer weijin-secret');
+    return new Response(JSON.stringify({
+      id: 'weijin-task-1', task_id: 'weijin-task-1', status: 'completed', progress: 100,
+      result_url: 'https://www.weijinapi.top/v1/videos/weijin-task-1/content',
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  const queue = await createVideoQueue({ db, vault: { decrypt: (value) => value }, fetchImpl, autoStart: false });
+  await queue.enqueue({ id: 'weijin-result-job', userId: 'user-a', apiId: 'api-1', modelId: 'seedance2.0', requestBody: { prompt: 'weijin completed' } });
+  await waitFor(() => db.data.generationJobs[0]?.status === 'completed');
+  assert.equal(db.data.generationJobs[0].resultUrl, 'https://www.weijinapi.top/v1/videos/weijin-task-1/content');
+  assert.equal(db.data.generationHistory[0]?.url, 'https://www.weijinapi.top/v1/videos/weijin-task-1/content');
+});
+
 test('video queue completes a polled ToAPIs task when a direct video exists at 100 percent despite a stale processing status', async () => {
   const db = fakeDb({
     users: [{ id: 'user-a', balanceCents: 0 }],
