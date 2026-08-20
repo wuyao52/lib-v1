@@ -176,6 +176,9 @@ export function extractVideoResult(response: any): { url: string; thumbnail?: st
     payload?.video_url, payload?.videoUrl, payload?.url, response?.video_url, response?.videoUrl, response?.url,
     response?.result?.video_url, response?.result?.videoUrl, response?.result?.url,
     response?.result?.data?.[0]?.video_url, response?.result?.data?.[0]?.videoUrl, response?.result?.data?.[0]?.url,
+    response?.result_url, response?.content,
+    response?.data?.result_url, response?.data?.content,
+    response?.result?.result_url, response?.result?.content,
     response?.output?.video_url, response?.output?.videoUrl, response?.output?.url,
     response?.output?.data?.[0]?.video_url, response?.output?.data?.[0]?.videoUrl, response?.output?.data?.[0]?.url,
     response?.data?.result?.video_url, response?.data?.result?.videoUrl, response?.data?.result?.url,
@@ -415,6 +418,10 @@ export class SeedanceService extends AIService {
       // 可选参数：参考图片
       const preparedImages = await prepareReferenceImages(settings.images);
       if (preparedImages.length > 0) requestBody.images = preparedImages;
+      const referenceVideos = Array.isArray(settings.videos) ? settings.videos.filter((value: unknown): value is string => typeof value === 'string' && /^https:\/\//i.test(value.trim())) : [];
+      const referenceAudios = Array.isArray(settings.audios) ? settings.audios.filter((value: unknown): value is string => typeof value === 'string' && /^https:\/\//i.test(value.trim())) : [];
+      if (referenceVideos.length) requestBody.videos = referenceVideos;
+      if (referenceAudios.length) requestBody.audios = referenceAudios;
 
       console.log('调用视频生成 API:', url);
       console.log('请求参数摘要:', { ...requestBody, images: preparedImages.map((image) => ({ kind: image.startsWith('data:') ? 'data-url' : 'url', bytes: image.startsWith('data:') ? dataUrlByteLength(image) : undefined })) });
