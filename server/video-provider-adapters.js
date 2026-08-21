@@ -37,7 +37,7 @@ async function downloadReference(urlValue, index, { fetchImpl, resolveHost, sign
   if (!/^image\/(?:png|jpe?g|webp|gif)$/.test(mimeType)) throw new Error('时时科技参考文件不是受支持的图片');
   const bytes = await readLimitedBody(response, MAX_REFERENCE_FILE_BYTES);
   const extension = mimeType.includes('png') ? 'png' : mimeType.includes('webp') ? 'webp' : mimeType.includes('gif') ? 'gif' : 'jpg';
-  return { blob: new Blob([bytes], { type: mimeType }), filename: `reference-${index + 1}.${extension}` };
+  return { blob: new Blob([bytes], { type: mimeType }), filename: `参考图${index + 1}.${extension}` };
 }
 
 async function shishikejiForm(requestBody, dependencies) {
