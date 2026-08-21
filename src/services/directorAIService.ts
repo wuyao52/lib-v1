@@ -1,4 +1,4 @@
-import type { AIModelConfig, DramaProject } from '@/types';
+import type { AIModelConfig, DramaProject, TextModelProtocol } from '@/types';
 import type { DirectorShot, StoryboardPlan } from '@/types/director';
 import type { UserSkill } from '@/types/skill';
 
@@ -208,10 +208,11 @@ function fitManualTotal(shots: DirectorShot[], requestedDuration: number) {
   return adjusted;
 }
 
-function chatCompletionUrl(baseUrl: string) {
+function textCompletionUrl(baseUrl: string, protocol: Exclude<TextModelProtocol, 'auto'>) {
   const normalized = baseUrl.trim().replace(/\/+$/, '');
-  if (/\/chat\/completions$/i.test(normalized)) return normalized;
-  return `${normalized}${/\/v1$/i.test(normalized) ? '' : '/v1'}/chat/completions`;
+  const suffix = protocol === 'openai-chat' ? 'chat/completions' : protocol === 'openai-responses' ? 'responses' : 'messages';
+  if (normalized.toLowerCase().endsWith(`/${suffix}`)) return normalized;
+  return `${normalized}${/\/v1$/i.test(normalized) ? '' : '/v1'}/${suffix}`;
 }
 
 export function resolveDirectorTextModel(project: DramaProject): AIModelConfig | null {
@@ -225,7 +226,18 @@ function extractMessageContent(payload: any): string {
   if (Array.isArray(content)) {
     return content.map((part) => typeof part === 'string' ? part : part?.text || '').join('');
   }
-  throw new Error(payload?.error?.message || '文本模型没有返回可读取的分镜内容');
+  if (typeof payload?.output_text === 'string') return payload.output_text;
+  if (Array.isArray(payload?.output)) {
+    const output = payload.output.flatMap((item: any) => Array.isArray(item?.content) ? item.content : [])
+      .map((part: any) => typeof part === 'string' ? part : part?.text || part?.output_text || '')
+      .join('');
+    if (output) return output;
+  }
+  if (Array.isArray(payload?.content)) {
+    const anthropic = payload.content.map((part: any) => typeof part === 'string' ? part : part?.text || '').join('');
+    if (anthropic) return anthropic;
+  }
+  throw new Error(payload?.error?.message || payload?.message || '文本模型没有返回可读取的分镜内容');
 }
 
 function parseJsonContent(content: string) {
@@ -414,29 +426,63 @@ function buildMessages(input: GenerateAIStoryboardInput, segments: StorySourceSe
 
 type ChatMessage = { role: string; content: string };
 
+const protocolCandidates = (protocol: TextModelProtocol | undefined): Array<Exclude<TextModelProtocol, 'auto'>> => (
+  !protocol || protocol === 'auto'
+    ? ['openai-chat', 'openai-responses', 'anthropic-messages']
+    : [protocol]
+);
+
+function completionRequestBody(protocol: Exclude<TextModelProtocol, 'auto'>, model: AIModelConfig, messages: ChatMessage[], structured: boolean) {
+  const temperature = model.parameters?.temperature ?? 0.4;
+  const maxTokens = model.parameters?.maxTokens ?? model.parameters?.max_tokens ?? 12000;
+  if (protocol === 'openai-responses') {
+    return { model: model.modelId, input: messages, temperature, max_output_tokens: maxTokens };
+  }
+  if (protocol === 'anthropic-messages') {
+    const system = messages.filter((message) => message.role === 'system').map((message) => message.content).join('\n\n');
+    const conversation = messages.filter((message) => message.role !== 'system').map((message) => ({
+      role: message.role === 'assistant' ? 'assistant' : 'user', content: message.content,
+    }));
+    return { model: model.modelId, system, messages: conversation, temperature, max_tokens: maxTokens };
+  }
+  return {
+    model: model.modelId, messages, temperature, max_tokens: maxTokens,
+    ...(structured ? { response_format: { type: 'json_object' } } : {}),
+  };
+}
+
 async function requestCompletion(model: AIModelConfig, input: GenerateAIStoryboardInput, messages: ChatMessage[], structured: boolean) {
   const apiKey = String(model.apiKey || '').trim();
-  const response = await fetch(chatCompletionUrl(model.baseUrl), {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      // OpenAI-compatible gateways use Authorization; WeijinAPI also accepts
-      // x-api-key. Managed models are authenticated by the same-origin proxy
-      // session, so an empty bearer value is intentionally omitted.
-      ...(apiKey ? { Authorization: `Bearer ${apiKey}`, 'x-api-key': apiKey } : {}),
-    },
-    body: JSON.stringify({
-      model: model.modelId,
-      messages,
-      temperature: model.parameters?.temperature ?? 0.4,
-      max_tokens: model.parameters?.maxTokens ?? model.parameters?.max_tokens ?? 12000,
-      ...(structured ? { response_format: { type: 'json_object' } } : {}),
-    }),
-    signal: input.signal,
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw Object.assign(new Error(payload?.error?.message || `文本模型请求失败 (${response.status})`), { status: response.status });
-  return payload;
+  const candidates = protocolCandidates(model.textProtocol);
+  let lastError: any;
+  for (let index = 0; index < candidates.length; index += 1) {
+    const protocol = candidates[index];
+    const response = await fetch(textCompletionUrl(model.baseUrl, protocol), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(protocol === 'anthropic-messages' ? { 'anthropic-version': '2023-06-01' } : {}),
+        // Managed models are authenticated by the same-origin proxy session.
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}`, 'x-api-key': apiKey } : {}),
+      },
+      body: JSON.stringify(completionRequestBody(protocol, model, messages, structured)),
+      signal: input.signal,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (response.ok) return payload;
+    const error = Object.assign(new Error(payload?.error?.message || payload?.message || `文本模型请求失败 (${response.status})`), { status: response.status, protocol });
+    lastError = error;
+    const canTryNextProtocol = (!model.textProtocol || model.textProtocol === 'auto') && [404, 405].includes(response.status) && index < candidates.length - 1;
+    if (!canTryNextProtocol) throw error;
+  }
+  throw lastError || new Error('文本模型请求失败');
+}
+
+function completionWasTruncated(payload: any) {
+  return payload?.choices?.[0]?.finish_reason === 'length'
+    || payload?.stop_reason === 'max_tokens'
+    || payload?.status === 'incomplete'
+    || payload?.incomplete_details?.reason === 'max_output_tokens';
 }
 
 function buildNdjsonMessages(
@@ -592,10 +638,10 @@ export async function generateAIStoryboard(input: GenerateAIStoryboardInput): Pr
         payload = await requestCompletion(model, input, messages, true);
       } catch (error: any) {
         if (input.signal?.aborted) throw error;
-        if (![400, 404, 422].includes(error?.status)) throw error;
+        if (![400, 422].includes(error?.status)) throw error;
         payload = await requestCompletion(model, input, messages, false);
       }
-      responseWasTruncated = payload?.choices?.[0]?.finish_reason === 'length';
+      responseWasTruncated = completionWasTruncated(payload);
       try {
         raw = bindSingleSourceCoverage(parseJsonContent(extractMessageContent(payload)), expectedIds);
         invalidJson = false;
