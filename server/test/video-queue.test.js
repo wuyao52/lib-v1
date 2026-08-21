@@ -224,6 +224,41 @@ test('video queue adapts Shishikeji multipart submission, license auth, polling 
   assert.equal(calls.some((call) => call.target.includes('license_key=')), false);
 });
 
+test('video queue completes a BYS task and saves result.videos to generation history', async () => {
+  const db = fakeDb({
+    users: [{ id: 'user-a', balanceCents: 0 }],
+    systemApis: [{ id: 'api-bys', enabled: true, baseUrl: 'https://www.boyesir.icu', encryptedApiKey: 'bys-secret' }],
+  });
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    const target = String(url); calls.push({ target, options });
+    assert.equal(options.headers.get('authorization'), 'Bearer bys-secret');
+    if (target === 'https://www.boyesir.icu/v1/videos/generations') {
+      const body = JSON.parse(options.body);
+      assert.equal(body.duration, 10);
+      assert.equal(body.ratio, '9:16');
+      assert.deepEqual(body.images, ['https://assets.example/reference.png']);
+      return new Response(JSON.stringify({ task_id: 'canvas_vid_queue', status: 'queued' }), { status: 202, headers: { 'content-type': 'application/json' } });
+    }
+    if (target === 'https://www.boyesir.icu/v1/tasks/canvas_vid_queue') {
+      return new Response(JSON.stringify({ status: 'succeeded', result: { videos: ['https://cdn.boyesir.example/final.mp4'] } }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    throw new Error(`Unexpected BYS request: ${target}`);
+  };
+  const queue = await createVideoQueue({ db, vault: { decrypt: (value) => value }, fetchImpl, autoStart: false });
+  await queue.enqueue({
+    id: 'bys-job', userId: 'user-a', apiId: 'api-bys', modelId: 'nd-seedance-2.0-720p',
+    requestBody: { model: 'nd-seedance-2.0-720p', prompt: 'BYS queue proof', seconds: 10, aspect_ratio: '9:16', resolution: '720p', images: ['https://assets.example/reference.png'] },
+  });
+  await waitFor(() => db.data.generationJobs[0]?.status === 'processing');
+  db.data.generationJobs[0].nextPollAt = 0;
+  await queue.tick();
+  await waitFor(() => db.data.generationJobs[0]?.status === 'completed');
+  assert.equal(db.data.generationJobs[0].resultUrl, 'https://cdn.boyesir.example/final.mp4');
+  assert.equal(db.data.generationHistory[0]?.url, 'https://cdn.boyesir.example/final.mp4');
+  assert.equal(calls.length, 2);
+});
+
 test('video queue delays transient submission failures instead of refunding immediately', async () => {
   let submissions = 0;
   const db = fakeDb({
