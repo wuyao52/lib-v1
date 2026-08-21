@@ -95,6 +95,7 @@ function videoResultOf(body) {
     body?.data?.result?.result_url, body?.data?.result?.content,
     body?.data?.result?.data?.[0]?.url, body?.data?.output?.video_url, body?.data?.output?.url,
     body?.videos?.[0]?.url, body?.data?.videos?.[0]?.url,
+    body?.result?.videos?.[0], body?.data?.result?.videos?.[0],
   ];
   const thumbnails = [payload?.thumbnail_url, payload?.thumbnailUrl, body?.thumbnail_url, body?.thumbnailUrl, body?.result?.thumbnail_url, body?.result?.thumbnailUrl, body?.output?.thumbnail_url, body?.output?.thumbnailUrl];
   return {
