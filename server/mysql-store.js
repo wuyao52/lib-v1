@@ -143,6 +143,7 @@ const TABLES = {
       id CHAR(36) PRIMARY KEY,
       name VARCHAR(100) NOT NULL,
       provider VARCHAR(80) NOT NULL,
+      text_protocol VARCHAR(32) NOT NULL DEFAULT 'auto',
       base_url VARCHAR(500) NOT NULL,
       encrypted_api_key TEXT NOT NULL,
       enabled TINYINT(1) NOT NULL DEFAULT 1,
@@ -150,9 +151,9 @@ const TABLES = {
       created_at VARCHAR(35) NOT NULL,
       updated_at VARCHAR(35) NOT NULL
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
-    select: 'SELECT id, name, provider, base_url AS baseUrl, encrypted_api_key AS encryptedApiKey, enabled, created_by AS createdBy, created_at AS createdAt, updated_at AS updatedAt FROM system_apis',
-    insert: 'INSERT INTO system_apis (id, name, provider, base_url, encrypted_api_key, enabled, created_by, created_at, updated_at) VALUES ?',
-    values: (row) => [row.id, row.name, row.provider, row.baseUrl, row.encryptedApiKey, row.enabled ? 1 : 0, row.createdBy, row.createdAt, row.updatedAt],
+    select: 'SELECT id, name, provider, text_protocol AS textProtocol, base_url AS baseUrl, encrypted_api_key AS encryptedApiKey, enabled, created_by AS createdBy, created_at AS createdAt, updated_at AS updatedAt FROM system_apis',
+    insert: 'INSERT INTO system_apis (id, name, provider, text_protocol, base_url, encrypted_api_key, enabled, created_by, created_at, updated_at) VALUES ?',
+    values: (row) => [row.id, row.name, row.provider, row.textProtocol || 'auto', row.baseUrl, row.encryptedApiKey, row.enabled ? 1 : 0, row.createdBy, row.createdAt, row.updatedAt],
     parse: (row) => ({ ...row, enabled: Boolean(row.enabled) }),
   },
   userApiConfigs: {
