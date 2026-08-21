@@ -614,7 +614,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     if (!project) return;
 
     const newEdges = addEdge(
-      { ...connection, type: 'smoothstep', animated: true },
+      { ...connection, type: 'default', animated: true },
       project.edges
     );
 
