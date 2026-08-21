@@ -410,7 +410,9 @@ function buildMessages(input: GenerateAIStoryboardInput, segments: StorySourceSe
   const fixedShotDuration = normalizeFixedShotDuration(input.fixedShotDurationSec);
   const parsedScript = parseDirectorScript(input.story);
   const batchCharacterRatio = segments.reduce((sum, segment) => sum + segment.text.length, 0) / Math.max(1, parsedScript.shootableText.length);
-  const directorContext = parsedScript.contextText.slice(0, 6000);
+  // Keep the synchronous Netlify -> Railway request small. The current batch
+  // is the source of truth; only a compact continuity context is needed.
+  const directorContext = parsedScript.contextText.slice(0, 2200);
   const durationInstruction = input.durationMode === 'fixed-shot'
     ? `用户指定每个分镜固定为 ${fixedShotDuration} 秒。必须按这个时间预算拆分可见节拍，每个 shot 的 targetDurationSec 必须严格填写 ${fixedShotDuration}；不得通过改变时长省略、合并或新增剧情。`
     : input.durationMode === 'manual'
@@ -444,7 +446,10 @@ const protocolCandidates = (protocol: TextModelProtocol | undefined): Array<Excl
 
 function completionRequestBody(protocol: Exclude<TextModelProtocol, 'auto'>, model: AIModelConfig, messages: ChatMessage[], structured: boolean) {
   const temperature = model.parameters?.temperature ?? 0.4;
-  const maxTokens = model.parameters?.maxTokens ?? model.parameters?.max_tokens ?? 12000;
+  // One source segment is processed per batch. A bounded response avoids
+  // provider/Netlify gateway timeouts caused by oversized JSON completions.
+  const configuredMaxTokens = Number(model.parameters?.maxTokens ?? model.parameters?.max_tokens ?? 4000);
+  const maxTokens = Math.min(6000, Math.max(1200, Number.isFinite(configuredMaxTokens) ? configuredMaxTokens : 4000));
   if (protocol === 'openai-responses') {
     return { model: model.modelId, input: messages, temperature, max_output_tokens: maxTokens };
   }
@@ -504,7 +509,7 @@ function buildNdjsonMessages(
   completedShots: any[],
 ): ChatMessage[] {
   const parsedScript = parseDirectorScript(input.story);
-  const directorContext = parsedScript.contextText.slice(0, 6000);
+  const directorContext = parsedScript.contextText.slice(0, 2200);
   const durationInstruction = input.durationMode === 'fixed-shot'
     ? `每个镜头的 targetDurationSec 必须严格为 ${normalizeFixedShotDuration(input.fixedShotDurationSec)} 秒。`
     : '每个镜头时长必须在 5–15 秒。';
