@@ -2,6 +2,7 @@ import { Node, Edge } from '@xyflow/react';
 
 // 场景节点类型
 export type SceneNodeType = 'text' | 'image' | 'video' | 'audio' | 'transition';
+export type TextModelProtocol = 'auto' | 'openai-chat' | 'openai-responses' | 'anthropic-messages';
 
 // AI模型配置
 export interface AIModelConfig {
@@ -12,6 +13,7 @@ export interface AIModelConfig {
   apiKey: string;
   baseUrl: string;
   modelId: string;
+  textProtocol?: TextModelProtocol;
   parameters: Record<string, any>;
   managed?: boolean;
   credentialManaged?: boolean;
