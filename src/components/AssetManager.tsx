@@ -113,7 +113,7 @@ export default function AssetManager({ onClose }: { onClose: () => void }) {
 
         {error && <div className="mb-4 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">{error}</div>}
         {loading && !overview ? <div className="flex h-52 items-center justify-center text-dark-400"><Loader2 className="mr-2 h-5 w-5 animate-spin" />加载素材...</div>
-          : overview?.assets.length ? <><div className="mb-3 flex items-center justify-between text-xs text-dark-400"><span>仅未引用素材可多选删除</span><button onClick={() => setSelectedIds(overview.assets.filter((asset) => !asset.referenced).map((asset) => asset.id))} className="hover:text-white">全选未引用</button></div><div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
+          : overview?.assets.length ? <><div className="mb-3 flex items-center justify-between text-xs text-dark-400"><span>仅未引用素材可多选删除</span><button onClick={() => setSelectedIds(overview.assets.filter((asset) => !asset.referenced).map((asset) => asset.id))} className="hover:text-white">全选未引用</button></div><div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4 [content-visibility:auto] [contain-intrinsic-size:600px]">
             {overview.assets.map((asset) => <article key={asset.id} className={`overflow-hidden rounded-md border bg-dark-900 ${selectedIds.includes(asset.id) ? 'border-cyan-400' : 'border-dark-600'}`}>
               <div className="aspect-video bg-dark-950"><img src={asset.url} alt="云端素材" loading="lazy" className="h-full w-full object-cover" /></div>
               <div className="space-y-2 p-3">
