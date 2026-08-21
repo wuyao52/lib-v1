@@ -46,11 +46,11 @@ async function setup({ videoQueue = false, videoQueueAutoStart = true, assetStor
 }
 
 test('managed video replaces owned asset paths with public OSS URLs before calling the provider', async (t) => {
-  const signedKeys = [];
+  const signedRequests = [];
   const context = await setup({
     assetStorage: {
       provider: 'test-oss',
-      async createDownloadUrl({ key }) { signedKeys.push(key); return `https://oss.example.test/${encodeURIComponent(key)}?signed=1`; },
+      async createDownloadUrl({ key, expiresInSeconds }) { signedRequests.push({ key, expiresInSeconds }); return `https://oss.example.test/${encodeURIComponent(key)}?signed=1`; },
       async health() {}, async get() { return Buffer.alloc(0); }, async put() {}, async delete() {},
     },
   });
@@ -71,7 +71,7 @@ test('managed video replaces owned asset paths with public OSS URLs before calli
   assert.equal(generated.status, 200);
   const providerBody = JSON.parse(context.upstreamCalls.find((call) => call.body?.includes('asset-url')).body);
   assert.deepEqual(providerBody.images, ['https://oss.example.test/assets%2Fowned-image.png?signed=1']);
-  assert.deepEqual(signedKeys, ['assets/owned-image.png']);
+  assert.deepEqual(signedRequests, [{ key: 'assets/owned-image.png', expiresInSeconds: 40 * 60 }]);
   const tooManyReferences = await context.request(`/api/system-ai/${api.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'too-many', seconds: 5, images: ['/api/assets/public/owned-image', '/api/assets/public/owned-image-2'] }) });
   assert.equal(tooManyReferences.status, 400);
   assert.equal((await tooManyReferences.json()).error, 'REFERENCE_IMAGE_LIMIT_EXCEEDED');
