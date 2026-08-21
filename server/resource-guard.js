@@ -4,6 +4,7 @@ const DEFAULTS = {
   requestsPerMinute: 60,
   maxResponseBytes: 8 * 1024 * 1024,
   timeoutMs: 90_000,
+  textTimeoutMs: 300_000,
 };
 
 const integerEnv = (name, fallback, min, max) => {
@@ -17,6 +18,7 @@ export const resourceGuardConfig = () => ({
   requestsPerMinute: integerEnv('AI_REQUESTS_PER_MINUTE', DEFAULTS.requestsPerMinute, 1, 1000),
   maxResponseBytes: integerEnv('AI_MAX_RESPONSE_BYTES', DEFAULTS.maxResponseBytes, 1024, 64 * 1024 * 1024),
   timeoutMs: integerEnv('AI_UPSTREAM_TIMEOUT_MS', DEFAULTS.timeoutMs, 1000, 10 * 60 * 1000),
+  textTimeoutMs: integerEnv('AI_TEXT_UPSTREAM_TIMEOUT_MS', DEFAULTS.textTimeoutMs, 10_000, 10 * 60 * 1000),
 });
 
 export function createResourceGuard({ db, config = resourceGuardConfig() } = {}) {
