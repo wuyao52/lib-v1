@@ -10,7 +10,7 @@ async function setup({ videoQueue = false, videoQueueAutoStart = true, assetStor
   const codes = new Map();
   const upstreamCalls = [];
   const fetchImpl = async (url, options) => {
-    upstreamCalls.push({ url: String(url), authorization: options.headers.get('authorization'), apiKey: options.headers.get('x-api-key'), body: options.body });
+    upstreamCalls.push({ url: String(url), authorization: options.headers.get('authorization'), apiKey: options.headers.get('x-api-key'), anthropicVersion: options.headers.get('anthropic-version'), body: options.body });
     if (options.method === 'DELETE') return new Response(JSON.stringify({ status: 'cancelled' }), { status: 200, headers: { 'content-type': 'application/json' } });
     if (String(url).endsWith('/v1/models')) return new Response(JSON.stringify({ data: [{ id: 'video-model', name: 'Video Model', type: 'video_generation', owned_by: 'Detected Provider' }] }), { status: 200, headers: { 'content-type': 'application/json' } });
     if (String(url).endsWith('/v1/videos/moderation-task')) return new Response(JSON.stringify({ status: 'failed', progress: 100, error: 'PROVIDER_MODERATION_ERROR' }), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -88,6 +88,34 @@ test('managed video replaces owned asset paths with public OSS URLs before calli
   assert.equal((await stolen.json()).error, 'INVALID_REFERENCE_IMAGE_URL');
 });
 
+test('managed Anthropic text requests receive the required provider version header', async (t) => {
+  const context = await setup();
+  t.after(() => context.server.close());
+  const admin = await context.register('anthropic-admin');
+  await context.db.mutate((data) => { data.users.find((item) => item.id === admin.user.id).role = 'system'; });
+  const apiResponse = await context.request('/api/admin/system-apis', admin.cookie, {
+    method: 'POST',
+    body: JSON.stringify({ name: 'Anthropic compatible', provider: 'Anthropic', textProtocol: 'anthropic-messages', baseUrl: 'https://upstream.example/v1', apiKey: 'secret-system-key' }),
+  });
+  assert.equal(apiResponse.status, 201);
+  const api = (await apiResponse.json()).api;
+  const pricingResponse = await context.request('/api/admin/pricing', admin.cookie, {
+    method: 'POST',
+    body: JSON.stringify({ apiId: api.id, modelId: 'claude-compatible', displayName: 'Claude compatible', category: 'text', billingUnit: 'request', unitPriceCents: 1 }),
+  });
+  assert.equal(pricingResponse.status, 201);
+  const completion = await context.request(`/api/system-ai/${api.id}/v1/messages`, admin.cookie, {
+    method: 'POST',
+    body: JSON.stringify({ model: 'claude-compatible', max_tokens: 100, messages: [{ role: 'user', content: 'test' }] }),
+  });
+  assert.equal(completion.status, 200);
+  const call = context.upstreamCalls.find((item) => item.url.endsWith('/v1/messages'));
+  assert.equal(call.url, 'https://upstream.example/v1/messages');
+  assert.equal(call.anthropicVersion, '2023-06-01');
+  assert.equal(call.authorization, 'Bearer secret-system-key');
+  assert.equal(call.apiKey, 'secret-system-key');
+});
+
 test('system APIs, pricing, balances and managed gateway enforce roles and billing', async (t) => {
   const context = await setup();
   t.after(() => context.server.close());
@@ -110,6 +138,7 @@ test('system APIs, pricing, balances and managed gateway enforce roles and billi
   assert.equal(createdApiResponse.status, 201);
   const createdApi = (await createdApiResponse.json()).api;
   assert.equal(createdApi.apiKey, '');
+  assert.equal(createdApi.textProtocol, 'auto');
   assert.equal('encryptedApiKey' in createdApi, false);
   const storedApi = context.db.read('systemApis')[0];
   assert.notEqual(storedApi.baseUrl, 'https://upstream.example');
@@ -121,6 +150,11 @@ test('system APIs, pricing, balances and managed gateway enforce roles and billi
   const revealed = await context.request(`/api/admin/system-apis/${createdApi.id}/reveal`, admin.cookie, { method: 'POST', body: JSON.stringify({ password: 'correct-horse' }) });
   assert.equal(revealed.status, 200);
   assert.equal((await revealed.json()).apiKey, 'secret-system-key');
+  const invalidProtocol = await context.request(`/api/admin/system-apis/${createdApi.id}`, admin.cookie, { method: 'PUT', body: JSON.stringify({ textProtocol: 'unknown-protocol' }) });
+  assert.equal(invalidProtocol.status, 400);
+  const protocolUpdate = await context.request(`/api/admin/system-apis/${createdApi.id}`, admin.cookie, { method: 'PUT', body: JSON.stringify({ textProtocol: 'anthropic-messages' }) });
+  assert.equal(protocolUpdate.status, 200);
+  assert.equal((await protocolUpdate.json()).api.textProtocol, 'anthropic-messages');
   const auditLogs = await (await context.request('/api/admin/audit-logs', admin.cookie)).json();
   assert.equal(auditLogs.logs.some((item) => item.action === 'system_api_revealed' && item.targetId === createdApi.id), true);
   assert.equal(JSON.stringify(auditLogs).includes('secret-system-key'), false);
@@ -135,6 +169,7 @@ test('system APIs, pricing, balances and managed gateway enforce roles and billi
   assert.equal(pricingResponse.status, 201);
   const catalog = await (await context.request('/api/catalog/models', normal.cookie)).json();
   assert.equal(catalog.models[0].baseUrl, `/api/system-ai/${createdApi.id}`);
+  assert.equal(catalog.models[0].textProtocol, 'anthropic-messages');
   assert.deepEqual(catalog.models[0].allowedResolutions, ['720p']);
   assert.equal(catalog.models[0].maxReferenceImages, 2);
   assert.equal(JSON.stringify(catalog).includes('secret-system-key'), false);
