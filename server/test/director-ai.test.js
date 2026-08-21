@@ -62,6 +62,36 @@ test('AI storyboard uses the configured text model and clamps each shot to 5-15 
   }
 });
 
+test('managed director text models use the same-origin system gateway', async () => {
+  const service = await loadDirectorAIService();
+  const originalFetch = globalThis.fetch;
+  let request;
+  globalThis.fetch = async (url, options) => {
+    request = { url: String(url), authorization: options.headers.Authorization, apiKey: options.headers['x-api-key'] };
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(rawPlan) } }] }), { status: 200 });
+  };
+  try {
+    const managedProject = {
+      ...project,
+      settings: {
+        ...project.settings,
+        multiModel: {
+          textModel: {
+            ...project.settings.multiModel.textModel,
+            apiId: 'managed-api-123', managed: true, apiKey: '', baseUrl: 'https://provider.example/v1',
+          },
+        },
+      },
+    };
+    await service.generateAIStoryboard({ project: managedProject, story: '这是一个足够长的完整测试剧本，人物在房间里发现一封信并决定面对过去。', voice: 'naturalist', durationMode: 'ai', skills: [] });
+    assert.equal(request.url, '/api/system-ai/managed-api-123/v1/chat/completions');
+    assert.equal(request.authorization, undefined);
+    assert.equal(request.apiKey, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('automatic text protocol falls back from a missing Chat endpoint to OpenAI Responses', async () => {
   const service = await loadDirectorAIService();
   const originalFetch = globalThis.fetch;
