@@ -417,6 +417,27 @@ const TABLES = {
   },
 };
 
+// Avoid cloning/stringifying multi-megabyte project payloads during unrelated
+// writes. Project updates use saveProject(), so version/updatedAt are the
+// authoritative change markers for those rows.
+function rowRevision(row) {
+  if (!row || typeof row !== 'object') return String(row);
+  return [row.id, row.version, row.updatedAt, row.createdAt, row.status, row.progress, row.deletedAt].map((value) => String(value ?? '')).join('|');
+}
+
+function sameRow(previous, current) {
+  if (!previous || !current) return previous === current;
+  if (rowRevision(previous) !== rowRevision(current)) return false;
+  // Small mutable records without a revision marker still need exact checks.
+  const largeFields = new Set(['projectData', 'requestBody', 'payload', 'metadata', 'instructions']);
+  const keys = new Set([...Object.keys(previous), ...Object.keys(current)]);
+  for (const key of keys) {
+    if (largeFields.has(key)) continue;
+    if (previous[key] !== current[key]) return false;
+  }
+  return true;
+}
+
 const GENERATION_JOB_PATCH_COLUMNS = {
   status: 'status', providerTaskId: 'provider_task_id', progress: 'progress', resultUrl: 'result_url',
   thumbnail: 'thumbnail', errorCode: 'error_code', errorMessage: 'error_message', attemptCount: 'attempt_count',
@@ -602,10 +623,15 @@ export class MySqlDatabase {
   async mutate(mutator) {
     let result;
     const operation = this.writeQueue.then(async () => {
-      const before = structuredClone(this.data);
+      // Keep row references shallow. Deep-cloning the whole cache can briefly
+      // require several GB when projects contain many nodes or media URLs.
+      const before = Object.fromEntries(Object.keys(TABLES).map((name) => [name, (this.data[name] || []).map((row) => ({ ...row }))]));
       try { result = mutator(this.data); }
       catch (error) { this.data = before; throw error; }
-      const changedCollections = Object.keys(TABLES).filter((name) => JSON.stringify(before[name]) !== JSON.stringify(this.data[name]));
+      const changedCollections = Object.keys(TABLES).filter((name) => {
+        const current = this.data[name] || []; const previous = before[name] || [];
+        return current.length !== previous.length || current.some((row) => !sameRow(previous.find((item) => item.id === row.id), row));
+      });
       const connection = await this.pool.getConnection();
       try {
         await connection.beginTransaction();
@@ -629,10 +655,13 @@ export class MySqlDatabase {
     if (!names.length) return mutator(this.data);
     let result;
     const operation = this.writeQueue.then(async () => {
-      const before = Object.fromEntries(names.map((name) => [name, structuredClone(this.data[name])]));
+      const before = Object.fromEntries(names.map((name) => [name, (this.data[name] || []).map((row) => ({ ...row }))]));
       try { result = mutator(this.data); }
       catch (error) { for (const name of names) this.data[name] = before[name]; throw error; }
-      const changedCollections = names.filter((name) => JSON.stringify(before[name]) !== JSON.stringify(this.data[name]));
+      const changedCollections = names.filter((name) => {
+        const current = this.data[name] || []; const previous = before[name] || [];
+        return current.length !== previous.length || current.some((row) => !sameRow(previous.find((item) => item.id === row.id), row));
+      });
       if (!changedCollections.length) return;
       const connection = await this.pool.getConnection();
       try {
@@ -896,7 +925,7 @@ export class MySqlDatabase {
     const removedIds = previousRows.filter((row) => !currentIds.has(row.id)).map((row) => row.id);
     const changedRows = currentRows.filter((row) => {
       const previous = previousById.get(row.id);
-      return !previous || JSON.stringify(previous) !== JSON.stringify(row);
+      return !sameRow(previous, row);
     });
 
     if (removedIds.length) await connection.query(`DELETE FROM \`${table}\` WHERE id IN (?)`, [removedIds]);
