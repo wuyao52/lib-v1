@@ -14,6 +14,20 @@ test('AI resource guard limits one user while allowing another user', async () =
   assert.equal(guard.active, 0);
 });
 
+test('text upstream timeout is independently configurable from general AI timeout', async () => {
+  const original = process.env.AI_TEXT_UPSTREAM_TIMEOUT_MS;
+  process.env.AI_TEXT_UPSTREAM_TIMEOUT_MS = '420000';
+  try {
+    const { resourceGuardConfig } = await import('../resource-guard.js');
+    const config = resourceGuardConfig();
+    assert.equal(config.timeoutMs, 90_000);
+    assert.equal(config.textTimeoutMs, 420_000);
+  } finally {
+    if (original === undefined) delete process.env.AI_TEXT_UPSTREAM_TIMEOUT_MS;
+    else process.env.AI_TEXT_UPSTREAM_TIMEOUT_MS = original;
+  }
+});
+
 test('AI response guard rejects an oversized response', async () => {
   const response = new Response('12345', { headers: { 'content-length': '5' } });
   await assert.rejects(readLimitedBody(response, 4), (error) => error.code === 'UPSTREAM_RESPONSE_TOO_LARGE');
