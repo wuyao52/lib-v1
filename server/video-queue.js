@@ -94,8 +94,8 @@ function videoResultOf(body) {
     body?.data?.result?.video_url, body?.data?.result?.videoUrl, body?.data?.result?.url,
     body?.data?.result?.result_url, body?.data?.result?.content,
     body?.data?.result?.data?.[0]?.url, body?.data?.output?.video_url, body?.data?.output?.url,
-    body?.videos?.[0]?.url, body?.data?.videos?.[0]?.url,
-    body?.result?.videos?.[0], body?.data?.result?.videos?.[0],
+    body?.videos?.[0]?.url, body?.videos?.[0], body?.data?.videos?.[0]?.url, body?.data?.videos?.[0],
+    body?.result?.videos?.[0]?.url, body?.result?.videos?.[0], body?.data?.result?.videos?.[0]?.url, body?.data?.result?.videos?.[0],
   ];
   const thumbnails = [payload?.thumbnail_url, payload?.thumbnailUrl, body?.thumbnail_url, body?.thumbnailUrl, body?.result?.thumbnail_url, body?.result?.thumbnailUrl, body?.output?.thumbnail_url, body?.output?.thumbnailUrl];
   return {
@@ -116,7 +116,9 @@ const completedVideoResponse = (status, result) => Boolean(result.url)
 
 function errorOf(body, statusCode) {
   const payload = payloadOf(body);
-  const raw = String(payload?.error?.message || payload?.error?.code || payload?.error
+  const raw = String(payload?.error?.detail || payload?.error?.details || payload?.details || payload?.detail
+    || body?.error?.detail || body?.error?.details || body?.details || body?.detail
+    || payload?.error?.message || payload?.error?.code || payload?.error
     || body?.error?.message || body?.error?.code || body?.message || body?.msg || body?.error || `上游请求失败 (${statusCode})`);
   if (/privacyinformation|real\s*(?:person|human|face)|真人|人脸|肖像/i.test(raw)) {
     return { code: 'PROVIDER_MODERATION_ERROR', message: '参考图片疑似包含真人，当前服务商不支持将真人肖像用作视频参考图。请移除该参考图，或改用原创角色素材后重试' };
