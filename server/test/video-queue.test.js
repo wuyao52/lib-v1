@@ -187,6 +187,7 @@ test('video queue adapts Shishikeji multipart submission, license auth, polling 
       assert.equal(options.body.get('model'), 'xinghe-2.0');
       assert.equal(options.body.get('protect_stripe'), 'true');
       assert.equal(options.body.getAll('files').length, 5);
+      assert.deepEqual(options.body.getAll('files').map((file) => file.name), ['参考图1.jpg', '参考图2.jpg', '参考图3.jpg', '参考图4.jpg', '参考图5.jpg']);
       return new Response(JSON.stringify({ task_id: 'provider-shishikeji-task', status: 'processing', progress: 1 }), { status: 200, headers: { 'content-type': 'application/json' } });
     }
     if (target === 'https://api.shishikeji.com/api/task/provider-shishikeji-task') {
