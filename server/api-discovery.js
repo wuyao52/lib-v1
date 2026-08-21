@@ -22,6 +22,17 @@ const SHISHIKEJI_VIDEO_MODELS = [
   ['jiaban-2.0', '错峰加班-2.0', ['720p']],
 ].map(([id, name, supportedResolutions]) => ({ id, name, type: 'video', supportedResolutions }));
 
+const BOYESIR_VIDEO_MODELS = [
+  ['nd-seedance-2.0-720p', 'Seedance 2.0 720p', ['720p']],
+  ['nd-seedance-2.0-480p', 'Seedance 2.0 480p', ['480p']],
+  ['seedance2.0-480p-100%', 'Seedance 2.0 480p', ['480p']],
+  ['seedance2.0-720p-100%', 'Seedance 2.0 720p', ['720p']],
+  ['seedance2.0-1080p-100%', 'Seedance 2.0 1080p', ['1080p']],
+  ['seedance-fast-2.0', 'Seedance Fast 2.0', ['480p', '720p', '1080p']],
+  ['seedance-2.0-mini', 'Seedance 2.0 Mini', ['480p', '720p']],
+  ['kling-3.0-turbo', 'Kling 3.0 Turbo', ['720p', '1080p', '2k', '4k']],
+].map(([id, name, supportedResolutions]) => ({ id, name, type: 'video', supportedResolutions, allowedDurationsSec: [4, 5, 6, 8, 10, 12, 15] }));
+
 export function knownVideoResolutions(provider, modelId) {
   if (!/时时科技/i.test(String(provider || ''))) return [];
   return SHISHIKEJI_VIDEO_MODELS.find((model) => model.id === modelId)?.supportedResolutions || [];
@@ -93,6 +104,9 @@ export async function discoverSystemApi({ baseUrl, apiKey, fetchImpl = fetch, re
       name: '时时科技视频 API', provider: '时时科技',
       models: SHISHIKEJI_VIDEO_MODELS.map((model) => ({ ...model })),
     };
+  }
+  if (['boyesir.icu', 'www.boyesir.icu'].includes(base.hostname.toLowerCase())) {
+    return { name: 'BYS api 视频 API', provider: 'BYS api', models: BOYESIR_VIDEO_MODELS.map((model) => ({ ...model })) };
   }
   const basePath = base.pathname.replace(/\/+$/, '');
   const modelsUrl = new URL(`${base.origin}${basePath.endsWith('/v1') ? basePath : `${basePath}/v1`}/models`);
