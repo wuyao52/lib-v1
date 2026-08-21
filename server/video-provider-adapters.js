@@ -14,6 +14,14 @@ function buildTarget(api, suffix) {
   return target;
 }
 
+function boyesirTarget(api, suffix) {
+  const base = new URL(api.baseUrl);
+  const basePath = base.pathname.replace(/\/+$/, '');
+  const relative = String(suffix || '').replace(/^\/+/, '');
+  const path = basePath.endsWith('/v1') && relative.startsWith('v1/') ? relative.slice(3) : relative;
+  return buildTarget(api, path);
+}
+
 export function isShishikejiVideoApi(api) {
   try { return new URL(api.baseUrl).hostname.toLowerCase() === 'api.shishikeji.com'; }
   catch { return false; }
@@ -105,13 +113,13 @@ export function createVideoProviderAdapter(api, { fetchImpl = fetch, resolveHost
         const requestHeaders = headers();
         requestHeaders.set('content-type', 'application/json');
         requestHeaders.set('idempotency-key', idempotencyKey);
-        return fetchImpl(buildTarget(api, '/v1/videos/generations'), {
+        return fetchImpl(boyesirTarget(api, '/v1/videos/generations'), {
           method: 'POST', redirect: 'manual', headers: requestHeaders,
           body: JSON.stringify(boyesirRequestBody(requestBody)), signal,
         });
       },
       poll(taskId, signal) {
-        return fetchImpl(buildTarget(api, `/v1/tasks/${encodeURIComponent(taskId)}`), {
+        return fetchImpl(boyesirTarget(api, `/v1/tasks/${encodeURIComponent(taskId)}`), {
           method: 'GET', redirect: 'manual', headers: headers(), signal,
         });
       },
