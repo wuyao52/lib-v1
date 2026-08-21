@@ -83,6 +83,16 @@ function isModerationFailure(body) {
   return /moderation|content[_ -]?policy|safety|sensitive|privacyinformation|real\s*(?:person|human|face)|审核|敏感|真人|人脸|肖像/i.test(details);
 }
 
+function providerDetails(body) {
+  const payload = body?.data && typeof body.data === 'object' ? body.data : body;
+  const candidates = [
+    body?.error?.detail, body?.error?.details, payload?.error?.detail, payload?.error?.details,
+    body?.details, body?.detail, payload?.details, payload?.detail, body?.error?.message,
+    payload?.error?.message, payload?.message, payload?.msg, body?.message, body?.msg,
+  ];
+  return candidates.find((value) => typeof value === 'string' && value.trim()) || '';
+}
+
 function providerRestrictionMessage(body, refunded = false) {
   const details = JSON.stringify(body || '');
   const privacyRestriction = /privacyinformation|real\s*(?:person|human|face)|真人|人脸|肖像/i.test(details);
@@ -344,7 +354,7 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
           responseBody = Buffer.from(JSON.stringify(parsedResponseBody));
         }
       }
-      const upstreamMessage = String(parsedResponseBody?.message || parsedResponseBody?.msg || parsedResponseBody?.error?.message || parsedResponseBody?.error || '');
+      const upstreamMessage = String(providerDetails(parsedResponseBody) || parsedResponseBody?.error || '');
       if ((!upstream.ok || businessFailure) && isModerationFailure(parsedResponseBody)) {
         const message = providerRestrictionMessage(parsedResponseBody);
         return res.status(upstream.status >= 400 ? upstream.status : 502).json({
