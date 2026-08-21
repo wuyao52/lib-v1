@@ -66,6 +66,22 @@ function publicProviderError(value: unknown): string {
     : message;
 }
 
+function providerMessage(data: any): string {
+  const candidates = [
+    data?.error?.detail, data?.error?.details, data?.data?.error?.detail, data?.data?.error?.details,
+    data?.details, data?.detail, data?.error?.message, data?.data?.error?.message,
+    data?.data?.message, data?.data?.msg, data?.message, data?.msg, data?.raw,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) return publicProviderError(candidate);
+    if (candidate && typeof candidate === 'object') {
+      const nested = providerMessage(candidate);
+      if (nested) return nested;
+    }
+  }
+  return '';
+}
+
 // 分析 fetch 错误原因
 function analyzeFetchError(error: any, url: string): string {
   const message = publicProviderError(error.message || '');
@@ -131,9 +147,9 @@ export async function prepareReferenceImages(images: unknown): Promise<string[]>
 }
 
 function providerErrorMessage(data: any): string | null {
-  if (data?.success === false) return publicProviderError(data.message || data.msg || data.error?.message || data.error || '服务商返回失败');
+  if (data?.success === false) return providerMessage(data) || '服务商返回失败';
   if (data?.code !== undefined && !['0', '200', '20000', 'SUCCESS'].includes(String(data.code).toUpperCase())) {
-    return publicProviderError(data.message || data.msg || data.error?.message || data.error || `服务商错误码 ${data.code}`);
+    return providerMessage(data) || `服务商错误码 ${data.code}`;
   }
   return null;
 }
@@ -183,7 +199,8 @@ export function extractVideoResult(response: any): { url: string; thumbnail?: st
     response?.output?.data?.[0]?.video_url, response?.output?.data?.[0]?.videoUrl, response?.output?.data?.[0]?.url,
     response?.data?.result?.video_url, response?.data?.result?.videoUrl, response?.data?.result?.url,
     response?.data?.result?.data?.[0]?.url, response?.data?.output?.video_url, response?.data?.output?.url,
-    response?.videos?.[0]?.url, response?.data?.videos?.[0]?.url,
+    response?.videos?.[0]?.url, response?.videos?.[0], response?.data?.videos?.[0]?.url, response?.data?.videos?.[0],
+    response?.result?.videos?.[0]?.url, response?.result?.videos?.[0], response?.data?.result?.videos?.[0]?.url, response?.data?.result?.videos?.[0],
   ];
   const thumbnails = [payload?.thumbnail_url, payload?.thumbnailUrl, response?.thumbnail_url, response?.thumbnailUrl, response?.result?.thumbnail_url, response?.result?.thumbnailUrl, response?.output?.thumbnail_url, response?.output?.thumbnailUrl];
   const url = urls.find((value) => typeof value === 'string' && /^https?:\/\//i.test(value.trim()))?.trim() || '';
