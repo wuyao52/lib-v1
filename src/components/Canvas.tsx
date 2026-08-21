@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow,
   Background,
@@ -6,6 +6,7 @@ import {
   MiniMap,
   BackgroundVariant,
   SelectionMode,
+  ConnectionLineType,
   useReactFlow,
 } from '@xyflow/react';
 import type { NodeTypes, OnConnectStart, OnConnectEnd, Connection } from '@xyflow/react';
@@ -22,6 +23,7 @@ import { uploadAssetFile } from '@/services/assetService';
 
 const MAX_FILES_PER_DROP = 20;
 const UPLOAD_CONCURRENCY = 4;
+const NODE_CONNECTION_TOLERANCE_PX = 36;
 
 const wait = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
@@ -118,6 +120,11 @@ export default function Canvas() {
   const hasModalOpen = showGenerationModal || showWatermarkModal;
 
   const largeGraph = project.nodes.length > 120 || project.edges.length > 180;
+  const renderedEdges = useMemo(() => project.edges.map((edge) => ({
+    ...edge,
+    type: 'default',
+    animated: edge.animated ?? !largeGraph,
+  })), [project.edges, largeGraph]);
 
   const hasFiles = (event: React.DragEvent) => event.dataTransfer.types.includes('Files');
 
@@ -283,9 +290,16 @@ export default function Canvas() {
     const wrapper = reactFlowWrapper.current;
     if (!wrapper) return;
 
-    generationSourceNodeIdsRef.current = connectionSourceNodeIdsRef.current.includes(sourceNodeId)
+    const sourceIds = connectionSourceNodeIdsRef.current.includes(sourceNodeId)
       ? connectionSourceNodeIdsRef.current
       : [sourceNodeId];
+    const nearbyTargetId = targetNodeAt(clientX, clientY, sourceIds);
+    if (nearbyTargetId) {
+      connectSourcesToTarget(sourceIds, nearbyTargetId);
+      connectionSourceNodeIdsRef.current = [];
+      return;
+    }
+    generationSourceNodeIdsRef.current = sourceIds;
     connectionSourceNodeIdsRef.current = [];
     generationPositionRef.current = screenToFlowPosition({ x: clientX, y: clientY });
     setShowGenerationModal(true);
@@ -334,9 +348,19 @@ export default function Canvas() {
   const configuredVideoModel = project.settings.multiModel?.videoModel || project.settings.aiModel;
   const selectedNodes = project.nodes.filter((node) => node.selected);
   const targetNodeAt = (clientX: number, clientY: number, sourceIds: string[]) => {
-    const element = document.elementsFromPoint(clientX, clientY)
-      .find((candidate) => candidate.classList.contains('react-flow__node') && !sourceIds.includes((candidate as HTMLElement).dataset.id || '')) as HTMLElement | undefined;
-    return element?.dataset.id || null;
+    const candidates = Array.from(reactFlowWrapper.current?.querySelectorAll<HTMLElement>('.react-flow__node') || [])
+      .filter((element) => element.dataset.id && !sourceIds.includes(element.dataset.id));
+    let nearest: { id: string; distance: number } | null = null;
+    for (const element of candidates) {
+      const rect = element.getBoundingClientRect();
+      const dx = Math.max(rect.left - clientX, 0, clientX - rect.right);
+      const dy = Math.max(rect.top - clientY, 0, clientY - rect.bottom);
+      const distance = Math.hypot(dx, dy);
+      if (distance <= NODE_CONNECTION_TOLERANCE_PX && (!nearest || distance < nearest.distance)) {
+        nearest = { id: element.dataset.id!, distance };
+      }
+    }
+    return nearest?.id || null;
   };
 
   const startBatchConnection = (event: React.PointerEvent<HTMLButtonElement>) => {
@@ -480,7 +504,7 @@ export default function Canvas() {
 
       <ReactFlow
         nodes={project.nodes}
-        edges={project.edges}
+        edges={renderedEdges}
         onNodesChange={onNodesChange}
         onNodeDragStop={pushToHistory}
         onEdgesChange={onEdgesChange}
@@ -500,7 +524,11 @@ export default function Canvas() {
         selectionMode={SelectionMode.Partial}
         multiSelectionKeyCode="Shift"
         selectionKeyCode={null}
-        defaultEdgeOptions={{ type: 'smoothstep', animated: !largeGraph, style: { stroke: '#8b5cf6', strokeWidth: 2 } }}
+        connectionLineType={ConnectionLineType.Bezier}
+        defaultEdgeOptions={{ type: 'default', animated: !largeGraph, style: { stroke: '#8b5cf6', strokeWidth: 2 } }}
+        minZoom={0.1}
+        maxZoom={3}
+        fitViewOptions={{ padding: 0.2, minZoom: 0.1, maxZoom: 1.2 }}
         className="bg-dark-950"
       >
         <Background variant={BackgroundVariant.Dots} gap={24} size={1.5} color="#334155" />
