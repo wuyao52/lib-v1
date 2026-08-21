@@ -91,27 +91,30 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
       setPaymentProviders(providerData.providers); setPaymentOrders(orderData.orders);
       return;
     }
-    const [apiData, priceData, userData, rechargeData, queueData, paymentData, metricData, operationData, securityData, backupData, storageData, quarantineData] = await Promise.all([
+    // Load the controls needed to render the admin view first. Heavy operational
+    // reports continue in the background and no longer delay the first paint.
+    const [apiData, priceData, userData, rechargeData, queueData, paymentData] = await Promise.all([
       apiRequest<{ apis: SystemApi[] }>('/api/admin/system-apis'),
       apiRequest<{ pricing: Pricing[] }>('/api/admin/pricing'),
       apiRequest<{ users: AuthUser[] }>('/api/admin/users'),
       apiRequest<{ recharges: Recharge[] }>('/api/admin/recharges'),
       apiRequest<QueueOverview>('/api/admin/video-queue'),
       apiRequest<{ orders: PaymentOrder[] }>('/api/payments/admin/orders'),
+    ]);
+    setApis(apiData.apis); setPricing(priceData.pricing); setUsers(userData.users); setRecharges(rechargeData.recharges);
+    setQueue(queueData);
+    setPaymentOrders(paymentData.orders);
+    void Promise.all([
       apiRequest<AdminMetrics>('/api/admin/metrics'),
       apiRequest<OperationsAlerts>('/api/admin/operations-alerts'),
       apiRequest<SecurityAlerts>('/api/admin/security-alerts'),
       apiRequest<BackupOverview>('/api/admin/backups').catch(() => null),
       apiRequest<StorageUsage>('/api/admin/storage-usage').catch(() => null),
       apiRequest<{ records: QuarantineRecord[] }>('/api/admin/storage-quarantine').catch(() => ({ records: [] })),
-    ]);
-    setApis(apiData.apis); setPricing(priceData.pricing); setUsers(userData.users); setRecharges(rechargeData.recharges);
-    setQueue(queueData);
-    setPaymentOrders(paymentData.orders);
-    setMetrics(metricData); setOperationsAlerts(operationData); setSecurityAlerts(securityData);
-    setBackupOverview(backupData);
-    setStorageUsage(storageData);
-    setQuarantineRecords(quarantineData.records);
+    ]).then(([metricData, operationData, securityData, backupData, storageData, quarantineData]) => {
+      setMetrics(metricData); setOperationsAlerts(operationData); setSecurityAlerts(securityData);
+      setBackupOverview(backupData); setStorageUsage(storageData); setQuarantineRecords(quarantineData.records);
+    }).catch(() => undefined);
   }, [mode]);
 
   useEffect(() => { load().catch((error) => setMessage(error.message)); }, [load]);
