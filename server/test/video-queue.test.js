@@ -96,6 +96,22 @@ test('video queue accepts a completed ToAPIs-style result.data video response wi
   assert.equal(db.data.generationHistory[0]?.url, 'https://files.toapis.example/videos/finished.mp4');
 });
 
+test('video queue accepts OneAPI result.videos as string URLs', async () => {
+  const db = fakeDb({
+    users: [{ id: 'user-a', balanceCents: 0 }],
+    systemApis: [{ id: 'api-oneapi', enabled: true, baseUrl: 'https://oneapi.example', encryptedApiKey: 'secret' }],
+  });
+  const fetchImpl = async (_url, options) => {
+    assert.equal(options.method, 'POST');
+    return new Response(JSON.stringify({ status: 'succeeded', result: { videos: ['https://cdn.example/oneapi.mp4'] } }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  const queue = await createVideoQueue({ db, vault: { decrypt: (value) => value }, fetchImpl, autoStart: false });
+  await queue.enqueue({ id: 'oneapi-result-job', userId: 'user-a', apiId: 'api-oneapi', modelId: 'seedance2.0-one-full-flex-720p', requestBody: { prompt: 'oneapi response' } });
+  await waitFor(() => db.data.generationJobs[0]?.status === 'completed');
+  assert.equal(db.data.generationJobs[0].resultUrl, 'https://cdn.example/oneapi.mp4');
+  assert.equal(db.data.generationHistory[0]?.url, 'https://cdn.example/oneapi.mp4');
+});
+
 test('video queue accepts WeijinAPI completed result_url/content endpoints without an mp4 suffix', async () => {
   const db = fakeDb({
     users: [{ id: 'user-a', balanceCents: 0 }],
