@@ -327,7 +327,9 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
       const headers = new Headers({ accept: req.headers.accept || 'application/json', authorization: `Bearer ${vault.decrypt(api.encryptedApiKey)}`, 'x-api-key': vault.decrypt(api.encryptedApiKey) });
       if (/\/v1\/messages\/?$/i.test(pathname)) headers.set('anthropic-version', '2023-06-01');
       if (req.method !== 'GET' && req.method !== 'HEAD') headers.set('content-type', 'application/json');
-      const upstream = await fetchWithTimeout(fetchImpl, target, { method: req.method, headers, body: ['GET', 'HEAD'].includes(req.method) ? undefined : JSON.stringify(requestBody), redirect: 'manual' }, limits.timeoutMs);
+      const isTextCompletion = req.method === 'POST' && /^\/v1\/(?:chat\/completions|responses|messages)\/?$/i.test(pathname);
+      const timeoutMs = isTextCompletion ? limits.textTimeoutMs : limits.timeoutMs;
+      const upstream = await fetchWithTimeout(fetchImpl, target, { method: req.method, headers, body: ['GET', 'HEAD'].includes(req.method) ? undefined : JSON.stringify(requestBody), redirect: 'manual' }, timeoutMs);
       let responseBody = await readLimitedBody(upstream, limits.maxResponseBytes);
       const contentType = upstream.headers.get('content-type') || 'application/json; charset=utf-8';
       let businessFailure = false; let parsedResponseBody;
@@ -387,7 +389,7 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
       try { await refund(); } catch (refundError) { return next(refundError); }
       if (error.code === 'INVALID_UPSTREAM_PATH') return res.status(400).json({ error: error.code, message: error.message });
       if (error.code === 'UPSTREAM_RESPONSE_TOO_LARGE') return res.status(502).json({ error: error.code, message: error.message });
-      if (error.name === 'AbortError') return res.status(504).json({ error: 'UPSTREAM_TIMEOUT', message: 'AI 服务响应超时，请稍后重试' });
+      if (error.name === 'AbortError') return res.status(504).json({ error: 'UPSTREAM_TIMEOUT', message: 'AI 服务响应超时，请稍后重试；长文本可将 Railway 的 AI_TEXT_UPSTREAM_TIMEOUT_MS 设置为 300000-600000' });
       return res.status(502).json({ error: 'UPSTREAM_UNAVAILABLE', message: '系统 AI 服务暂时不可用，已自动退款' });
     }
   });
