@@ -323,8 +323,16 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
     }
 
     try {
-      const target = buildTarget({ ...api, baseUrl: vault.decrypt(api.baseUrl) }, relativeUrl);
-      const headers = new Headers({ accept: req.headers.accept || 'application/json', authorization: `Bearer ${vault.decrypt(api.encryptedApiKey)}`, 'x-api-key': vault.decrypt(api.encryptedApiKey) });
+      let baseUrl; let apiKey;
+      try {
+        baseUrl = vault.decrypt(api.baseUrl);
+        apiKey = vault.decrypt(api.encryptedApiKey);
+      } catch (error) {
+        error.code = 'SYSTEM_API_SECRET_UNAVAILABLE';
+        throw error;
+      }
+      const target = buildTarget({ ...api, baseUrl }, relativeUrl);
+      const headers = new Headers({ accept: req.headers.accept || 'application/json', authorization: `Bearer ${apiKey}`, 'x-api-key': apiKey });
       if (/\/v1\/messages\/?$/i.test(pathname)) headers.set('anthropic-version', '2023-06-01');
       if (req.method !== 'GET' && req.method !== 'HEAD') headers.set('content-type', 'application/json');
       const isTextCompletion = req.method === 'POST' && /^\/v1\/(?:chat\/completions|responses|messages)\/?$/i.test(pathname);
@@ -388,6 +396,7 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
     } catch (error) {
       try { await refund(); } catch (refundError) { return next(refundError); }
       if (error.code === 'INVALID_UPSTREAM_PATH') return res.status(400).json({ error: error.code, message: error.message });
+      if (error.code === 'SYSTEM_API_SECRET_UNAVAILABLE') return res.status(503).json({ error: error.code, message: '系统 API 密钥不可用，请确认 Railway 的 APP_ENCRYPTION_KEY 与录入 API 时保持一致；必要时重新录入该系统 API' });
       if (error.code === 'UPSTREAM_RESPONSE_TOO_LARGE') return res.status(502).json({ error: error.code, message: error.message });
       if (error.name === 'AbortError') return res.status(504).json({ error: 'UPSTREAM_TIMEOUT', message: 'AI 服务响应超时，请稍后重试；长文本可将 Railway 的 AI_TEXT_UPSTREAM_TIMEOUT_MS 设置为 300000-600000' });
       return res.status(502).json({ error: 'UPSTREAM_UNAVAILABLE', message: '系统 AI 服务暂时不可用，已自动退款' });
