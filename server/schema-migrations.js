@@ -97,6 +97,13 @@ const migrations = [
       await ensureColumn('model_pricing', 'max_reference_videos', 'INT NULL');
     },
   },
+  {
+    version: 9,
+    name: 'system_api_text_protocol',
+    async up({ ensureColumn }) {
+      await ensureColumn('system_apis', 'text_protocol', "VARCHAR(32) NOT NULL DEFAULT 'auto'");
+    },
+  },
 ];
 
 export async function runSchemaMigrations(pool) {
