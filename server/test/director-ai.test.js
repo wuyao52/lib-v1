@@ -49,7 +49,7 @@ test('AI storyboard uses the configured text model and clamps each shot to 5-15 
     assert.equal(request.apiKey, 'session-key');
     assert.equal(request.body.model, 'mock-chat');
     assert.match(request.body.messages[1].content, /本批唯一可拍摄的剧情正文/);
-    assert.equal(request.body.max_tokens, 12000);
+    assert.equal(request.body.max_tokens, 4000);
     assert.deepEqual(plan.shots.map((shot) => shot.targetDurationSec), [5, 15]);
     assert.equal(plan.targetDurationSec, 20);
     assert.equal(plan.shots[0].status, 'ready');
@@ -111,7 +111,7 @@ test('automatic text protocol falls back from a missing Chat endpoint to OpenAI 
       'https://mock.example/v1/responses',
     ]);
     assert.ok(Array.isArray(requests[1].body.input));
-    assert.equal(requests[1].body.max_output_tokens, 12000);
+    assert.equal(requests[1].body.max_output_tokens, 4000);
     assert.equal(plan.shots.length, 2);
   } finally {
     globalThis.fetch = originalFetch;
@@ -133,7 +133,7 @@ test('Anthropic Messages protocol sends the correct envelope and reads content b
     assert.equal(request.headers['anthropic-version'], '2023-06-01');
     assert.match(request.body.system, /短剧导演/);
     assert.equal(request.body.messages[0].role, 'user');
-    assert.equal(request.body.max_tokens, 12000);
+    assert.equal(request.body.max_tokens, 4000);
     assert.equal(plan.shots.length, 2);
   } finally {
     globalThis.fetch = originalFetch;
