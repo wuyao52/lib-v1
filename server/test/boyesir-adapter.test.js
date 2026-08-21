@@ -24,3 +24,16 @@ test('BYS adapter uses generations and tasks endpoints and extracts compatible f
   const body = await poll.json();
   assert.equal(body.result.videos[0].endsWith('.mp4'), true);
 });
+
+test('BYS adapter accepts a base URL that already ends in /v1 without duplicating the path', async () => {
+  const targets = [];
+  const adapter = createVideoProviderAdapter({ baseUrl: 'https://www.boyesir.icu/v1', apiKey: 'test-key' }, {
+    fetchImpl: async (url) => { targets.push(String(url)); return new Response('{"task_id":"task-1"}', { status: 200, headers: { 'content-type': 'application/json' } }); },
+  });
+  await adapter.submit({ model: 'seedance-2.0-mini', prompt: 'test', duration: 5 }, 'idem-test-123456789', new AbortController().signal);
+  await adapter.poll('task-1', new AbortController().signal);
+  assert.deepEqual(targets, [
+    'https://www.boyesir.icu/v1/videos/generations',
+    'https://www.boyesir.icu/v1/tasks/task-1',
+  ]);
+});
