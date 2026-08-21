@@ -62,6 +62,74 @@ test('AI storyboard uses the configured text model and clamps each shot to 5-15 
   }
 });
 
+test('automatic text protocol falls back from a missing Chat endpoint to OpenAI Responses', async () => {
+  const service = await loadDirectorAIService();
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url, options) => {
+    requests.push({ url, body: JSON.parse(options.body) });
+    if (String(url).endsWith('/chat/completions')) {
+      return new Response(JSON.stringify({ error: { message: 'Not Found' } }), { status: 404 });
+    }
+    return new Response(JSON.stringify({ output: [{ content: [{ type: 'output_text', text: JSON.stringify(rawPlan) }] }] }), { status: 200 });
+  };
+  try {
+    const autoProject = { ...project, settings: { ...project.settings, multiModel: { textModel: { ...project.settings.multiModel.textModel, textProtocol: 'auto' } } } };
+    const plan = await service.generateAIStoryboard({ project: autoProject, story: '这是一个足够长的完整测试剧本，人物在房间里发现一封信并决定面对过去。', voice: 'naturalist', durationMode: 'ai', skills: [] });
+    assert.deepEqual(requests.map((request) => request.url), [
+      'https://mock.example/v1/chat/completions',
+      'https://mock.example/v1/responses',
+    ]);
+    assert.ok(Array.isArray(requests[1].body.input));
+    assert.equal(requests[1].body.max_output_tokens, 12000);
+    assert.equal(plan.shots.length, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Anthropic Messages protocol sends the correct envelope and reads content blocks', async () => {
+  const service = await loadDirectorAIService();
+  const originalFetch = globalThis.fetch;
+  let request;
+  globalThis.fetch = async (url, options) => {
+    request = { url, headers: options.headers, body: JSON.parse(options.body) };
+    return new Response(JSON.stringify({ content: [{ type: 'text', text: JSON.stringify(rawPlan) }], stop_reason: 'end_turn' }), { status: 200 });
+  };
+  try {
+    const anthropicProject = { ...project, settings: { ...project.settings, multiModel: { textModel: { ...project.settings.multiModel.textModel, textProtocol: 'anthropic-messages' } } } };
+    const plan = await service.generateAIStoryboard({ project: anthropicProject, story: '这是一个足够长的完整测试剧本，人物在房间里发现一封信并决定面对过去。', voice: 'naturalist', durationMode: 'ai', skills: [] });
+    assert.equal(request.url, 'https://mock.example/v1/messages');
+    assert.equal(request.headers['anthropic-version'], '2023-06-01');
+    assert.match(request.body.system, /短剧导演/);
+    assert.equal(request.body.messages[0].role, 'user');
+    assert.equal(request.body.max_tokens, 12000);
+    assert.equal(plan.shots.length, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('an explicit missing text endpoint is not retried against the same URL', async () => {
+  const service = await loadDirectorAIService();
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ error: { message: 'Not Found' } }), { status: 404 });
+  };
+  try {
+    const chatProject = { ...project, settings: { ...project.settings, multiModel: { textModel: { ...project.settings.multiModel.textModel, textProtocol: 'openai-chat' } } } };
+    await assert.rejects(
+      service.generateAIStoryboard({ project: chatProject, story: '这是一个足够长的完整测试剧本，人物在房间里发现一封信并决定面对过去。', voice: 'naturalist', durationMode: 'ai', skills: [] }),
+      /Not Found/,
+    );
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('storyboard generation can be cancelled through AbortSignal', async () => {
   const service = await loadDirectorAIService();
   const originalFetch = globalThis.fetch;
