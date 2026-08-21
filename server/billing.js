@@ -9,6 +9,7 @@ import { generationFailureAlertConfig, summarizeGenerationFailures } from './gen
 
 const CATEGORIES = new Set(['text', 'image', 'video']);
 const BILLING_UNITS = new Set(['request', 'image', 'second']);
+const TEXT_PROTOCOLS = new Set(['auto', 'openai-chat', 'openai-responses', 'anthropic-messages']);
 const nowIso = () => new Date().toISOString();
 const integer = (value) => Number.isSafeInteger(Number(value)) ? Number(value) : NaN;
 
@@ -25,7 +26,7 @@ function safeUser(user) {
 }
 
 function exposedApi(api, vault, revealKey = false) {
-  return { ...api, baseUrl: vault.decrypt(api.baseUrl), apiKey: revealKey ? vault.decrypt(api.encryptedApiKey) : '', hasApiKey: Boolean(api.encryptedApiKey), encryptedApiKey: undefined };
+  return { ...api, textProtocol: api.textProtocol || 'auto', baseUrl: vault.decrypt(api.baseUrl), apiKey: revealKey ? vault.decrypt(api.encryptedApiKey) : '', hasApiKey: Boolean(api.encryptedApiKey), encryptedApiKey: undefined };
 }
 
 function decryptStoredUrl(value, vault) {
@@ -43,10 +44,13 @@ function normalizeApiInput(input, existing, vault) {
   }
   if (!name || !provider) throw new Error('API 名称和服务商不能为空');
   const apiKey = String(input.apiKey || '').trim();
+  const textProtocol = String(input.textProtocol ?? existing?.textProtocol ?? 'auto').trim();
   if (!existing && apiKey.length < 8) throw new Error('API Key 长度不足');
+  if (!TEXT_PROTOCOLS.has(textProtocol)) throw new Error('文本调用协议无效');
   return {
     name,
     provider,
+    textProtocol,
     baseUrl: vault.encrypt(baseUrl.toString().replace(/\/$/, '')),
     encryptedApiKey: apiKey ? vault.encrypt(apiKey) : existing.encryptedApiKey,
     enabled: input.enabled === undefined ? (existing?.enabled ?? true) : Boolean(input.enabled),
@@ -108,6 +112,7 @@ export function registerCatalogRoutes(router, { db, requireAuth }) {
         id: price.id, apiId: api.id, modelId: price.modelId, name: price.displayName,
         provider: api.provider, category: price.category, billingUnit: price.billingUnit,
         unitPriceCents: price.unitPriceCents, baseUrl: `/api/system-ai/${api.id}`, managed: true,
+        textProtocol: api.textProtocol || 'auto',
         minDurationSec: price.minDurationSec, maxDurationSec: price.maxDurationSec, allowedDurationsSec: price.allowedDurationsSec,
         allowedResolutions: (price.allowedResolutions?.length ? price.allowedResolutions : knownVideoResolutions(api.provider, price.modelId)),
         maxReferenceImages: Number.isInteger(Number(price.maxReferenceImages)) ? Number(price.maxReferenceImages) : 4,
