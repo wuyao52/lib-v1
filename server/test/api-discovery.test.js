@@ -37,3 +37,16 @@ test('system API discovery reads WeijinAPI video capabilities from /v1/models', 
   assert.equal(result.provider, 'WeijinAPI');
   assert.deepEqual(result.models[0], { id: 'seedance2.0-one-full-flex-720p', name: 'Seedance ONE Full', type: 'video', supportedResolutions: ['720p'], allowedDurationsSec: [15], supportedRatios: ['16:9', '9:16'], maxReferenceImages: 9, maxReferenceVideos: 3, maxReferenceAudios: 3 });
 });
+
+test('system API discovery exposes BYS video paths and model-specific duration rules', async () => {
+  const result = await discoverSystemApi({
+    baseUrl: 'https://www.boyesir.icu/', apiKey: 'boyesir-test-secret',
+    fetchImpl: async () => { throw new Error('BYS catalog is documented and needs no /v1/models call'); },
+    resolveHost: async () => [{ address: '203.0.113.22', family: 4 }],
+  });
+  assert.equal(result.provider, 'BYS api');
+  assert.deepEqual(result.models.find(({ id }) => id === 'nd-seedance-2.0-720p'), {
+    id: 'nd-seedance-2.0-720p', name: 'Seedance 2.0 720p', type: 'video', supportedResolutions: ['720p'],
+  });
+  assert.deepEqual(result.models.find(({ id }) => id === 'seedance-2.0-mini').allowedDurationsSec, [4, 5, 6, 8, 10, 12]);
+});
