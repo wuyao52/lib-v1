@@ -42,6 +42,15 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   const nodes = page.locator('.react-flow__node');
   const targetNode = page.locator('.react-flow__node[data-id="batch-target"]');
 
+  const zoomOut = page.locator('.react-flow__controls-zoomout');
+  for (let index = 0; index < 20 && await zoomOut.isEnabled(); index += 1) await zoomOut.click();
+  const zoomScale = await page.locator('.react-flow__viewport').evaluate((viewport) => {
+    const match = getComputedStyle(viewport).transform.match(/matrix\(([^)]+)\)/);
+    return match ? Number(match[1].split(',')[0]) : 1;
+  });
+  expect(zoomScale).toBeLessThanOrEqual(0.11);
+  await page.locator('.react-flow__controls-fitview').click();
+
   await page.waitForTimeout(2200);
   const putsBeforeUpload = projectPutCount;
   let uploadRequests = 0;
@@ -99,6 +108,19 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   await promptEditor.press('Backspace');
   await promptEditor.press('Escape');
   await page.locator('.react-flow__pane').click({ position: { x: 1100, y: 650 } });
+
+  const sourceHandle = page.locator('.react-flow__node[data-id="batch-source-a"] .react-flow__handle-right');
+  const sourceHandleBox = await sourceHandle.boundingBox();
+  const ordinaryTargetBox = await targetNode.boundingBox();
+  expect(sourceHandleBox).not.toBeNull();
+  expect(ordinaryTargetBox).not.toBeNull();
+  await page.mouse.move(sourceHandleBox!.x + sourceHandleBox!.width / 2, sourceHandleBox!.y + sourceHandleBox!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(ordinaryTargetBox!.x + ordinaryTargetBox!.width / 2, ordinaryTargetBox!.y + ordinaryTargetBox!.height / 2, { steps: 10 });
+  await page.mouse.up();
+  await expect(page.locator('.react-flow__edge')).toHaveCount(1);
+  const edgePath = await page.locator('.react-flow__edge path.react-flow__edge-path').first().getAttribute('d');
+  expect(edgePath).toContain('C');
 
   await page.locator('.react-flow__node[data-id="batch-source-a"]').click({ position: { x: 30, y: 20 }, force: true });
   await page.locator('.react-flow__node[data-id="batch-source-b"]').click({ position: { x: 30, y: 20 }, modifiers: ['Shift'], force: true });
