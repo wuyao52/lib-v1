@@ -161,7 +161,10 @@ function enforceReferenceMediaLimits(pricing, body) {
 
 function buildTarget(api, requestUrl) {
   const base = new URL(`${api.baseUrl.replace(/\/+$/, '')}/`);
-  const suffix = String(requestUrl || '/').replace(/^\/+/, '');
+  let suffix = String(requestUrl || '/').replace(/^\/+/, '');
+  // Administrators commonly save an OpenAI-compatible root ending in /v1.
+  // The client also uses /v1/* paths, so avoid forwarding /v1/v1/* upstream.
+  if (/\/v1\/$/i.test(base.pathname) && /^v1\//i.test(suffix)) suffix = suffix.slice(3);
   const target = new URL(suffix, base);
   const expectedPath = base.pathname.endsWith('/') ? base.pathname : `${base.pathname}/`;
   if (target.protocol !== 'https:' || target.origin !== base.origin || !target.pathname.startsWith(expectedPath)) {
@@ -322,6 +325,7 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
     try {
       const target = buildTarget({ ...api, baseUrl: vault.decrypt(api.baseUrl) }, relativeUrl);
       const headers = new Headers({ accept: req.headers.accept || 'application/json', authorization: `Bearer ${vault.decrypt(api.encryptedApiKey)}`, 'x-api-key': vault.decrypt(api.encryptedApiKey) });
+      if (/\/v1\/messages\/?$/i.test(pathname)) headers.set('anthropic-version', '2023-06-01');
       if (req.method !== 'GET' && req.method !== 'HEAD') headers.set('content-type', 'application/json');
       const upstream = await fetchWithTimeout(fetchImpl, target, { method: req.method, headers, body: ['GET', 'HEAD'].includes(req.method) ? undefined : JSON.stringify(requestBody), redirect: 'manual' }, limits.timeoutMs);
       let responseBody = await readLimitedBody(upstream, limits.maxResponseBytes);
