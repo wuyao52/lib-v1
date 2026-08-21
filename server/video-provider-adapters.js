@@ -19,11 +19,38 @@ export function isShishikejiVideoApi(api) {
   catch { return false; }
 }
 
+export function isBoyesirVideoApi(api) {
+  try {
+    const hostname = new URL(api.baseUrl).hostname.toLowerCase();
+    return hostname === 'boyesir.icu' || hostname === 'www.boyesir.icu';
+  } catch { return false; }
+}
+
 function referenceUrl(value) {
   if (typeof value === 'string') return value;
   if (!value || typeof value !== 'object') return '';
   const field = ['url', 'image_url', 'image'].find((key) => typeof value[key] === 'string');
   return field ? value[field] : '';
+}
+
+function boyesirRequestBody(requestBody) {
+  const prompt = String(requestBody.prompt || '')
+    .replace(/@\[([^\]]+)\]\([^)]*\)/g, ' $1')
+    .replace(/[ \t]{2,}/g, ' ').trim();
+  const images = Array.isArray(requestBody.images)
+    ? requestBody.images.map(referenceUrl).filter(Boolean)
+    : [];
+  const body = {
+    model: requestBody.model,
+    prompt,
+    ...(requestBody.duration !== undefined || requestBody.seconds !== undefined
+      ? { duration: Number(requestBody.duration ?? requestBody.seconds) }
+      : {}),
+    ...(requestBody.ratio || requestBody.aspect_ratio ? { ratio: requestBody.ratio ?? requestBody.aspect_ratio } : {}),
+    ...(requestBody.resolution ? { resolution: requestBody.resolution } : {}),
+    ...(images.length ? { images } : {}),
+  };
+  return body;
 }
 
 async function downloadReference(urlValue, index, { fetchImpl, resolveHost, signal }) {
@@ -68,6 +95,31 @@ async function shishikejiForm(requestBody, dependencies) {
 }
 
 export function createVideoProviderAdapter(api, { fetchImpl = fetch, resolveHost = lookup } = {}) {
+  if (isBoyesirVideoApi(api)) {
+    const headers = () => new Headers({
+      accept: 'application/json', authorization: `Bearer ${api.apiKey}`,
+    });
+    return {
+      kind: 'boyesir',
+      async submit(requestBody, idempotencyKey, signal) {
+        const requestHeaders = headers();
+        requestHeaders.set('content-type', 'application/json');
+        requestHeaders.set('idempotency-key', idempotencyKey);
+        return fetchImpl(buildTarget(api, '/v1/videos/generations'), {
+          method: 'POST', redirect: 'manual', headers: requestHeaders,
+          body: JSON.stringify(boyesirRequestBody(requestBody)), signal,
+        });
+      },
+      poll(taskId, signal) {
+        return fetchImpl(buildTarget(api, `/v1/tasks/${encodeURIComponent(taskId)}`), {
+          method: 'GET', redirect: 'manual', headers: headers(), signal,
+        });
+      },
+      cancel() { return null; },
+      resultHeaders() { return headers(); },
+      refreshResult: null,
+    };
+  }
   if (!isShishikejiVideoApi(api)) {
     const headers = () => new Headers({
       accept: 'application/json', authorization: `Bearer ${api.apiKey}`, 'x-api-key': api.apiKey,
