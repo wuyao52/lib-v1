@@ -23,19 +23,23 @@ const SHISHIKEJI_VIDEO_MODELS = [
 ].map(([id, name, supportedResolutions]) => ({ id, name, type: 'video', supportedResolutions }));
 
 const BOYESIR_VIDEO_MODELS = [
-  ['nd-seedance-2.0-720p', 'Seedance 2.0 720p', ['720p']],
-  ['nd-seedance-2.0-480p', 'Seedance 2.0 480p', ['480p']],
-  ['seedance2.0-480p-100%', 'Seedance 2.0 480p', ['480p']],
-  ['seedance2.0-720p-100%', 'Seedance 2.0 720p', ['720p']],
-  ['seedance2.0-1080p-100%', 'Seedance 2.0 1080p', ['1080p']],
-  ['seedance-fast-2.0', 'Seedance Fast 2.0', ['480p', '720p', '1080p']],
-  ['seedance-2.0-mini', 'Seedance 2.0 Mini', ['480p', '720p']],
-  ['kling-3.0-turbo', 'Kling 3.0 Turbo', ['720p', '1080p', '2k', '4k']],
-].map(([id, name, supportedResolutions]) => ({ id, name, type: 'video', supportedResolutions, allowedDurationsSec: [4, 5, 6, 8, 10, 12, 15] }));
+  ['nd-seedance-2.0-720p', 'Seedance 2.0 720p', ['720p'], null],
+  ['nd-seedance-2.0-480p', 'Seedance 2.0 480p', ['480p'], [5, 10, 15]],
+  ['seedance2.0-480p-100%', 'Seedance 2.0 480p', ['480p'], [4, 5, 6, 8, 10, 12, 15]],
+  ['seedance2.0-720p-100%', 'Seedance 2.0 720p', ['720p'], [4, 5, 6, 8, 10, 12, 15]],
+  ['seedance2.0-1080p-100%', 'Seedance 2.0 1080p', ['1080p'], [4, 5, 6, 8, 10, 12, 15]],
+  ['seedance-fast-2.0', 'Seedance Fast 2.0', ['480p', '720p', '1080p'], [4, 5, 6, 8, 10, 12]],
+  ['seedance-2.0-mini', 'Seedance 2.0 Mini', ['480p', '720p'], [4, 5, 6, 8, 10, 12]],
+  ['kling-3.0-turbo', 'Kling 3.0 Turbo', ['720p', '1080p', '2k', '4k'], [4, 5, 6, 8, 10, 12]],
+].map(([id, name, supportedResolutions, allowedDurationsSec]) => ({
+  id, name, type: 'video', supportedResolutions,
+  ...(allowedDurationsSec ? { allowedDurationsSec } : {}),
+}));
 
 export function knownVideoResolutions(provider, modelId) {
-  if (!/时时科技/i.test(String(provider || ''))) return [];
-  return SHISHIKEJI_VIDEO_MODELS.find((model) => model.id === modelId)?.supportedResolutions || [];
+  const models = /时时科技/i.test(String(provider || '')) ? SHISHIKEJI_VIDEO_MODELS
+    : /BYS|boyesir/i.test(String(provider || '')) ? BOYESIR_VIDEO_MODELS : [];
+  return models.find((model) => model.id === modelId)?.supportedResolutions || [];
 }
 
 function isPrivateIp(address) {
