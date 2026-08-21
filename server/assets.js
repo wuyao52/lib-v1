@@ -13,7 +13,7 @@ const DEFAULT_ASSET_RETENTION_DAYS = 30;
 const SOFT_DELETE_RETENTION_DAYS = 7;
 const ASSET_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
-const SIGNED_URL_TTL_MS = 15 * 60 * 1000;
+const SIGNED_URL_TTL_MS = 40 * 60 * 1000;
 const MAX_PROXY_RANGE_BYTES = 1024 * 1024;
 
 function parseImageDataUrl(value) {
