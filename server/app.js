@@ -160,7 +160,14 @@ export async function createApp(options = {}) {
   const vault = createSecretVault(encryptionKey || (process.env.NODE_ENV === 'production' ? '' : 'local-development-encryption-key-change-me'));
   await mutateCollections(['systemApis'], (data) => {
     data.systemApis.forEach((api) => {
-      try { vault.decrypt(api.baseUrl); } catch { api.baseUrl = vault.encrypt(String(api.baseUrl || '')); }
+      try {
+        vault.decrypt(api.baseUrl);
+      } catch {
+        // Only migrate an old plaintext URL. Never re-encrypt an opaque
+        // ciphertext with a new key: that would make recovery impossible.
+        const legacyUrl = String(api.baseUrl || '').trim();
+        if (/^https:\/\//i.test(legacyUrl)) api.baseUrl = vault.encrypt(legacyUrl);
+      }
     });
   });
   const videoQueue = options.videoQueue === false ? null : await createVideoQueue({
