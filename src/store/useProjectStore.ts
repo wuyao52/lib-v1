@@ -402,7 +402,9 @@ interface ProjectStore {
 }
 
 // 自动保存延迟时间（毫秒）
-const AUTO_SAVE_DELAY = 2000;
+// Canvas edits can fire dozens of updates while dragging or connecting nodes.
+// Give the browser time to settle so serialization and the cloud PUT happen once.
+const AUTO_SAVE_DELAY = 4500;
 const notifyBillingChanged = () => window.dispatchEvent(new CustomEvent('billing:changed'));
 
 const useProjectStore = create<ProjectStore>((set, get) => ({
@@ -460,6 +462,17 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
 
   openProject: async (projectId) => {
     let projectData: DramaProject | null = null;
+    // Paint a locally cached project immediately. Cloud reconciliation continues
+    // below, so opening a project is not blocked by a slow database response.
+    const cachedFirst = loadProjectDataFromStorage(projectId);
+    if (cachedFirst) {
+      set({
+        project: cachedFirst,
+        currentView: 'project',
+        history: [{ nodes: cachedFirst.nodes, edges: cachedFirst.edges }],
+        historyIndex: 0,
+      });
+    }
     try {
       const cloudProject = await loadProjectFromCloud(projectId);
       const migratedProject = await uploadPendingProjectImages(cloudProject);
