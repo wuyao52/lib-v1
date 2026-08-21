@@ -3,6 +3,9 @@ import { fetchWithTimeout, readLimitedBody, resourceGuardConfig } from './resour
 import { knownVideoResolutions } from './api-discovery.js';
 
 const nowIso = () => new Date().toISOString();
+// Video providers fetch reference assets asynchronously. Keep the temporary
+// read grant long enough for a queued task without exposing a permanent URL.
+const MODEL_REFERENCE_URL_TTL_SECONDS = 40 * 60;
 
 function isBusinessFailure(body) {
   if (!body || typeof body !== 'object') return false;
@@ -46,7 +49,7 @@ async function normalizeReferenceImages(body, userId, db, assetStorage) {
       if (!asset.objectKey || !assetStorage?.createDownloadUrl) {
         const error = new Error('参考图片尚未迁移到对象存储，请重新上传后再试'); error.code = 'REFERENCE_IMAGE_NOT_ARCHIVED'; throw error;
       }
-      return assetStorage.createDownloadUrl({ key: asset.objectKey, mimeType: asset.mimeType, expiresInSeconds: 15 * 60 });
+      return assetStorage.createDownloadUrl({ key: asset.objectKey, mimeType: asset.mimeType, expiresInSeconds: MODEL_REFERENCE_URL_TTL_SECONDS });
     }
     let parsed;
     try { parsed = new URL(String(value || '')); } catch { parsed = null; }
