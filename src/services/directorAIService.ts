@@ -215,6 +215,16 @@ function textCompletionUrl(baseUrl: string, protocol: Exclude<TextModelProtocol,
   return `${normalized}${/\/v1$/i.test(normalized) ? '' : '/v1'}/${suffix}`;
 }
 
+function directorCompletionUrl(model: AIModelConfig, protocol: Exclude<TextModelProtocol, 'auto'>) {
+  const suffix = protocol === 'openai-chat' ? 'chat/completions' : protocol === 'openai-responses' ? 'responses' : 'messages';
+  // Managed credentials must stay on the server. Routing through the managed
+  // gateway also applies provider-specific headers, timeouts and billing.
+  if (model.managed && model.apiId) {
+    return `/api/system-ai/${encodeURIComponent(model.apiId)}/v1/${suffix}`;
+  }
+  return textCompletionUrl(model.baseUrl, protocol);
+}
+
 export function resolveDirectorTextModel(project: DramaProject): AIModelConfig | null {
   const model = project.settings.multiModel?.textModel;
   return (model?.managed || model?.credentialManaged || model?.apiKey?.trim()) && model?.baseUrl?.trim() && model?.modelId?.trim() ? model : null;
@@ -457,7 +467,7 @@ async function requestCompletion(model: AIModelConfig, input: GenerateAIStoryboa
   let lastError: any;
   for (let index = 0; index < candidates.length; index += 1) {
     const protocol = candidates[index];
-    const response = await fetch(textCompletionUrl(model.baseUrl, protocol), {
+    const response = await fetch(directorCompletionUrl(model, protocol), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
