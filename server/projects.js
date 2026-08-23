@@ -1,6 +1,17 @@
 import { randomUUID } from 'node:crypto';
 
 const MAX_PROJECT_BYTES = 20 * 1024 * 1024;
+const MAX_PROJECT_REVISIONS = 30;
+
+function trimProjectRevisions(data, projectId) {
+  const revisions = (data.projectRevisions || []).filter((item) => item.projectId === projectId);
+  if (revisions.length <= MAX_PROJECT_REVISIONS) return;
+  const keep = new Set(revisions
+    .sort((a, b) => Number(b.version || 0) - Number(a.version || 0) || String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
+    .slice(0, MAX_PROJECT_REVISIONS)
+    .map((item) => item.id));
+  data.projectRevisions = data.projectRevisions.filter((item) => item.projectId !== projectId || keep.has(item.id));
+}
 
 function projectInfo(record) {
   const project = record.projectData;
@@ -111,6 +122,7 @@ export function registerProjectRoutes(router, { db, requireAuth }) {
           const previous = data.projects[index];
           data.projectRevisions ||= [];
           data.projectRevisions.push({ id: randomUUID(), projectId: previous.id, userId: previous.userId, version: currentVersion, projectData: previous.projectData, createdAt: new Date().toISOString(), reason: 'save' });
+          trimProjectRevisions(data, project.id);
           data.projects[index] = record;
         }
         else data.projects.push(record);
@@ -140,6 +152,7 @@ export function registerProjectRoutes(router, { db, requireAuth }) {
       const index = data.projects.findIndex((item) => item.id === current.id && item.userId === req.user.id);
       if (index < 0 || Number(data.projects[index].version) !== expectedVersion) { conflict = true; return; }
       (data.projectRevisions ||= []).push({ id: randomUUID(), projectId: current.id, userId: current.userId, version: Number(current.version), projectData: current.projectData, createdAt: new Date().toISOString(), reason: 'restore' });
+      trimProjectRevisions(data, current.id);
       data.projects[index] = record;
     });
     if (conflict) return res.status(409).json({ error: 'PROJECT_VERSION_CONFLICT', message: '项目已更新，请刷新后再恢复' });

@@ -418,6 +418,14 @@ const TABLES = {
   },
 };
 
+const MAX_PROJECT_REVISIONS = 30;
+const selectForCollection = (name, spec) => name === 'projectRevisions'
+  ? `SELECT id, project_id AS projectId, user_id AS userId, version, project_data AS projectData, created_at AS createdAt, reason
+      FROM (SELECT id, project_id, user_id, version, project_data, created_at, reason,
+        ROW_NUMBER() OVER (PARTITION BY project_id ORDER BY version DESC, created_at DESC) AS revision_rank
+        FROM project_revisions) recent WHERE revision_rank <= ${MAX_PROJECT_REVISIONS}`
+  : spec.select;
+
 // Avoid cloning/stringifying multi-megabyte project payloads during unrelated
 // writes. Project updates use saveProject(), so version/updatedAt are the
 // authoritative change markers for those rows.
@@ -474,7 +482,7 @@ export class MySqlDatabase {
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
     this.schemaState = await runSchemaMigrations(this.pool);
     for (const [collection, spec] of Object.entries(TABLES)) {
-      const [rows] = await this.pool.query(spec.select);
+      const [rows] = await this.pool.query(selectForCollection(collection, spec));
       this.data[collection] = spec.parse ? rows.map(spec.parse) : rows;
     }
     const refreshedAt = Date.now();
@@ -494,7 +502,7 @@ export class MySqlDatabase {
       const staleNames = names.filter((name) => now - Number(this.collectionRefreshedAt.get(name) || 0) >= this.refreshTtlMs);
       if (!staleNames.length) return;
       const refreshed = await Promise.all(staleNames.map(async (name) => {
-        const spec = TABLES[name]; const [rows] = await this.pool.query(spec.select);
+        const spec = TABLES[name]; const [rows] = await this.pool.query(selectForCollection(name, spec));
         return [name, spec.parse ? rows.map(spec.parse) : rows];
       }));
       const completedAt = Date.now();
@@ -608,7 +616,20 @@ export class MySqlDatabase {
       if (previous) {
         const revision = { id: randomUUID(), projectId: previous.id, userId: previous.userId, version: Number(previous.version || expectedVersion), projectData: previous.projectData, createdAt: new Date().toISOString(), reason: 'save' };
         await this.pool.query(TABLES.projectRevisions.insert, [[TABLES.projectRevisions.values(revision)]]);
+        await this.pool.query(
+          `DELETE old FROM project_revisions old
+           JOIN (SELECT id FROM project_revisions WHERE project_id = ? ORDER BY version DESC, created_at DESC LIMIT 18446744073709551615 OFFSET ?) keep
+             ON keep.id = old.id
+           WHERE old.project_id = ?`,
+          [record.id, MAX_PROJECT_REVISIONS, record.id],
+        );
         this.data.projectRevisions.push(revision);
+        this.data.projectRevisions = this.data.projectRevisions
+          .filter((item) => item.projectId !== record.id)
+          .concat(this.data.projectRevisions
+            .filter((item) => item.projectId === record.id)
+            .sort((a, b) => Number(b.version || 0) - Number(a.version || 0) || String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
+            .slice(0, MAX_PROJECT_REVISIONS));
       }
       const stored = { ...record, version: nextVersion };
       const index = this.data.projects.findIndex((item) => item.id === record.id);
