@@ -73,7 +73,7 @@ function collectionsForRequest(pathname) {
     if (adminByRoute[route]) return [...common, ...adminByRoute[route]];
   }
   const byScope = {
-    auth: ['emailVerifications', 'imageCaptchas'], health: ['generationJobs', 'auditLogs'], director: [], skills: ['skills'], projects: ['projects', 'projectRevisions'],
+    auth: ['emailVerifications', 'imageCaptchas'], health: ['generationJobs', 'auditLogs'], director: [], skills: ['skills'], projects: ['projects'],
     assets: ['assets', 'projects'], 'generated-media': ['generatedMedia'], 'generation-history': ['generationHistory', 'generationJobs'],
     billing: ['balanceTransactions', 'rechargeRequests'], catalog: ['systemApis', 'modelPricing'],
     admin: ['systemApis', 'modelPricing', 'balanceTransactions', 'rechargeRequests', 'generationJobs', 'generatedMedia', 'storageQuarantine', 'auditLogs', 'paymentOrders', 'paymentEvents'],
@@ -81,7 +81,12 @@ function collectionsForRequest(pathname) {
     'user-api-configs': ['userApiConfigs'], 'user-ai': ['userApiConfigs'],
     payments: ['paymentOrders', 'paymentEvents', 'balanceTransactions'],
   };
-  return [...common, ...(byScope[scope] || [])];
+  const collections = [...common, ...(byScope[scope] || [])];
+  // Project lists and project payloads do not need revision history. Loading
+  // revisions is reserved for the explicit /projects/:id/revisions routes so
+  // login does not block on a large historical JSON collection.
+  if (scope === 'projects' && segments[3] === 'revisions') collections.push('projectRevisions');
+  return [...new Set(collections)];
 }
 
 function createRateLimiter({ db, limit = 10, windowMs = 60_000, includeIdentity = true } = {}) {
