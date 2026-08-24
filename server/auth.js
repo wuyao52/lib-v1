@@ -10,7 +10,9 @@ const EMAIL_CODE_COOLDOWN_MS = 60 * 1000;
 const EMAIL_CODE_MAX_ATTEMPTS = 5;
 const IMAGE_CAPTCHA_TTL_MS = 5 * 60 * 1000;
 const IMAGE_CAPTCHA_MAX_ATTEMPTS = 5;
-const MAX_SESSIONS_PER_USER = 10;
+// Limit concurrent login sessions across browsers, private windows, and devices.
+// Regular tabs in the same browser share one HttpOnly cookie and count as one session.
+const MAX_SESSIONS_PER_USER = 4;
 
 const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
 const normalizeUsername = (value) => String(value || '').trim();

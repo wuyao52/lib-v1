@@ -205,10 +205,10 @@ test('security headers, origin protection and session cap are enforced', async (
   const code = await requestCode(context, email, 'register');
   const registered = await fetch(`${context.baseUrl}/api/auth/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'sessions', email, password: 'strong-password', verificationCode: code }) });
   assert.equal(registered.status, 201);
-  for (let index = 0; index < 11; index += 1) {
+  for (let index = 0; index < 5; index += 1) {
     const captchaId = await requestCaptcha(context);
     const login = await fetch(`${context.baseUrl}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ identifier: email, password: 'strong-password', captchaId, captchaCode: '24682' }) });
     assert.equal(login.status, 200);
   }
-  assert.equal(context.db.read('sessions').filter((session) => session.userId === context.db.read('users')[0].id).length, 10);
+  assert.equal(context.db.read('sessions').filter((session) => session.userId === context.db.read('users')[0].id).length, 4);
 });
