@@ -242,6 +242,8 @@ test('MySQL startup applies versioned legacy alignment for system audit events',
   assert.equal(statements.some((sql) => /CREATE TABLE IF NOT EXISTS audit_logs[\s\S]*user_id CHAR\(36\) NULL/i.test(sql)), true);
   assert.equal(statements.some((sql) => /CREATE TABLE IF NOT EXISTS storage_quarantine[\s\S]*quarantine_key VARCHAR\(255\) NOT NULL UNIQUE/i.test(sql)), true);
   assert.equal(statements.some((sql) => /quarantine_key VARCHAR\(1024\) NOT NULL UNIQUE/i.test(sql)), false);
+  assert.equal(statements.some((sql) => /CREATE TABLE IF NOT EXISTS generation_jobs[\s\S]*id VARCHAR\(64\) PRIMARY KEY/i.test(sql)), true);
+  assert.equal(statements.some((sql) => /ALTER TABLE `generation_jobs` MODIFY COLUMN `id` VARCHAR\(64\) NOT NULL/i.test(sql)), true);
 });
 
 test('schema migrations execute once and skip all ALTER statements on later startup', async () => {
@@ -262,7 +264,7 @@ test('schema migrations execute once and skip all ALTER statements on later star
   const pool = { getConnection: async () => connection };
   await runSchemaMigrations(pool);
   const firstAlterCount = statements.filter((sql) => /^ALTER TABLE/i.test(sql)).length;
-  assert.equal(firstAlterCount, 2);
+  assert.equal(firstAlterCount, 3);
   assert.deepEqual([...applied], schemaMigrationVersions.map((item) => item.version));
   statements.length = 0;
   await runSchemaMigrations(pool);

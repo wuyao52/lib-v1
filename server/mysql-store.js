@@ -291,7 +291,7 @@ const TABLES = {
   generationJobs: {
     table: 'generation_jobs',
     create: `CREATE TABLE IF NOT EXISTS generation_jobs (
-      id CHAR(36) PRIMARY KEY,
+      id VARCHAR(64) PRIMARY KEY,
       user_id CHAR(36) NOT NULL,
       api_id CHAR(36) NOT NULL,
       model_id VARCHAR(191) NOT NULL,

@@ -104,6 +104,13 @@ const migrations = [
       await ensureColumn('system_apis', 'text_protocol', "VARCHAR(32) NOT NULL DEFAULT 'auto'");
     },
   },
+  {
+    version: 10,
+    name: 'generation_job_idempotency_key_length',
+    async up({ query }) {
+      await query('ALTER TABLE `generation_jobs` MODIFY COLUMN `id` VARCHAR(64) NOT NULL');
+    },
+  },
 ];
 
 export async function runSchemaMigrations(pool) {
