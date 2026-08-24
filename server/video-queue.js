@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { createVideoProviderAdapter } from './video-provider-adapters.js';
+import { isUpstreamBalanceError } from './upstream-errors.js';
 
 const ACTIVE_STATUSES = new Set(['submitting', 'processing', 'cancel_requested']);
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
@@ -126,7 +127,7 @@ function errorOf(body, statusCode) {
   if (/moderation|content[_ -]?policy|safety|sensitive|审核|敏感/i.test(raw)) {
     return { code: 'PROVIDER_MODERATION_ERROR', message: '内容审核未通过，请检查提示词和参考图片后重试' };
   }
-  if (/余额不足|insufficient[_ -]?(?:balance|credit)|当前余额.*(?:需要|需支付)|需要\s*[¥￥]/i.test(raw)) {
+  if (isUpstreamBalanceError(raw)) {
     return { code: 'UPSTREAM_BALANCE_INSUFFICIENT', message: '错误：99' };
   }
   return { code: 'UPSTREAM_VIDEO_FAILED', message: raw.slice(0, 500) };

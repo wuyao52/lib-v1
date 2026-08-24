@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { fetchWithTimeout, readLimitedBody, resourceGuardConfig } from './resource-guard.js';
 import { knownVideoResolutions } from './api-discovery.js';
+import { isUpstreamBalanceError } from './upstream-errors.js';
 
 const nowIso = () => new Date().toISOString();
 // Video providers fetch reference assets asynchronously. Keep the temporary
@@ -376,7 +377,7 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
           message,
         });
       }
-      if (/余额不足|insufficient[_ -]?(?:balance|credit)|当前余额.*(?:需要|需支付)|需要\s*[¥￥]/i.test(upstreamMessage)) {
+      if (isUpstreamBalanceError(upstreamMessage)) {
         return res.status(upstream.status >= 400 ? upstream.status : 502).json({
           error: 'UPSTREAM_BALANCE_INSUFFICIENT',
           message: '错误：99',

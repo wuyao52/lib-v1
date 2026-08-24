@@ -372,6 +372,21 @@ test('video queue reserves balance atomically and never charges a rejected enque
   assert.equal(db.data.balanceTransactions.length, 0);
 });
 
+test('video queue normalizes provider precharge balance failures to error 99', async () => {
+  const db = fakeDb({ users: [{ id: 'user-a', balanceCents: 100 }], systemApis: [{ id: 'api-1', enabled: true, baseUrl: 'https://upstream.example', encryptedApiKey: 'secret' }] });
+  const fetchImpl = async (_url, options) => options.method === 'POST'
+    ? new Response(JSON.stringify({ error: { message: '预扣费额度失败, 用户剩余额度: ¥1.100000, 需要预扣费额度: ¥3.400000' } }), { status: 402, headers: { 'content-type': 'application/json' } })
+    : new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+  const queue = await createVideoQueue({ db, vault: { decrypt: (value) => value }, fetchImpl, autoStart: false });
+  await queue.enqueue({ id: 'provider-balance', userId: 'user-a', apiId: 'api-1', modelId: 'video', requestBody: { prompt: 'test' }, chargeCents: 25, billingReference: 'provider-balance' });
+  await queue.tick();
+  await waitFor(() => db.data.generationJobs.find((item) => item.id === 'provider-balance')?.status === 'failed');
+  const job = db.data.generationJobs.find((item) => item.id === 'provider-balance');
+  assert.equal(job.status, 'failed');
+  assert.equal(job.errorCode, 'UPSTREAM_BALANCE_INSUFFICIENT');
+  assert.equal(job.errorMessage, '错误：99');
+});
+
 test('video queue cancellation stops queued and provider tasks and refunds exactly once', async () => {
   await withQueueEnv({ VIDEO_QUEUE_GLOBAL_CONCURRENCY: '1' }, async () => {
     const now = new Date().toISOString();

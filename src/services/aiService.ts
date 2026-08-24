@@ -61,7 +61,7 @@ function publicProviderError(value: unknown): string {
   if (/moderation|content[_ -]?policy|safety|sensitive|审核|敏感/i.test(message)) {
     return '内容审核未通过，请检查提示词和参考图片后重试';
   }
-  return /余额不足|insufficient[_ -]?(?:balance|credit)|当前余额.*(?:需要|需支付)|需要\s*[¥￥]/i.test(message)
+  return /余额不足|余额不够|预扣费(?:额度)?失败|预扣费|用户剩余额度|需要预扣费额度|insufficient[_ -]?(?:balance|credit|funds)|insufficient funds|credit balance|quota.*(?:不足|exceed|limit)|(?:当前余额|可用余额).*(?:需要|需支付|预扣)|需要\s*[¥￥]/i.test(message)
     ? '错误：99'
     : message;
 }

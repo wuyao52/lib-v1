@@ -19,6 +19,7 @@ async function setup({ videoQueue = false, videoQueueAutoStart = true, assetStor
     if (body.prompt === 'duration-fail') return new Response(JSON.stringify({ msg: `参数 seconds 不支持 ${body.seconds || body.duration}` }), { status: 400, headers: { 'content-type': 'application/json' } });
     if (body.prompt === 'business-fail') return new Response(JSON.stringify({ code: '9999', data: null, msg: 'request entity too large' }), { status: 200, headers: { 'content-type': 'application/json' } });
     if (body.prompt === 'upstream-balance') return new Response(JSON.stringify({ error: { message: '余额不足，当前余额 ¥0.23，需要 ¥2.08' } }), { status: 402, headers: { 'content-type': 'application/json' } });
+    if (body.prompt === 'upstream-precharge-balance') return new Response(JSON.stringify({ error: { message: '预扣费额度失败, 用户剩余额度: ¥1.100000, 需要预扣费额度: ¥3.400000' } }), { status: 402, headers: { 'content-type': 'application/json' } });
     if (body.prompt === 'privacy-fail') return new Response(JSON.stringify({ error: { code: '***.PrivacyInformation', message: "The request failed because the input image 'content[1]' may contain real person. Request id: test-request-id" } }), { status: 400, headers: { 'content-type': 'application/json' } });
     if (body.prompt === 'moderation-later') return new Response(JSON.stringify({ id: 'moderation-task', status: 'queued' }), { status: 200, headers: { 'content-type': 'application/json' } });
     return new Response(JSON.stringify({ id: 'task-1', status: 'queued' }), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -212,6 +213,9 @@ test('system APIs, pricing, balances and managed gateway enforce roles and billi
   assert.equal(upstreamInsufficient.status, 402);
   const upstreamInsufficientBody = await upstreamInsufficient.json();
   assert.deepEqual(upstreamInsufficientBody, { error: 'UPSTREAM_BALANCE_INSUFFICIENT', message: '错误：99' });
+  const upstreamPrechargeInsufficient = await context.request(`/api/system-ai/${createdApi.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'upstream-precharge-balance', duration: 5 }) });
+  assert.equal(upstreamPrechargeInsufficient.status, 402);
+  assert.deepEqual(await upstreamPrechargeInsufficient.json(), { error: 'UPSTREAM_BALANCE_INSUFFICIENT', message: '错误：99' });
   billing = await (await context.request('/api/billing/me', normal.cookie)).json();
   assert.equal(billing.balanceCents, 950);
 

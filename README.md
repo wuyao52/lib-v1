@@ -496,6 +496,11 @@ MIT License
 
 ## Production verification
 
+### Balance error contract
+
+- User balance failures remain `错误：余额不足` and are handled by the user billing path.
+- Provider/API account balance failures, including precharge/quota wording such as `预扣费额度失败`, are normalized at every managed API entry point to `错误：99`. New API integrations must use the shared provider-balance matcher rather than exposing provider-specific balance text.
+
 - GitHub Actions runs tests, type checking, the production build, and dependency auditing on every push and pull request.
 - `Production Watch` probes Railway every 30 minutes and verifies that a push reached the exact Git commit before accepting the deployment.
 - `SMOKE_BASE_URL=https://your-backend.example npm run smoke:production` runs the same health, operations, captcha, security-header, and concurrency checks locally.
