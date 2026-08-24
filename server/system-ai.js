@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { fetchWithTimeout, readLimitedBody, resourceGuardConfig } from './resource-guard.js';
 import { knownVideoResolutions } from './api-discovery.js';
-import { isUpstreamBalanceError } from './upstream-errors.js';
+import { isUpstreamBalanceError, upstreamErrorText } from './upstream-errors.js';
 
 const nowIso = () => new Date().toISOString();
 // Video providers fetch reference assets asynchronously. Keep the temporary
@@ -91,7 +91,7 @@ function providerDetails(body) {
     body?.details, body?.detail, payload?.details, payload?.detail, body?.error?.message,
     payload?.error?.message, payload?.message, payload?.msg, body?.message, body?.msg,
   ];
-  return candidates.find((value) => typeof value === 'string' && value.trim()) || '';
+  return candidates.find((value) => value && (typeof value === 'string' || typeof value === 'object')) || '';
 }
 
 function providerRestrictionMessage(body, refunded = false) {
@@ -369,7 +369,7 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
           responseBody = Buffer.from(JSON.stringify(parsedResponseBody));
         }
       }
-      const upstreamMessage = String(providerDetails(parsedResponseBody) || parsedResponseBody?.error || '');
+      const upstreamMessage = upstreamErrorText(providerDetails(parsedResponseBody) || parsedResponseBody?.error || '');
       if ((!upstream.ok || businessFailure) && isModerationFailure(parsedResponseBody)) {
         const message = providerRestrictionMessage(parsedResponseBody);
         return res.status(upstream.status >= 400 ? upstream.status : 502).json({

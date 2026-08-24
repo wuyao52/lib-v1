@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { createVideoProviderAdapter } from './video-provider-adapters.js';
-import { isUpstreamBalanceError } from './upstream-errors.js';
+import { isUpstreamBalanceError, upstreamErrorText } from './upstream-errors.js';
 
 const ACTIVE_STATUSES = new Set(['submitting', 'processing', 'cancel_requested']);
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
@@ -117,7 +117,7 @@ const completedVideoResponse = (status, result) => Boolean(result.url)
 
 function errorOf(body, statusCode) {
   const payload = payloadOf(body);
-  const raw = String(payload?.error?.detail || payload?.error?.details || payload?.details || payload?.detail
+  const raw = upstreamErrorText(payload?.error?.detail || payload?.error?.details || payload?.details || payload?.detail
     || body?.error?.detail || body?.error?.details || body?.details || body?.detail
     || payload?.error?.message || payload?.error?.code || payload?.error
     || body?.error?.message || body?.error?.code || body?.message || body?.msg || body?.error || `上游请求失败 (${statusCode})`);

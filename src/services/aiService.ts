@@ -160,7 +160,7 @@ function terminalProviderError(data: any): Error {
     payload?.error?.message, payload?.error?.code, payload?.error,
     data?.error?.message, data?.error?.code, data?.message, data?.msg, data?.error,
   ];
-  const rawMessage = String(values.find((value) => typeof value === 'string' && value.trim()) || '视频生成失败');
+  const rawMessage = publicProviderError(providerMessage(data) || values.find((value) => typeof value === 'string' && value.trim()) || '视频生成失败');
   const message = /privacyinformation|real\s*(?:person|human|face)|真人|人脸|肖像/i.test(rawMessage)
     ? '参考图片疑似包含真人，当前服务商不支持将真人肖像用作视频参考图。请移除该参考图，或改用原创角色素材后重试'
     : /moderation|content[_ -]?policy|safety|sensitive|审核|敏感/i.test(rawMessage)
@@ -473,7 +473,7 @@ export class SeedanceService extends AIService {
         });
 
         const businessError = providerErrorMessage(data);
-        if (!response.ok || businessError) throw new Error(businessError || data.message || data.msg || data.error?.message || `请求失败: ${response.status}`);
+        if (!response.ok || businessError) throw new Error(businessError || providerMessage(data) || `请求失败: ${response.status}`);
 
         const payload = data.data && typeof data.data === 'object' ? data.data : data;
         const taskId = payload.id || payload.task_id || payload.taskId || payload.job_id || payload.jobId || data.id || data.task_id || data.taskId || data.job_id || data.jobId;

@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createVideoQueue, selectFairQueuedJobs } from '../video-queue.js';
+import { isUpstreamBalanceError, upstreamErrorText } from '../upstream-errors.js';
+
+test('provider object errors are readable and classify insufficient balance', () => {
+  const providerError = { error: { code: 'insufficient_balance', detail: 'account has no funds' } };
+  assert.match(upstreamErrorText(providerError), /insufficient_balance/);
+  assert.equal(isUpstreamBalanceError(providerError), true);
+});
 
 const waitFor = async (predicate, timeoutMs = 1000) => {
   const startedAt = Date.now();
