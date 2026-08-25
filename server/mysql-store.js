@@ -130,7 +130,8 @@ const TABLES = {
     create: `CREATE TABLE IF NOT EXISTS project_revisions (
       id CHAR(36) PRIMARY KEY, project_id VARCHAR(100) NOT NULL, user_id CHAR(36) NOT NULL,
       version INT NOT NULL, project_data JSON NOT NULL, created_at VARCHAR(35) NOT NULL, reason VARCHAR(32) NOT NULL,
-      INDEX project_revisions_lookup_idx (project_id, user_id, version)
+      INDEX project_revisions_lookup_idx (project_id, user_id, version),
+      INDEX project_revisions_rank_idx (project_id, version DESC, created_at DESC, id)
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
     select: 'SELECT id, project_id AS projectId, user_id AS userId, version, project_data AS projectData, created_at AS createdAt, reason FROM project_revisions',
     insert: 'INSERT INTO project_revisions (id, project_id, user_id, version, project_data, created_at, reason) VALUES ?',
@@ -419,11 +420,17 @@ const TABLES = {
 };
 
 const MAX_PROJECT_REVISIONS = 30;
-const selectForCollection = (name, spec) => name === 'projectRevisions'
-  ? `SELECT id, project_id AS projectId, user_id AS userId, version, project_data AS projectData, created_at AS createdAt, reason
-      FROM (SELECT id, project_id, user_id, version, project_data, created_at, reason,
-        ROW_NUMBER() OVER (PARTITION BY project_id ORDER BY version DESC, created_at DESC) AS revision_rank
-        FROM project_revisions) recent WHERE revision_rank <= ${MAX_PROJECT_REVISIONS}`
+export const selectForCollection = (name, spec) => name === 'projectRevisions'
+  ? `SELECT revisions.id, revisions.project_id AS projectId, revisions.user_id AS userId,
+        revisions.version, revisions.project_data AS projectData, revisions.created_at AS createdAt, revisions.reason
+      FROM project_revisions revisions
+      INNER JOIN (
+        SELECT id, ROW_NUMBER() OVER (
+          PARTITION BY project_id ORDER BY version DESC, created_at DESC, id DESC
+        ) AS revision_rank
+        FROM project_revisions
+      ) ranked ON ranked.id = revisions.id
+      WHERE ranked.revision_rank <= ${MAX_PROJECT_REVISIONS}`
   : spec.select;
 
 // Avoid cloning/stringifying multi-megabyte project payloads during unrelated

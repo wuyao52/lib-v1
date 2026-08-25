@@ -111,6 +111,19 @@ const migrations = [
       await query('ALTER TABLE `generation_jobs` MODIFY COLUMN `id` VARCHAR(64) NOT NULL');
     },
   },
+  {
+    version: 11,
+    name: 'project_revision_rank_index',
+    async up({ query }) {
+      const [indexes] = await query(
+        'SELECT 1 FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ? LIMIT 1',
+        ['project_revisions', 'project_revisions_rank_idx'],
+      );
+      if (!indexes.length) {
+        await query('ALTER TABLE `project_revisions` ADD INDEX `project_revisions_rank_idx` (`project_id`, `version` DESC, `created_at` DESC, `id`)');
+      }
+    },
+  },
 ];
 
 export async function runSchemaMigrations(pool) {

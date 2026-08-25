@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { MySqlDatabase } from '../mysql-store.js';
+import { MySqlDatabase, selectForCollection } from '../mysql-store.js';
 import { runSchemaMigrations, schemaMigrationVersions } from '../schema-migrations.js';
 
 function databaseWithRecordedSql() {
@@ -244,6 +244,8 @@ test('MySQL startup applies versioned legacy alignment for system audit events',
   assert.equal(statements.some((sql) => /quarantine_key VARCHAR\(1024\) NOT NULL UNIQUE/i.test(sql)), false);
   assert.equal(statements.some((sql) => /CREATE TABLE IF NOT EXISTS generation_jobs[\s\S]*id VARCHAR\(64\) PRIMARY KEY/i.test(sql)), true);
   assert.equal(statements.some((sql) => /ALTER TABLE `generation_jobs` MODIFY COLUMN `id` VARCHAR\(64\) NOT NULL/i.test(sql)), true);
+  assert.equal(statements.some((sql) => /CREATE TABLE IF NOT EXISTS project_revisions[\s\S]*project_revisions_rank_idx/i.test(sql)), true);
+  assert.equal(statements.some((sql) => /ALTER TABLE `project_revisions` ADD INDEX `project_revisions_rank_idx`/i.test(sql)), true);
 });
 
 test('schema migrations execute once and skip all ALTER statements on later startup', async () => {
@@ -256,7 +258,7 @@ test('schema migrations execute once and skip all ALTER statements on later star
       if (/GET_LOCK/i.test(sql)) return [[{ acquired: 1 }]];
       if (/RELEASE_LOCK/i.test(sql)) return [[{ released: 1 }]];
       if (/SELECT version FROM schema_migrations/i.test(sql)) return [[...applied].map((version) => ({ version }))];
-      if (/information_schema\.columns/i.test(sql)) return [[{ exists: 1 }]];
+      if (/information_schema\.(?:columns|statistics)/i.test(sql)) return [[{ exists: 1 }]];
       if (/INSERT INTO schema_migrations/i.test(sql)) { applied.add(Number(params[0])); return [{ affectedRows: 1 }]; }
       return [{ affectedRows: 0 }];
     },
@@ -270,6 +272,16 @@ test('schema migrations execute once and skip all ALTER statements on later star
   await runSchemaMigrations(pool);
   assert.equal(statements.some((sql) => /^ALTER TABLE/i.test(sql)), false);
   assert.equal(statements.some((sql) => /CREATE TABLE IF NOT EXISTS request_metric_buckets/i.test(sql)), false);
+});
+
+test('project revision startup ranking excludes large JSON payloads from the window sort', () => {
+  const sql = selectForCollection('projectRevisions', { select: 'fallback' });
+  const rankedQuery = sql.match(/INNER JOIN \(([\s\S]+?)\) ranked/i)?.[1] || '';
+  assert.match(rankedQuery, /ROW_NUMBER\(\) OVER/i);
+  assert.match(rankedQuery, /SELECT id,/i);
+  assert.doesNotMatch(rankedQuery, /project_data|reason|user_id/i);
+  assert.match(sql, /ranked\.id = revisions\.id/i);
+  assert.match(sql, /revisions\.project_data AS projectData/i);
 });
 
 test('MySQL queue shutdown releases only the current worker leases', async () => {
