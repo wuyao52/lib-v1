@@ -88,6 +88,7 @@ export default function Canvas() {
   const generationPositionRef = useRef({ x: 0, y: 0 });
   const uploadInFlightRef = useRef(false);
   const uploadStatusTimerRef = useRef<number | null>(null);
+  const alignedDropRef = useRef<{ id: string; position: { x: number; y: number } } | null>(null);
 
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
@@ -350,22 +351,30 @@ export default function Canvas() {
 
   const handleNodeDrag: OnNodeDrag = (_event, node, draggedNodes) => {
     if (node.data.type !== 'image' || draggedNodes.length !== 1) {
+      alignedDropRef.current = null;
       setAlignmentGuides([]);
       return;
     }
     const otherImages = project.nodes.filter((candidate) => candidate.id !== node.id && candidate.data.type === 'image');
     if (!otherImages.length) {
+      alignedDropRef.current = null;
       setAlignmentGuides([]);
       return;
     }
     const aligned = alignNode(alignmentNode(node as SceneNode), otherImages.map(alignmentNode), ALIGNMENT_TOLERANCE_PX / getZoom());
+    alignedDropRef.current = aligned.guides.length ? { id: node.id, position: aligned.position } : null;
     setAlignmentGuides(aligned.guides);
     if (aligned.position.x !== node.position.x || aligned.position.y !== node.position.y) {
       onNodesChange([{ id: node.id, type: 'position', position: aligned.position, dragging: true }]);
     }
   };
 
-  const handleNodeDragStop: OnNodeDrag = () => {
+  const handleNodeDragStop: OnNodeDrag = (_event, node) => {
+    const alignedDrop = alignedDropRef.current;
+    if (alignedDrop?.id === node.id) {
+      onNodesChange([{ id: node.id, type: 'position', position: alignedDrop.position, dragging: false }]);
+    }
+    alignedDropRef.current = null;
     setAlignmentGuides([]);
     pushToHistory();
   };

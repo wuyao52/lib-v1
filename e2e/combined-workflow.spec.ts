@@ -59,6 +59,7 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   await page.mouse.move(dragEnd.x, dragEnd.y - (movedBox!.y - imageNodeBox!.y), { steps: 2 });
   await expect(page.getByTestId('alignment-guide-y')).toBeVisible();
   await page.mouse.up();
+  await page.waitForTimeout(100);
   await expect(page.getByTestId('alignment-guide-y')).toHaveCount(0);
   const alignedBox = await alignmentImage.boundingBox();
   expect(alignedBox).not.toBeNull();
