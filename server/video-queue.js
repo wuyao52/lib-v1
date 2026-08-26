@@ -4,6 +4,7 @@ import { isUpstreamBalanceError, upstreamErrorText } from './upstream-errors.js'
 
 const ACTIVE_STATUSES = new Set(['submitting', 'processing', 'cancel_requested']);
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+const CONFIRMED_POLL_BALANCE_FAILURES = 3;
 const historyRetentionMs = () => intFromEnv('GENERATION_HISTORY_RETENTION_DAYS', 90, 3, 3650) * 24 * 60 * 60 * 1000;
 
 const intFromEnv = (name, fallback, minimum, maximum) => {
@@ -204,6 +205,7 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
   const polling = new Set();
   const controllers = new Map();
   const unparsedCompletionLogged = new Set();
+  const pollBalanceFailureStreaks = new Map();
   let ticking = false;
   let lastCleanupAt = 0;
   let accepting = true;
@@ -224,6 +226,7 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
 
   const refundJob = async (jobId, error, status = 'failed') => {
     unparsedCompletionLogged.delete(jobId);
+    pollBalanceFailureStreaks.delete(jobId);
     const patch = {
       status, progress: 100, errorCode: error.code, errorMessage: error.message,
       completedAt: nowIso(), updatedAt: nowIso(), nextPollAt: 0, leaseOwner: null, leaseUntil: 0,
@@ -250,6 +253,7 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
 
   const completeJob = async (jobId, result) => {
     unparsedCompletionLogged.delete(jobId);
+    pollBalanceFailureStreaks.delete(jobId);
     const job = db.read('generationJobs').find((item) => item.id === jobId);
     if (!job || TERMINAL_STATUSES.has(job.status)) return null;
     let durableResult = result;
@@ -366,6 +370,9 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
       let body = await jsonResponse(response);
       let status = statusOf(body);
       let result = videoResultOf(body);
+      const responseError = (!response.ok || isBusinessFailure(body) || failedVideoStatus(status))
+        ? errorOf(body, response.status)
+        : null;
       const progressBeforeRefresh = Number(payloadOf(body)?.progress || payloadOf(body)?.percent || job.progress || 0);
       if (response.ok && !result.url && adapter.refreshResult && (completedVideoStatus(status) || progressBeforeRefresh >= 100)) {
         const linkResponse = await adapter.refreshResult(job.providerTaskId, controller.signal);
@@ -377,16 +384,35 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
           result = videoResultOf(body);
         }
       }
-      if (isProviderCapacityFailure(body)) {
+      if (responseError?.code === 'UPSTREAM_BALANCE_INSUFFICIENT') {
+        if (failedVideoStatus(status)) {
+          await refundJob(job.id, responseError);
+          return;
+        }
+        const failures = Number(pollBalanceFailureStreaks.get(job.id) || 0) + 1;
+        pollBalanceFailureStreaks.set(job.id, failures);
+        if (failures >= CONFIRMED_POLL_BALANCE_FAILURES) {
+          let cancelled = false;
+          try { cancelled = await cancelUpstream(job); } catch { cancelled = false; }
+          if (cancelled) await refundJob(job.id, responseError);
+          else await updateJob(job.id, { nextPollAt: Date.now() + 30000, leaseOwner: null, leaseUntil: 0 });
+        } else {
+          await updateJob(job.id, { nextPollAt: Date.now() + 15000, leaseOwner: null, leaseUntil: 0 });
+        }
+      } else if (isProviderCapacityFailure(body)) {
+        pollBalanceFailureStreaks.delete(job.id);
         if (Date.now() - Date.parse(job.createdAt) > config.taskTimeoutMs) await refundJob(job.id, { code: 'VIDEO_JOB_TIMEOUT', message: '视频任务等待供应商容量超时，已自动退款' });
         else await updateJob(job.id, { status: 'queued', providerTaskId: null, progress: 0, attemptCount: Number(job.attemptCount || 0) + 1, nextPollAt: Date.now() + 30000, leaseOwner: null, leaseUntil: 0 });
       } else if (response.status === 429 || response.status >= 500) {
+        pollBalanceFailureStreaks.delete(job.id);
         await updateJob(job.id, { attemptCount: Number(job.attemptCount || 0) + 1, nextPollAt: Date.now() + 15000 });
-      } else if (!response.ok || isBusinessFailure(body) || failedVideoStatus(status)) {
-        await refundJob(job.id, errorOf(body, response.status));
+      } else if (responseError) {
+        pollBalanceFailureStreaks.delete(job.id);
+        await refundJob(job.id, responseError);
       } else if (completedVideoResponse(status, result)) {
         await completeJob(job.id, result);
       } else {
+        pollBalanceFailureStreaks.delete(job.id);
         const progress = Number(payloadOf(body)?.progress || payloadOf(body)?.percent || job.progress || 0);
         if (progress >= 100 && !result.url && !unparsedCompletionLogged.has(job.id)) {
           unparsedCompletionLogged.add(job.id);

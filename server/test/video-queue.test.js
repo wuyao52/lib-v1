@@ -394,6 +394,91 @@ test('video queue normalizes provider precharge balance failures to error 99', a
   assert.equal(job.errorMessage, '错误：99');
 });
 
+test('accepted video survives transient balance errors while the provider keeps generating', async () => {
+  let polls = 0;
+  const db = fakeDb({
+    users: [{ id: 'user-a', balanceCents: 100 }],
+    systemApis: [{ id: 'api-1', enabled: true, baseUrl: 'https://upstream.example', encryptedApiKey: 'secret' }],
+  });
+  const fetchImpl = async (_url, options) => {
+    if (options.method === 'POST') return new Response('{"id":"provider-running","status":"queued"}', { status: 200, headers: { 'content-type': 'application/json' } });
+    polls += 1;
+    if (polls <= 2) return new Response('{"error":{"message":"预扣费额度失败, 用户剩余额度: ¥1.10"}}', { status: 402, headers: { 'content-type': 'application/json' } });
+    if (polls === 3) return new Response('{"status":"processing","progress":80}', { status: 200, headers: { 'content-type': 'application/json' } });
+    return new Response('{"status":"completed","video_url":"https://cdn.example/transient-balance.mp4"}', { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  const queue = await createVideoQueue({ db, vault: { decrypt: (value) => value }, fetchImpl, autoStart: false });
+  await queue.enqueue({ id: 'transient-balance', userId: 'user-a', apiId: 'api-1', modelId: 'video', requestBody: { prompt: 'test' }, chargeCents: 25, billingReference: 'transient-balance' });
+  await waitFor(() => db.data.generationJobs[0]?.status === 'processing');
+  for (let index = 0; index < 4; index += 1) {
+    db.data.generationJobs[0].nextPollAt = 0;
+    await queue.tick();
+    await waitFor(() => polls >= index + 1);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  await waitFor(() => db.data.generationJobs[0]?.status === 'completed');
+  assert.equal(db.data.generationJobs[0].resultUrl, 'https://cdn.example/transient-balance.mp4');
+  assert.equal(db.data.balanceTransactions.some((item) => item.type === 'model_refund'), false);
+});
+
+test('confirmed poll balance failure ends locally only after upstream cancellation succeeds', async () => {
+  let polls = 0;
+  let cancellations = 0;
+  const db = fakeDb({
+    users: [{ id: 'user-a', balanceCents: 100 }],
+    systemApis: [{ id: 'api-1', enabled: true, baseUrl: 'https://upstream.example', encryptedApiKey: 'secret' }],
+  });
+  const fetchImpl = async (_url, options) => {
+    if (options.method === 'POST') return new Response('{"id":"provider-balance","status":"queued"}', { status: 200, headers: { 'content-type': 'application/json' } });
+    if (options.method === 'DELETE') { cancellations += 1; return new Response('{"status":"cancelled"}', { status: 200, headers: { 'content-type': 'application/json' } }); }
+    polls += 1;
+    return new Response('{"error":{"message":"insufficient credit balance"}}', { status: 402, headers: { 'content-type': 'application/json' } });
+  };
+  const queue = await createVideoQueue({ db, vault: { decrypt: (value) => value }, fetchImpl, autoStart: false });
+  await queue.enqueue({ id: 'confirmed-balance', userId: 'user-a', apiId: 'api-1', modelId: 'video', requestBody: { prompt: 'test' }, chargeCents: 25, billingReference: 'confirmed-balance' });
+  await waitFor(() => db.data.generationJobs[0]?.status === 'processing');
+  for (let index = 0; index < 3; index += 1) {
+    db.data.generationJobs[0].nextPollAt = 0;
+    await queue.tick();
+    await waitFor(() => polls >= index + 1);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  await waitFor(() => db.data.generationJobs[0]?.status === 'failed');
+  assert.equal(cancellations, 1);
+  assert.equal(db.data.generationJobs[0].errorCode, 'UPSTREAM_BALANCE_INSUFFICIENT');
+  assert.equal(db.data.generationJobs[0].errorMessage, '错误：99');
+  assert.equal(db.data.users[0].balanceCents, 100);
+});
+
+test('video remains active when repeated balance polling errors cannot cancel upstream', async () => {
+  let polls = 0;
+  let cancellations = 0;
+  const db = fakeDb({
+    users: [{ id: 'user-a', balanceCents: 100 }],
+    systemApis: [{ id: 'api-1', enabled: true, baseUrl: 'https://upstream.example', encryptedApiKey: 'secret' }],
+  });
+  const fetchImpl = async (_url, options) => {
+    if (options.method === 'POST') return new Response('{"id":"provider-orphan-safe","status":"queued"}', { status: 200, headers: { 'content-type': 'application/json' } });
+    if (options.method === 'DELETE') { cancellations += 1; return new Response('{"message":"task still running"}', { status: 409, headers: { 'content-type': 'application/json' } }); }
+    polls += 1;
+    if (polls <= 3) return new Response('{"error":{"message":"预扣费额度失败"}}', { status: 402, headers: { 'content-type': 'application/json' } });
+    return new Response('{"status":"completed","video_url":"https://cdn.example/orphan-safe.mp4"}', { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  const queue = await createVideoQueue({ db, vault: { decrypt: (value) => value }, fetchImpl, autoStart: false });
+  await queue.enqueue({ id: 'orphan-safe', userId: 'user-a', apiId: 'api-1', modelId: 'video', requestBody: { prompt: 'test' }, chargeCents: 25, billingReference: 'orphan-safe' });
+  await waitFor(() => db.data.generationJobs[0]?.status === 'processing');
+  for (let index = 0; index < 4; index += 1) {
+    db.data.generationJobs[0].nextPollAt = 0;
+    await queue.tick();
+    await waitFor(() => polls >= index + 1);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  await waitFor(() => db.data.generationJobs[0]?.status === 'completed');
+  assert.equal(cancellations, 1);
+  assert.equal(db.data.generationJobs[0].resultUrl, 'https://cdn.example/orphan-safe.mp4');
+  assert.equal(db.data.balanceTransactions.some((item) => item.type === 'model_refund'), false);
+});
+
 test('video queue cancellation stops queued and provider tasks and refunds exactly once', async () => {
   await withQueueEnv({ VIDEO_QUEUE_GLOBAL_CONCURRENCY: '1' }, async () => {
     const now = new Date().toISOString();
