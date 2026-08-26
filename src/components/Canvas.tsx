@@ -8,8 +8,9 @@ import {
   SelectionMode,
   ConnectionLineType,
   useReactFlow,
+  ViewportPortal,
 } from '@xyflow/react';
-import type { NodeTypes, OnConnectStart, OnConnectEnd, Connection } from '@xyflow/react';
+import type { NodeTypes, OnConnectStart, OnConnectEnd, Connection, OnNodeDrag } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import useProjectStore from '@/store/useProjectStore';
 import SceneNodeComponent from './SceneNode';
@@ -20,10 +21,15 @@ import { Upload, Image, Video, Droplets, Wand2, Plus, Wallet, GitMerge } from 'l
 import { useAuth } from '@/auth/AuthContext';
 import { ApiError, apiRequest } from '@/services/apiClient';
 import { uploadAssetFile } from '@/services/assetService';
+import { alignNode, type AlignmentGuide, type AlignmentNode } from '@/utils/alignmentGuides';
+import type { SceneNode } from '@/types';
 
 const MAX_FILES_PER_DROP = 20;
 const UPLOAD_CONCURRENCY = 4;
 const NODE_CONNECTION_TOLERANCE_PX = 36;
+const ALIGNMENT_TOLERANCE_PX = 8;
+const DEFAULT_NODE_WIDTH = 320;
+const DEFAULT_NODE_HEIGHT = 240;
 
 const wait = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
@@ -62,7 +68,7 @@ const minimapStyle = {
 
 export default function Canvas() {
   const { user } = useAuth();
-  const { screenToFlowPosition } = useReactFlow();
+  const { screenToFlowPosition, getZoom } = useReactFlow();
   const {
     project,
     onNodesChange,
@@ -92,6 +98,7 @@ export default function Canvas() {
   const [watermarkSourceType, setWatermarkSourceType] = useState<'image' | 'video'>('image');
   const [balanceCents, setBalanceCents] = useState(user?.balanceCents || 0);
   const [batchConnection, setBatchConnection] = useState<{ start: { x: number; y: number }; current: { x: number; y: number }; targetId: string | null } | null>(null);
+  const [alignmentGuides, setAlignmentGuides] = useState<AlignmentGuide[]>([]);
 
   useEffect(() => {
     let active = true;
@@ -334,6 +341,35 @@ export default function Canvas() {
 
   const onPaneClick = () => setSelectedNode(null);
 
+  const alignmentNode = (node: SceneNode): AlignmentNode => ({
+    id: node.id,
+    position: node.position,
+    width: node.measured?.width || node.width || DEFAULT_NODE_WIDTH,
+    height: node.measured?.height || node.height || DEFAULT_NODE_HEIGHT,
+  });
+
+  const handleNodeDrag: OnNodeDrag = (_event, node, draggedNodes) => {
+    if (node.data.type !== 'image' || draggedNodes.length !== 1) {
+      setAlignmentGuides([]);
+      return;
+    }
+    const otherImages = project.nodes.filter((candidate) => candidate.id !== node.id && candidate.data.type === 'image');
+    if (!otherImages.length) {
+      setAlignmentGuides([]);
+      return;
+    }
+    const aligned = alignNode(alignmentNode(node as SceneNode), otherImages.map(alignmentNode), ALIGNMENT_TOLERANCE_PX / getZoom());
+    setAlignmentGuides(aligned.guides);
+    if (aligned.position.x !== node.position.x || aligned.position.y !== node.position.y) {
+      onNodesChange([{ id: node.id, type: 'position', position: aligned.position, dragging: true }]);
+    }
+  };
+
+  const handleNodeDragStop: OnNodeDrag = () => {
+    setAlignmentGuides([]);
+    pushToHistory();
+  };
+
   if (!project) return null;
 
   const generationSourceNodes = generationSourceNodeIdsRef.current
@@ -506,7 +542,8 @@ export default function Canvas() {
         nodes={project.nodes}
         edges={renderedEdges}
         onNodesChange={onNodesChange}
-        onNodeDragStop={pushToHistory}
+        onNodeDrag={handleNodeDrag}
+        onNodeDragStop={handleNodeDragStop}
         onEdgesChange={onEdgesChange}
         onConnect={handleConnect}
         onConnectStart={onConnectStart}
@@ -532,6 +569,23 @@ export default function Canvas() {
         className="bg-dark-950"
       >
         <Background variant={BackgroundVariant.Dots} gap={24} size={1.5} color="#334155" />
+        <ViewportPortal>
+          {alignmentGuides.map((guide) => guide.axis === 'x' ? (
+            <div
+              key={`x-${guide.coordinate}`}
+              data-testid="alignment-guide-x"
+              className="pointer-events-none absolute z-[100] border-l border-dashed border-cyan-300"
+              style={{ left: guide.coordinate, top: guide.start, height: Math.max(1, guide.end - guide.start) }}
+            />
+          ) : (
+            <div
+              key={`y-${guide.coordinate}`}
+              data-testid="alignment-guide-y"
+              className="pointer-events-none absolute z-[100] border-t border-dashed border-cyan-300"
+              style={{ left: guide.start, top: guide.coordinate, width: Math.max(1, guide.end - guide.start) }}
+            />
+          ))}
+        </ViewportPortal>
         <Controls className="!bg-dark-800 !border-dark-600 !rounded-xl !shadow-xl" showInteractive={false} />
         <MiniMap
           style={minimapStyle}

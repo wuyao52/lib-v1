@@ -20,7 +20,7 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   await page.getByTestId('project-browser-project').click();
   await expect(page.getByTestId('add-image-node')).toBeVisible();
 
-  await expect(page.locator('.react-flow__node')).toHaveCount(4);
+  await expect(page.locator('.react-flow__node')).toHaveCount(5);
   const refreshedImage = page.locator('.react-flow__node[data-id="refresh-image-node"] img').first();
   await expect(refreshedImage).toBeVisible();
   await expect.poll(() => refreshedImage.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
@@ -41,6 +41,29 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   await page.getByLabel('关闭 AI 模型配置').click();
   const nodes = page.locator('.react-flow__node');
   const targetNode = page.locator('.react-flow__node[data-id="batch-target"]');
+
+  const imageNode = page.locator('.react-flow__node[data-id="refresh-image-node"]');
+  const imageNodeBox = await imageNode.boundingBox();
+  expect(imageNodeBox).not.toBeNull();
+  const alignmentImage = page.locator('.react-flow__node[data-id="alignment-image-node"]');
+  await expect(alignmentImage).toBeVisible();
+  const alignmentImageBox = await alignmentImage.boundingBox();
+  expect(alignmentImageBox).not.toBeNull();
+  const dragStart = { x: alignmentImageBox!.x + 40, y: alignmentImageBox!.y + 20 };
+  const dragEnd = { x: imageNodeBox!.x + imageNodeBox!.width + 90, y: imageNodeBox!.y + 20 };
+  await page.mouse.move(dragStart.x, dragStart.y);
+  await page.mouse.down();
+  await page.mouse.move(dragEnd.x, dragEnd.y, { steps: 12 });
+  const movedBox = await alignmentImage.boundingBox();
+  expect(movedBox).not.toBeNull();
+  await page.mouse.move(dragEnd.x, dragEnd.y - (movedBox!.y - imageNodeBox!.y), { steps: 2 });
+  await expect(page.getByTestId('alignment-guide-y')).toBeVisible();
+  await page.mouse.up();
+  await expect(page.getByTestId('alignment-guide-y')).toHaveCount(0);
+  const alignedBox = await alignmentImage.boundingBox();
+  expect(alignedBox).not.toBeNull();
+  expect(Math.abs(alignedBox!.y - imageNodeBox!.y)).toBeLessThanOrEqual(1);
+  await page.waitForTimeout(4700);
 
   const zoomOut = page.locator('.react-flow__controls-zoomout');
   for (let index = 0; index < 20 && await zoomOut.isEnabled(); index += 1) await zoomOut.click();
@@ -82,14 +105,13 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   });
   await expect.poll(() => uploadRequests).toBe(4);
   await expect(page.getByText('已上传 3/3')).toBeVisible();
-  await expect(page.locator('.react-flow__node')).toHaveCount(7);
+  await expect(page.locator('.react-flow__node')).toHaveCount(8);
   await expect(page.locator('.react-flow__node').filter({ hasText: 'multi-a' })).toBeVisible();
   await expect(page.locator('.react-flow__node').filter({ hasText: 'multi-b' })).toBeVisible();
   await expect(page.locator('.react-flow__node').filter({ hasText: 'multi-c' })).toBeVisible();
   expect(uploadRequests).toBe(4);
   expect(maxActiveUploads).toBeLessThanOrEqual(4);
-  await page.waitForTimeout(2200);
-  expect(projectPutCount - putsBeforeUpload).toBe(1);
+  await expect.poll(() => projectPutCount - putsBeforeUpload, { timeout: 7000 }).toBe(1);
   browserErrors.splice(0, browserErrors.length);
 
   await page.waitForTimeout(2200);
@@ -126,7 +148,7 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   await page.locator('.react-flow__node[data-id="batch-source-b"]').click({ position: { x: 30, y: 20 }, modifiers: ['Shift'], force: true });
   await expect(page.getByTestId('batch-connect-handle')).toBeVisible();
   await page.getByTitle('将选中目标连接到新组件').click();
-  await expect(page.locator('.react-flow__node')).toHaveCount(8);
+  await expect(page.locator('.react-flow__node')).toHaveCount(9);
   await expect(page.getByTestId('node-saved-references')).toContainText('批量来源 A');
   await expect(page.getByTestId('node-saved-references')).toContainText('批量来源 B');
   const handleBox = await page.getByTestId('batch-connect-handle').boundingBox();
@@ -161,7 +183,7 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   await page.locator('.react-flow__pane').click({ position: { x: 1100, y: 650 } });
 
   await page.getByTestId('add-image-node').click();
-  await expect(page.locator('.react-flow__node')).toHaveCount(9);
+  await expect(page.locator('.react-flow__node')).toHaveCount(10);
 
   const batchSaved = page.waitForResponse((response) => response.url().endsWith('/api/projects/browser-project') && response.request().method() === 'PUT' && response.ok());
   await page.getByTestId('save-project').click();
@@ -181,7 +203,7 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   await page.getByTestId('logout').click();
   await expect(page.getByText('登录创作空间')).toBeVisible();
   await page.goto('/__e2e/login');
-  await expect(page.getByTestId('project-browser-project-scene-count')).toContainText('9');
+  await expect(page.getByTestId('project-browser-project-scene-count')).toContainText('10');
   await page.getByTestId('project-browser-project').click();
   const restoredProjectSettings = page.getByRole('banner').getByTitle('项目设置');
   await restoredProjectSettings.click();
