@@ -454,10 +454,10 @@ export default function ModelConfigPanel() {
                   <input
                     type="number"
                     min="0"
-                    max="16"
+                    max="30"
                     step="1"
                     value={Number.isInteger(activeModel.maxReferenceImages) ? activeModel.maxReferenceImages : 4}
-                    onChange={(event) => updateActiveModel({ maxReferenceImages: Math.max(0, Math.min(16, Math.trunc(Number(event.target.value) || 0))) })}
+                    onChange={(event) => updateActiveModel({ maxReferenceImages: Math.max(0, Math.min(30, Math.trunc(Number(event.target.value) || 0))) })}
                     className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-white text-sm focus:outline-none focus:border-primary-500"
                   />
                   <p className="text-[10px] text-dark-400">按服务商文档填写。0 表示该模型不支持参考图；未填写的旧配置默认最多 4 张。</p>
