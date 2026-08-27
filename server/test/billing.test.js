@@ -46,6 +46,47 @@ async function setup({ videoQueue = false, videoQueueAutoStart = true, assetStor
   return { server, db, register, request, upstreamCalls, videoQueue: queue };
 }
 
+test('system model reference limits allow 30 images and 10 audio/video files', async (t) => {
+  const context = await setup();
+  t.after(() => context.server.close());
+  const admin = await context.register('reference-limit-admin');
+  await context.db.mutate((data) => { data.users.find((item) => item.id === admin.user.id).role = 'system'; });
+  const apiResponse = await context.request('/api/admin/system-apis', admin.cookie, {
+    method: 'POST',
+    body: JSON.stringify({ name: 'Reference Limits', provider: 'Compatible', baseUrl: 'https://upstream.example', apiKey: 'secret-system-key' }),
+  });
+  const api = (await apiResponse.json()).api;
+  const basePricing = {
+    apiId: api.id, displayName: '引用上限模型', category: 'video', billingUnit: 'second',
+    unitPriceCents: 1, allowedDurationsSec: [5],
+  };
+  const accepted = await context.request('/api/admin/pricing', admin.cookie, {
+    method: 'POST',
+    body: JSON.stringify({ ...basePricing, modelId: 'reference-limit-model', maxReferenceImages: 30, maxReferenceAudios: 10, maxReferenceVideos: 10 }),
+  });
+  assert.equal(accepted.status, 201);
+
+  const modelsResponse = await context.request(`/api/system-ai/${api.id}/v1/models`, admin.cookie);
+  assert.equal(modelsResponse.status, 200);
+  const model = (await modelsResponse.json()).data.find((item) => item.id === 'reference-limit-model');
+  assert.equal(model.maxReferenceImages, 30);
+  assert.equal(model.maxReferenceAudios, 10);
+  assert.equal(model.maxReferenceVideos, 10);
+
+  for (const [field, value, message] of [
+    ['maxReferenceImages', 31, '0-30'],
+    ['maxReferenceAudios', 11, '0-10'],
+    ['maxReferenceVideos', 11, '0-10'],
+  ]) {
+    const rejected = await context.request('/api/admin/pricing', admin.cookie, {
+      method: 'POST',
+      body: JSON.stringify({ ...basePricing, modelId: `invalid-${field}`, [field]: value }),
+    });
+    assert.equal(rejected.status, 400);
+    assert.match((await rejected.json()).message, new RegExp(message));
+  }
+});
+
 test('managed video replaces owned asset paths with public OSS URLs before calling the provider', async (t) => {
   const signedRequests = [];
   const context = await setup({
