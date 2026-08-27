@@ -259,7 +259,7 @@ const requiresReferenceImage = (result: { success: boolean; error?: string }) =>
 
 function maxReferenceImages(model?: AIModelConfig | null): number {
   const configured = Number(model?.maxReferenceImages);
-  return Number.isSafeInteger(configured) && configured >= 0 && configured <= 16 ? configured : 4;
+  return Number.isSafeInteger(configured) && configured >= 0 && configured <= 30 ? configured : 4;
 }
 
 function collectReferenceImages(
