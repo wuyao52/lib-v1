@@ -255,7 +255,13 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
     }
     if (req.method === 'GET' && pathname === '/v1/models') {
       const data = db.read('modelPricing').filter((item) => item.apiId === api.id && item.enabled)
-        .map((item) => ({ id: item.modelId, object: 'model', name: item.displayName, category: item.category, billingUnit: item.billingUnit, unitPriceCents: item.unitPriceCents, maxReferenceImages: Number.isInteger(Number(item.maxReferenceImages)) ? Number(item.maxReferenceImages) : 4 }));
+        .map((item) => ({
+          id: item.modelId, object: 'model', name: item.displayName, category: item.category,
+          billingUnit: item.billingUnit, unitPriceCents: item.unitPriceCents,
+          maxReferenceImages: Number.isInteger(Number(item.maxReferenceImages)) ? Number(item.maxReferenceImages) : 4,
+          maxReferenceAudios: Number.isInteger(Number(item.maxReferenceAudios)) ? Number(item.maxReferenceAudios) : 0,
+          maxReferenceVideos: Number.isInteger(Number(item.maxReferenceVideos)) ? Number(item.maxReferenceVideos) : 0,
+        }));
       return res.json({ object: 'list', data });
     }
 
