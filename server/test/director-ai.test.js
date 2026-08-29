@@ -62,6 +62,13 @@ test('AI storyboard uses the configured text model and clamps each shot to 5-15 
   }
 });
 
+test('long novel plans can retain more than 240 validated shots', async () => {
+  const service = await loadDirectorAIService();
+  const shots = Array.from({ length: 241 }, (_, index) => ({ ...rawPlan.shots[index % rawPlan.shots.length], title: `小说镜头 ${index + 1}` }));
+  const plan = service.normalizeAIStoryboard({ ...rawPlan, shots }, { project, story: '长篇小说的分镜合并测试', voice: 'naturalist', durationMode: 'ai', skills: [] });
+  assert.equal(plan.shots.length, 241);
+});
+
 test('managed director text models use the same-origin system gateway', async () => {
   const service = await loadDirectorAIService();
   const originalFetch = globalThis.fetch;

@@ -38,6 +38,7 @@ export interface ParsedDirectorScript {
 
 const MAX_SOURCE_SEGMENT_CHARS = 700;
 const SOURCE_SEGMENTS_PER_BATCH = 1;
+const MAX_STORYBOARD_SHOTS = 1200;
 // Director analysis runs through the Netlify API proxy, whose synchronous
 // response window is much shorter than Railway's upstream text timeout.
 // Keep each response small and use the existing continuation path as needed.
@@ -324,7 +325,7 @@ function findOutOfOrderEvidenceTitles(raw: any, segments: StorySourceSegment[]) 
 
 export function normalizeAIStoryboard(raw: any, input: Omit<GenerateAIStoryboardInput, 'signal' | 'onProgress'>): StoryboardPlan {
   if (!raw || typeof raw !== 'object' || !Array.isArray(raw.shots)) throw new Error('文本模型返回缺少 shots 分镜数组');
-  if (raw.shots.length < 1 || raw.shots.length > 240) throw new Error('文本模型返回的镜头数必须在 1–240 个之间');
+  if (raw.shots.length < 1 || raw.shots.length > MAX_STORYBOARD_SHOTS) throw new Error(`文本模型返回的镜头数必须在 1–${MAX_STORYBOARD_SHOTS} 个之间`);
 
   let shots: DirectorShot[] = raw.shots.map((shot: any, index: number) => {
     if (!shot || typeof shot !== 'object') throw new Error(`第 ${index + 1} 个镜头格式无效`);
