@@ -172,7 +172,7 @@ function terminalProviderError(data: any): Error {
 }
 
 export function resolveVideoResolution(modelId: string, requested: unknown): string {
-  const modelResolution = modelId.match(/(?:^|[-_])(480|720|1080)p(?:$|[-_])/i)?.[1];
+  const modelResolution = modelId.match(/(?:^|[-_])(480|720|768|1080)p(?:$|[-_])/i)?.[1];
   if (modelResolution) return `${modelResolution}p`;
 
   const requestedResolution = String(requested || '').trim().toLowerCase();
