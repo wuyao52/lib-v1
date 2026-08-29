@@ -16,6 +16,7 @@ export interface GenerateAIStoryboardInput {
   selectedSourceSegmentIds?: string[];
   signal?: AbortSignal;
   onProgress?: (message: string, progress: number) => void;
+  onBatchComplete?: (plan: StoryboardPlan, completedBatchCount: number, totalBatchCount: number) => void;
 }
 
 export interface StorySourceSegment {
@@ -729,6 +730,15 @@ export async function generateAIStoryboard(input: GenerateAIStoryboardInput): Pr
       ? `场景 ${lastShot.sceneId}；上一镜任务：${lastShot.narrativeJob}；结束状态：${lastShot.plannedEndState}；镜头：${lastShot.camera}；光线：${lastShot.lighting}；连续性锁：${lastShot.continuityLocks.join('、')}`
       : previousEndState;
     previousSourceOrdinal = currentSourceOrdinal;
+    const checkpoint = normalizeAIStoryboard({
+      durationRecommendationReason: `已完成 ${selectionIndex + 1}/${batchEntries.length} 个原文批次，可从剩余批次继续`,
+      storySummary: summaries.join('；'),
+      storyPromise,
+      finalOutcome,
+      shots: rawShots.map((shot) => ({ ...shot })),
+    }, input);
+    checkpoint.shots = checkpoint.shots.map((shot, index) => ({ ...shot, clipId: `clip-${String(index + 1).padStart(3, '0')}`, sequenceIndex: index, status: index === 0 ? 'ready' : 'provisional' }));
+    input.onBatchComplete?.(checkpoint, selectionIndex + 1, batchEntries.length);
     input.onProgress?.(`已完成原剧本第 ${batchIndex + 1}/${displayBatchCount} 批`, Math.round(5 + ((selectionIndex + 1) / batchEntries.length) * 80));
   }
 

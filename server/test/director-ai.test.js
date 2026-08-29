@@ -427,6 +427,39 @@ test('long scripts are read in multiple batches and missing source coverage is r
   }
 });
 
+test('a completed novel batch is checkpointed before a later batch fails', async () => {
+  const service = await loadDirectorAIService();
+  const story = `第1场：${'人物完成动作并产生新的可见结果。'.repeat(35)}\n第2场：${'人物继续行动并产生新的可见结果。'.repeat(35)}`;
+  const batches = service.getStoryboardSourceBatches(story);
+  assert.ok(batches.length >= 2);
+  const originalFetch = globalThis.fetch;
+  const checkpoints = [];
+  globalThis.fetch = async (_url, options) => {
+    const userContent = JSON.parse(options.body).messages[1].content;
+    const sourceId = userContent.match(/\[(source-\d+)\]/)?.[1];
+    if (sourceId === batches[0].segments[0].id) {
+      const responsePlan = { ...rawPlan, coveredSourceIds: [sourceId], shots: [{ ...rawPlan.shots[0], sourceSegmentIds: [sourceId], sourceEvidence: '人物' }] };
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(responsePlan) } }] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ choices: [{ message: { content: 'not-json' } }] }), { status: 200 });
+  };
+  try {
+    await assert.rejects(
+      service.generateAIStoryboard({
+        project, story, voice: 'naturalist', durationMode: 'ai', skills: [],
+        onBatchComplete: (checkpoint, completed, total) => checkpoints.push({ checkpoint, completed, total }),
+      }),
+      /文本模型的输出限制过低|一致性校验失败/,
+    );
+    assert.equal(checkpoints.length, 1);
+    assert.equal(checkpoints[0].completed, 1);
+    assert.equal(checkpoints[0].total, batches.length);
+    assert.deepEqual(checkpoints[0].checkpoint.shots.flatMap((shot) => shot.sourceSegmentIds), [batches[0].segments[0].id]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('scene headings start new source segments instead of being packed into the previous scene', async () => {
   const service = await loadDirectorAIService();
   const segments = service.splitStoryIntoSourceSegments('第1场 内景 客厅\n人物放下杯子。\n第2场 外景 街道\n人物走出门。');

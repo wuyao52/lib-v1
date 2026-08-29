@@ -59,6 +59,7 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
   const [isComposing, setIsComposing] = useState(false);
   const [finalVideoUrl, setFinalVideoUrl] = useState<string | null>(null);
   const storyboardController = useRef<AbortController | null>(null);
+  const storyboardCheckpoint = useRef<StoryboardPlan | null>(null);
   const videoController = useRef<AbortController | null>(null);
   const acceptanceResolvers = useRef(new Map<string, (update: DirectorClipGeneration) => void>());
   const scriptFileInput = useRef<HTMLInputElement | null>(null);
@@ -112,7 +113,7 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
         id: existing?.id || `director-${plan.projectId}`,
         story, voice, durationMode, manualDurationSec, fixedShotDurationSec, plan,
         assets: directorAssets, clips: clipGenerations, finalVideoUrl: finalVideoUrl || undefined,
-        status: isGeneratingDrama ? 'generating' : Object.values(clipGenerations).some((clip) => clip.status === 'error') ? 'partial' : Object.values(clipGenerations).length && Object.values(clipGenerations).every((clip) => clip.status === 'completed') ? 'completed' : 'draft',
+        status: isGeneratingDrama ? 'generating' : isGenerating ? 'partial' : Object.values(clipGenerations).some((clip) => clip.status === 'error') ? 'partial' : Object.values(clipGenerations).length && Object.values(clipGenerations).every((clip) => clip.status === 'completed') ? 'completed' : 'draft',
         updatedAt: existing?.updatedAt || '',
       } as DirectorSession;
       const comparable = (value: DirectorSession | undefined) => value ? JSON.stringify({ ...value, updatedAt: '' }) : '';
@@ -120,7 +121,7 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
       updateProjectSettings({ directorSession: { ...session, updatedAt: new Date().toISOString() } });
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [isOpen, project, plan, story, voice, durationMode, manualDurationSec, fixedShotDurationSec, directorAssets, clipGenerations, finalVideoUrl, isGeneratingDrama, updateProjectSettings]);
+  }, [isOpen, project, plan, story, voice, durationMode, manualDurationSec, fixedShotDurationSec, directorAssets, clipGenerations, finalVideoUrl, isGenerating, isGeneratingDrama, updateProjectSettings]);
 
   useEffect(() => {
     setSelectedBatchIndexes(sourceBatches.map((batch) => batch.index));
@@ -142,6 +143,7 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
     setSelectedShotIds([]);
     setShowAssetPreparation(false);
     setDirectorAssets([]);
+    storyboardCheckpoint.current = null;
     setIsGenerating(true);
     setGenerationProgress(1);
     setGenerationStage('正在将完整剧本发送给文本模型读取…');
@@ -161,6 +163,12 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
         onProgress: (message, progress) => {
           setGenerationStage(message);
           setGenerationProgress(progress);
+        },
+        onBatchComplete: (checkpoint, completedBatchCount, totalBatchCount) => {
+          const normalized = normalizePlanForModel(checkpoint);
+          storyboardCheckpoint.current = normalized;
+          setPlan(normalized);
+          setGenerationStage(`已保存 ${completedBatchCount}/${totalBatchCount} 批分镜，正在继续…`);
         },
       });
       const completePlan = normalizePlanForModel(generatedPlan);
@@ -185,7 +193,12 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
       } else {
         setError(generationError instanceof Error ? generationError.message : '导演方案生成失败');
       }
-      setPlan(null);
+      if (storyboardCheckpoint.current) {
+        setPlan(storyboardCheckpoint.current);
+        setNotice('分镜未全部完成，已保留已完成批次；选择剩余批次后可继续生成');
+      } else {
+        setPlan(null);
+      }
     } finally {
       storyboardController.current = null;
       setIsGenerating(false);
