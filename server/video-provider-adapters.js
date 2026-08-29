@@ -61,6 +61,16 @@ function boyesirRequestBody(requestBody) {
   return body;
 }
 
+function openAiCompatibleRequestBody(requestBody) {
+  // MiniMax H3 validates this value case-sensitively. The application stores
+  // resolutions in lowercase for UI consistency, but its upstream requires 768P.
+  if (/^minimax-h3-768p$/i.test(String(requestBody?.model || ''))
+    && String(requestBody?.resolution || '').trim().toLowerCase() === '768p') {
+    return { ...requestBody, resolution: '768P' };
+  }
+  return requestBody;
+}
+
 async function downloadReference(urlValue, index, { fetchImpl, resolveHost, signal }) {
   let target;
   try { target = new URL(urlValue); } catch { throw new Error('时时科技参考图片地址无效'); }
@@ -140,7 +150,7 @@ export function createVideoProviderAdapter(api, { fetchImpl = fetch, resolveHost
         requestHeaders.set('idempotency-key', idempotencyKey);
         return fetchImpl(buildTarget(api, '/v1/videos'), {
           method: 'POST', redirect: 'manual', headers: requestHeaders,
-          body: JSON.stringify(requestBody), signal,
+          body: JSON.stringify(openAiCompatibleRequestBody(requestBody)), signal,
         });
       },
       poll(taskId, signal) {
