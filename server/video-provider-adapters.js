@@ -62,11 +62,11 @@ function boyesirRequestBody(requestBody) {
 }
 
 function openAiCompatibleRequestBody(requestBody) {
-  // MiniMax H3 validates this value case-sensitively. The application stores
-  // resolutions in lowercase for UI consistency, but its upstream requires 768P.
-  if (/^minimax-h3-768p$/i.test(String(requestBody?.model || ''))
-    && String(requestBody?.resolution || '').trim().toLowerCase() === '768p') {
-    return { ...requestBody, resolution: '768P' };
+  // H3 encodes its fixed resolution in the model ID. Its API rejects both
+  // lowercase and uppercase resolution values when the field is submitted.
+  if (/^minimax-h3-768p$/i.test(String(requestBody?.model || ''))) {
+    const { resolution: _resolution, ...body } = requestBody;
+    return body;
   }
   return requestBody;
 }

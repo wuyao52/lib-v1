@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createVideoProviderAdapter } from '../video-provider-adapters.js';
 
-test('MiniMax H3 768p requests retain the upstream-required uppercase P', async () => {
+test('MiniMax H3 768p requests omit the fixed resolution field', async () => {
   let sent;
   const adapter = createVideoProviderAdapter({ baseUrl: 'https://upstream.example', apiKey: 'test-key' }, {
     fetchImpl: async (_url, options) => {
@@ -17,7 +17,7 @@ test('MiniMax H3 768p requests retain the upstream-required uppercase P', async 
   }, 'idem-minimax-768p', new AbortController().signal);
 
   assert.equal(response.status, 200);
-  assert.equal(sent.resolution, '768P');
+  assert.equal('resolution' in sent, false);
   assert.equal(sent.model, 'MINIMAX-H3-768p');
 });
 
