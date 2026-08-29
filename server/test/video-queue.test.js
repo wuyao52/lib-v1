@@ -1,12 +1,31 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createVideoQueue, selectFairQueuedJobs } from '../video-queue.js';
+import { createVideoQueue, selectFairQueuedJobs, upstreamFailureDiagnostic } from '../video-queue.js';
 import { isUpstreamBalanceError, upstreamErrorText } from '../upstream-errors.js';
 
 test('provider object errors are readable and classify insufficient balance', () => {
   const providerError = { error: { code: 'insufficient_balance', detail: 'account has no funds' } };
   assert.match(upstreamErrorText(providerError), /insufficient_balance/);
   assert.equal(isUpstreamBalanceError(providerError), true);
+});
+
+test('upstream failure diagnostics retain request metadata while redacting prompt and URLs', () => {
+  const diagnostic = upstreamFailureDiagnostic({
+    job: {
+      id: 'job-1', apiId: 'api-1', modelId: 'MINIMAX-H3-768p',
+      requestBody: { prompt: 'private scene prompt', seconds: '15', aspect_ratio: '16:9', resolution: '768p', images: ['https://assets.example/input.png'] },
+    },
+    adapter: { kind: 'openai-compatible' },
+    response: new Response('', { status: 400, headers: { 'content-type': 'application/json' } }),
+    body: { error: { code: 'invalid_request', message: 'private scene prompt is invalid; see https://upstream.example/detail' } },
+  });
+  assert.deepEqual(diagnostic.request, {
+    hasPrompt: true, promptLength: 20, seconds: '15', aspectRatio: '16:9', resolution: '768p', referenceImageCount: 1,
+  });
+  assert.equal(diagnostic.status, 400);
+  assert.equal(diagnostic.errorText.includes('private scene prompt'), false);
+  assert.equal(diagnostic.errorText.includes('https://'), false);
+  assert.match(diagnostic.errorText, /invalid_request/);
 });
 
 const waitFor = async (predicate, timeoutMs = 1000) => {

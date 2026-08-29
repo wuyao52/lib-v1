@@ -65,6 +65,38 @@ function responseShape(value, depth = 0) {
   return Object.fromEntries(Object.entries(value).slice(0, 20).map(([key, child]) => [key, responseShape(child, depth + 1)]));
 }
 
+function safeDiagnosticText(value, requestBody) {
+  const prompt = String(requestBody?.prompt || '').trim();
+  return upstreamErrorText(value)
+    .replaceAll(prompt, prompt ? '[redacted-prompt]' : '')
+    .replace(/https?:\/\/[^\s"']+/gi, '[redacted-url]')
+    .replace(/\b(?:Bearer\s+)?(?:sk|key|token)[-_A-Za-z0-9]{12,}\b/gi, '[redacted-secret]')
+    .slice(0, 500);
+}
+
+export function upstreamFailureDiagnostic({ job, adapter, response, body }) {
+  const request = job.requestBody || {};
+  return {
+    event: 'video_upstream_failure',
+    jobId: job.id,
+    apiId: job.apiId,
+    modelId: job.modelId,
+    adapter: adapter.kind,
+    status: response.status,
+    contentType: String(response.headers.get('content-type') || '').slice(0, 100),
+    request: {
+      hasPrompt: Boolean(String(request.prompt || '').trim()),
+      promptLength: String(request.prompt || '').length,
+      seconds: request.seconds ?? request.duration ?? null,
+      aspectRatio: request.aspect_ratio ?? request.ratio ?? null,
+      resolution: request.resolution ?? null,
+      referenceImageCount: Array.isArray(request.images) ? request.images.length : 0,
+    },
+    responseShape: responseShape(body),
+    errorText: safeDiagnosticText(body, request),
+  };
+}
+
 function statusOf(body) {
   const payload = payloadOf(body);
   return String(payload?.status || payload?.state || body?.status || body?.state || '').toLowerCase();
@@ -336,6 +368,7 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
         const attemptCount = Number(job.attemptCount || 0) + 1;
         await updateJob(job.id, { status: 'queued', attemptCount, nextPollAt: Date.now() + attemptCount * 10000, leaseOwner: null, leaseUntil: 0 });
       } else if (!response.ok || isBusinessFailure(body) || failedVideoStatus(status)) {
+        console.warn(JSON.stringify(upstreamFailureDiagnostic({ job, adapter, response, body })));
         await refundJob(job.id, errorOf(body, response.status));
       } else if (completedVideoResponse(status, result)) {
         await completeJob(job.id, result);
