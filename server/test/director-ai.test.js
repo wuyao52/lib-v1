@@ -49,7 +49,7 @@ test('AI storyboard uses the configured text model and clamps each shot to 5-15 
     assert.equal(request.apiKey, 'session-key');
     assert.equal(request.body.model, 'mock-chat');
     assert.match(request.body.messages[1].content, /本批唯一可拍摄的剧情正文/);
-    assert.equal(request.body.max_tokens, 4000);
+    assert.equal(request.body.max_tokens, 900);
     assert.deepEqual(plan.shots.map((shot) => shot.targetDurationSec), [5, 15]);
     assert.equal(plan.targetDurationSec, 20);
     assert.equal(plan.shots[0].status, 'ready');
@@ -111,7 +111,7 @@ test('automatic text protocol falls back from a missing Chat endpoint to OpenAI 
       'https://mock.example/v1/responses',
     ]);
     assert.ok(Array.isArray(requests[1].body.input));
-    assert.equal(requests[1].body.max_output_tokens, 4000);
+    assert.equal(requests[1].body.max_output_tokens, 900);
     assert.equal(plan.shots.length, 2);
   } finally {
     globalThis.fetch = originalFetch;
@@ -133,7 +133,7 @@ test('Anthropic Messages protocol sends the correct envelope and reads content b
     assert.equal(request.headers['anthropic-version'], '2023-06-01');
     assert.match(request.body.system, /短剧导演/);
     assert.equal(request.body.messages[0].role, 'user');
-    assert.equal(request.body.max_tokens, 4000);
+    assert.equal(request.body.max_tokens, 900);
     assert.equal(plan.shots.length, 2);
   } finally {
     globalThis.fetch = originalFetch;
@@ -318,6 +318,34 @@ test('two truncated JSON responses fall back to resumable shot-per-line NDJSON',
     assert.equal(calls, 3);
     assert.equal(plan.shots.length, 2);
     assert.deepEqual(plan.shots.map((shot) => shot.sourceSegmentIds), [['source-001'], ['source-001']]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('a gateway 504 falls back to resumable shot-per-line NDJSON', async () => {
+  const service = await loadDirectorAIService();
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (_url, options) => {
+    const body = JSON.parse(options.body);
+    requests.push(body);
+    if (requests.length === 1) {
+      return new Response(JSON.stringify({ error: { message: 'Gateway Timeout' } }), { status: 504 });
+    }
+    assert.match(body.messages[0].content, /NDJSON/);
+    const lines = [
+      { type: 'meta', storySummary: rawPlan.storySummary, storyPromise: rawPlan.storyPromise, finalOutcome: rawPlan.finalOutcome, durationRecommendationReason: rawPlan.durationRecommendationReason },
+      ...rawPlan.shots.map((shot) => ({ type: 'shot', ...shot })),
+      { type: 'complete', coveredSourceIds: ['source-001'] },
+    ].map((record) => JSON.stringify(record)).join('\n');
+    return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: lines } }] }), { status: 200 });
+  };
+  try {
+    const plan = await service.generateAIStoryboard({ project, story: '这是一个足够长的完整测试剧本，人物在房间里发现一封信并决定面对过去。', voice: 'naturalist', durationMode: 'ai', skills: [] });
+    assert.equal(requests.length, 2);
+    assert.ok(requests.every((body) => body.max_tokens === 900));
+    assert.equal(plan.shots.length, 2);
   } finally {
     globalThis.fetch = originalFetch;
   }

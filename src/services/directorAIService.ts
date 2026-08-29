@@ -37,6 +37,10 @@ export interface ParsedDirectorScript {
 
 const MAX_SOURCE_SEGMENT_CHARS = 700;
 const SOURCE_SEGMENTS_PER_BATCH = 1;
+// Director analysis runs through the Netlify API proxy, whose synchronous
+// response window is much shorter than Railway's upstream text timeout.
+// Keep each response small and use the existing continuation path as needed.
+const DIRECTOR_MAX_COMPLETION_TOKENS = 900;
 
 const DIRECTOR_VOICES: Record<string, StoryboardPlan['directorVoice']> = {
   naturalist: { name: '观察式自然主义', camera: '克制观察，动作驱动构图', light: '遵循场景中的自然光源', performance: '细小反应优先，避免夸张表演' },
@@ -446,10 +450,11 @@ const protocolCandidates = (protocol: TextModelProtocol | undefined): Array<Excl
 
 function completionRequestBody(protocol: Exclude<TextModelProtocol, 'auto'>, model: AIModelConfig, messages: ChatMessage[], structured: boolean) {
   const temperature = model.parameters?.temperature ?? 0.4;
-  // One source segment is processed per batch. A bounded response avoids
-  // provider/Netlify gateway timeouts caused by oversized JSON completions.
+  // One source segment is processed per batch. The response must fit inside
+  // Netlify's synchronous proxy window; the NDJSON continuation handles
+  // longer plans without asking one request to produce all shots at once.
   const configuredMaxTokens = Number(model.parameters?.maxTokens ?? model.parameters?.max_tokens ?? 4000);
-  const maxTokens = Math.min(6000, Math.max(1200, Number.isFinite(configuredMaxTokens) ? configuredMaxTokens : 4000));
+  const maxTokens = Math.min(DIRECTOR_MAX_COMPLETION_TOKENS, Math.max(256, Number.isFinite(configuredMaxTokens) ? configuredMaxTokens : 4000));
   if (protocol === 'openai-responses') {
     return { model: model.modelId, input: messages, temperature, max_output_tokens: maxTokens };
   }
@@ -653,6 +658,14 @@ export async function generateAIStoryboard(input: GenerateAIStoryboardInput): Pr
         payload = await requestCompletion(model, input, messages, true);
       } catch (error: any) {
         if (input.signal?.aborted) throw error;
+        // A 504 can be emitted by the Netlify proxy before Railway's text
+        // timeout. Switch to the compact resumable protocol instead of
+        // discarding the whole storyboard operation.
+        if (error?.status === 504) {
+          invalidJson = true;
+          responseWasTruncated = true;
+          break;
+        }
         if (![400, 422].includes(error?.status)) throw error;
         payload = await requestCompletion(model, input, messages, false);
       }
