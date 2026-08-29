@@ -351,6 +351,39 @@ test('a gateway 504 falls back to resumable shot-per-line NDJSON', async () => {
   }
 });
 
+test('NDJSON continuation requests one new shot at a time before the completion marker', async () => {
+  const service = await loadDirectorAIService();
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (_url, options) => {
+    calls += 1;
+    const body = JSON.parse(options.body);
+    if (!body.messages[0].content.includes('NDJSON')) {
+      return new Response(JSON.stringify({ choices: [{ finish_reason: 'length', message: { content: '{"shots":[' } }] }), { status: 200 });
+    }
+    const completed = body.messages[1].content.includes('本批已完成的镜头如下');
+    if (!completed) {
+      const lines = [
+        { type: 'meta', storySummary: rawPlan.storySummary, storyPromise: rawPlan.storyPromise, finalOutcome: rawPlan.finalOutcome, durationRecommendationReason: rawPlan.durationRecommendationReason },
+        { type: 'shot', ...rawPlan.shots[0] },
+      ].map((record) => JSON.stringify(record)).join('\n');
+      return new Response(JSON.stringify({ choices: [{ message: { content: lines } }] }), { status: 200 });
+    }
+    const hasSecondShot = body.messages[1].content.includes(rawPlan.shots[1].narrativeJob);
+    const lines = hasSecondShot
+      ? JSON.stringify({ type: 'complete', coveredSourceIds: ['source-001'] })
+      : JSON.stringify({ type: 'shot', ...rawPlan.shots[1] });
+    return new Response(JSON.stringify({ choices: [{ message: { content: lines } }] }), { status: 200 });
+  };
+  try {
+    const plan = await service.generateAIStoryboard({ project, story: '这是一个足够长的完整测试剧本，人物在房间里发现一封信并决定面对过去。', voice: 'naturalist', durationMode: 'ai', skills: [] });
+    assert.equal(calls, 5);
+    assert.equal(plan.shots.length, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('long scripts are read in multiple batches and missing source coverage is rejected', async () => {
   const service = await loadDirectorAIService();
   const longStory = Array.from({ length: 8 }, (_, index) => `第${index + 1}场：${'人物执行关键动作并产生新的可见结果。'.repeat(35)}`).join('\n');

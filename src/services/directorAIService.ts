@@ -519,10 +519,11 @@ function buildNdjsonMessages(
     ? `每个镜头的 targetDurationSec 必须严格为 ${normalizeFixedShotDuration(input.fixedShotDurationSec)} 秒。`
     : '每个镜头时长必须在 5–15 秒。';
   const completedJobs = completedShots.map((shot, index) => `${index + 1}. ${shot.narrativeJob} -> ${shot.plannedEndState}`).join('\n');
+  const hasCompletedShots = completedShots.length > 0;
   return [
     {
       role: 'system',
-      content: `你是严格忠实原文的短剧导演。服务商输出长度很小，因此必须使用 NDJSON：每行一个完整 JSON 对象，不要 Markdown 或数组外壳。\n第一行输出 {"type":"meta","storySummary":"...","storyPromise":"...","finalOutcome":"...","durationRecommendationReason":"..."}。\n随后每行输出一个镜头：{"type":"shot","sourceSegmentIds":["source-001"],"sourceEvidence":"从原文逐字复制2-40字","sceneId":"scene-01","title":"...","narrativeJob":"...","feltIntent":"...","arcPosition":"open","targetDurationSec":7,"generationMode":"text-to-video","camera":"...","lighting":"...","performance":"...","audio":"...","plannedEndState":"...","continuityLocks":["..."],"reservedForLater":["..."],"prompt":"..."}。\n只允许原文明示的事件，禁止新增人物、动作、反应、对白、道具、空镜、转场或结局；不得改变顺序和因果。本批建议不超过 ${recommendedMaxShots(segments)} 个镜头，仅在每镜都有不同的顺序原文证据时最多允许 ${validatedMaxShots(segments)} 个；一个镜头一个原文节拍，${durationInstruction} 若有上一镜交接，同场景必须连续。\n只有本批全部原文完成后，最后单独输出 {"type":"complete","coveredSourceIds":["..."]}。输出额度不足时优先完整闭合当前行，不要提前输出 complete。`,
+      content: `你是严格忠实原文的短剧导演。服务商输出长度很小，因此必须使用 NDJSON：每行一个完整 JSON 对象，不要 Markdown 或数组外壳。\n本次请求${hasCompletedShots ? '已经有已完成镜头：不得重复它们；只输出至多一个新的、不同的镜头。若所有原文节拍已被已完成镜头覆盖，则不要输出镜头，直接输出 complete。若本次新增的一个镜头已覆盖最后一个剩余节拍，紧接着输出 complete。' : '必须先输出一行 meta，再输出至多一个镜头；若该镜头已覆盖本批全部原文节拍，紧接着输出 complete。'} 绝对不要在一轮中输出两个以上镜头。\nmeta 格式：{"type":"meta","storySummary":"...","storyPromise":"...","finalOutcome":"...","durationRecommendationReason":"..."}。\nshot 格式：{"type":"shot","sourceSegmentIds":["source-001"],"sourceEvidence":"从原文逐字复制2-40字","sceneId":"scene-01","title":"...","narrativeJob":"...","feltIntent":"...","arcPosition":"open","targetDurationSec":7,"generationMode":"text-to-video","camera":"...","lighting":"...","performance":"...","audio":"...","plannedEndState":"...","continuityLocks":["..."],"reservedForLater":["..."],"prompt":"..."}。\ncomplete 格式：{"type":"complete","coveredSourceIds":["..."]}。\n只允许原文明示的事件，禁止新增人物、动作、反应、对白、道具、空镜、转场或结局；不得改变顺序和因果。本批建议不超过 ${recommendedMaxShots(segments)} 个镜头，仅在每镜都有不同的顺序原文证据时最多允许 ${validatedMaxShots(segments)} 个；一个镜头一个原文节拍，${durationInstruction} 若有上一镜交接，同场景必须连续。每一行必须完整闭合，再停止输出。`,
     },
     {
       role: 'user',
@@ -559,7 +560,8 @@ async function requestBatchAsNdjson(
   let metadata: any = null;
   let completedIds: string[] = [];
 
-  for (let continuation = 0; continuation < 8; continuation += 1) {
+  const maxContinuations = validatedMaxShots(segments) + 1;
+  for (let continuation = 0; continuation < maxContinuations; continuation += 1) {
     if (input.signal?.aborted) throw new DOMException('已取消导演分镜', 'AbortError');
     const batchStart = 5 + (batchIndex / batchCount) * 80;
     const batchShare = 80 / batchCount;
