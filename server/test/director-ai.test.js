@@ -272,7 +272,7 @@ test('invalid JSON and missing text model fail explicitly', async () => {
   try {
     await assert.rejects(
       service.generateAIStoryboard({ project, story: '这是一个足够长的完整测试剧本，人物在房间里发现一封信并决定面对过去。', voice: 'naturalist', durationMode: 'ai', skills: [] }),
-      /输出限制过低/,
+      /文本模型未返回可校验的镜头内容/,
     );
     assert.equal(invalidCalls, 4);
     await assert.rejects(
@@ -391,6 +391,35 @@ test('NDJSON continuation requests one new shot at a time before the completion 
   }
 });
 
+test('valid NDJSON shots are retained when a provider omits the completion marker', async () => {
+  const service = await loadDirectorAIService();
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (_url, options) => {
+    calls += 1;
+    const body = JSON.parse(options.body);
+    if (!body.messages[0].content.includes('NDJSON')) {
+      return new Response(JSON.stringify({ choices: [{ finish_reason: 'length', message: { content: '{"shots":[' } }] }), { status: 200 });
+    }
+    if (calls === 3) {
+      const lines = [
+        { type: 'meta', storySummary: rawPlan.storySummary, storyPromise: rawPlan.storyPromise, finalOutcome: rawPlan.finalOutcome, durationRecommendationReason: rawPlan.durationRecommendationReason },
+        { type: 'shot', ...rawPlan.shots[0] },
+      ].map((record) => JSON.stringify(record)).join('\n');
+      return new Response(JSON.stringify({ choices: [{ message: { content: lines } }] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ choices: [{ message: { content: '' } }] }), { status: 200 });
+  };
+  try {
+    const plan = await service.generateAIStoryboard({ project, story: '这是一个足够长的完整测试剧本，人物在房间里发现一封信并决定面对过去。', voice: 'naturalist', durationMode: 'ai', skills: [] });
+    assert.equal(calls, 4);
+    assert.equal(plan.shots.length, 1);
+    assert.deepEqual(plan.shots[0].sourceSegmentIds, ['source-001']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('long scripts are read in multiple batches and missing source coverage is rejected', async () => {
   const service = await loadDirectorAIService();
   const longStory = Array.from({ length: 8 }, (_, index) => `第${index + 1}场：${'人物执行关键动作并产生新的可见结果。'.repeat(35)}`).join('\n');
@@ -456,7 +485,7 @@ test('a completed novel batch is checkpointed before a later batch fails', async
         project, story, voice: 'naturalist', durationMode: 'ai', skills: [],
         onBatchComplete: (checkpoint, completed, total) => checkpoints.push({ checkpoint, completed, total }),
       }),
-      /文本模型的输出限制过低|一致性校验失败/,
+      /文本模型未返回可校验的镜头内容|一致性校验失败/,
     );
     assert.equal(checkpoints.length, 1);
     assert.equal(checkpoints[0].completed, 1);

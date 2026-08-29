@@ -586,7 +586,14 @@ async function requestBatchAsNdjson(
     if (!records.length && continuation >= 1) break;
   }
 
-  if (!completedIds.length) throw new Error('文本模型的输出限制过低，逐镜头续传仍未收到本批完成标记；请换用至少能完整返回单个镜头 JSON 的文本模型');
+  if (!completedIds.length) {
+    // Some OpenAI-compatible text services return valid NDJSON shot rows but
+    // omit the final control row. Keep those rows and let the existing source
+    // evidence, ordering, and shot-count validation decide whether they are usable.
+    if (!shots.length) throw new Error('文本模型未返回可校验的镜头内容；请检查文本模型、API 地址和模型输出格式');
+    completedIds = segments.map((segment) => segment.id);
+    input.onProgress?.(`未收到续传完成标记，正在校验已返回的 ${shots.length} 个镜头…`, 85);
+  }
   return {
     coveredSourceIds: completedIds,
     storySummary: metadata?.storySummary || `第 ${batchIndex + 1} 批剧本分镜`,
