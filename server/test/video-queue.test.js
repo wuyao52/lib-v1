@@ -122,7 +122,7 @@ test('video queue accepts a completed ToAPIs-style result.data video response wi
   assert.equal(db.data.generationHistory[0]?.url, 'https://files.toapis.example/videos/finished.mp4');
 });
 
-test('video queue refunds instead of reporting success when an upstream-completed video cannot be archived', async () => {
+test('video queue retains an upstream-completed paid video for archival retry instead of refunding', async () => {
   const db = fakeDb({
     users: [{ id: 'user-a', balanceCents: 75 }],
     systemApis: [{ id: 'api-1', enabled: true, baseUrl: 'https://upstream.example', encryptedApiKey: 'secret' }],
@@ -134,8 +134,13 @@ test('video queue refunds instead of reporting success when an upstream-complete
       video_url: 'https://provider.example/private-result.mp4',
     }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
+  let archiveAttempts = 0;
   const generatedMedia = {
-    archive: async () => { throw new Error('下载成功视频失败 (403)'); },
+    archive: async (_job, result) => {
+      archiveAttempts += 1;
+      if (archiveAttempts === 1) throw new Error('下载成功视频失败 (403)');
+      return { ...result, url: '/api/generated-media/durable-video' };
+    },
     cleanup: async () => ({ deleted: 0 }),
   };
   const queue = await createVideoQueue({ db, vault: { decrypt: (value) => value }, fetchImpl, generatedMedia, autoStart: false });
@@ -145,14 +150,27 @@ test('video queue refunds instead of reporting success when an upstream-complete
     requestBody: { prompt: 'archive failure reproduction' }, chargeCents: 75, billingReference: 'archive-failure-job',
   });
 
-  await waitFor(() => db.data.generationJobs[0]?.status === 'failed');
+  await waitFor(() => db.data.generationJobs[0]?.errorCode === 'VIDEO_ARCHIVE_PENDING');
   const job = db.data.generationJobs[0];
-  assert.equal(job.resultUrl, null);
-  assert.equal(job.errorCode, 'VIDEO_ARCHIVE_FAILED');
-  assert.match(job.errorMessage, /保存播放文件失败/);
+  assert.equal(job.resultUrl, 'https://provider.example/private-result.mp4');
+  assert.equal(job.status, 'processing');
+  assert.equal(job.progress, 100);
+  assert.equal(job.errorCode, 'VIDEO_ARCHIVE_PENDING');
+  assert.match(job.errorMessage, /正在保存播放文件/);
   assert.equal(db.data.generationHistory.length, 0);
-  assert.equal(db.data.users[0].balanceCents, 75);
-  assert.equal(db.data.balanceTransactions.filter((item) => item.type === 'model_refund' && item.referenceId === job.billingReference).length, 1);
+  assert.equal(db.data.users[0].balanceCents, 0);
+  assert.equal(db.data.balanceTransactions.filter((item) => item.type === 'model_refund' && item.referenceId === job.billingReference).length, 0);
+  assert.ok(job.nextPollAt > Date.now());
+
+  job.nextPollAt = 0;
+  await queue.tick();
+  await waitFor(() => job.status === 'completed');
+  assert.equal(archiveAttempts, 2);
+  assert.equal(job.resultUrl, '/api/generated-media/durable-video');
+  assert.equal(job.errorCode, null);
+  assert.equal(db.data.generationHistory[0]?.url, '/api/generated-media/durable-video');
+  assert.equal(db.data.users[0].balanceCents, 0);
+  assert.equal(db.data.balanceTransactions.filter((item) => item.type === 'model_refund').length, 0);
 });
 
 test('video queue accepts OneAPI result.videos as string URLs', async () => {

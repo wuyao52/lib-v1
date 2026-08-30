@@ -300,17 +300,21 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
       }
       catch (error) {
         // A provider completion URL may require server-only credentials or expire quickly.
-        // Do not report this as playable success when durable archiving failed.
+        // The provider has already completed and may have charged for the video. Keep
+        // retrying server-side archiving instead of refunding or exposing its transient URL.
         console.error(`视频 ${job.id} 归档失败:`, error);
-        return refundJob(job.id, {
-          code: 'VIDEO_ARCHIVE_FAILED',
-          message: '视频已生成，但保存播放文件失败，已退款。请检查对象存储配置后重试',
+        return updateJob(job.id, {
+          status: 'processing', progress: 100, resultUrl: result.url, thumbnail: result.thumbnail || null,
+          errorCode: 'VIDEO_ARCHIVE_PENDING',
+          errorMessage: '视频已生成，正在保存播放文件',
+          nextPollAt: Date.now() + 5000, leaseOwner: null, leaseUntil: 0,
         });
       }
     }
     const completedAt = nowIso();
     const patch = {
       status: 'completed', progress: 100, resultUrl: durableResult.url, thumbnail: durableResult.thumbnail || null,
+      errorCode: null, errorMessage: null,
       completedAt, updatedAt: completedAt, nextPollAt: 0, leaseOwner: null, leaseUntil: 0,
     };
     const historyRecord = durableResult.url ? {
@@ -401,7 +405,11 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
     const controller = new AbortController();
     controllers.set(`poll:${job.id}`, controller);
     try {
-      if (Date.now() - Date.parse(job.createdAt) > config.taskTimeoutMs) {
+      if (job.errorCode === 'VIDEO_ARCHIVE_PENDING' && job.resultUrl) {
+        await completeJob(job.id, { url: job.resultUrl, thumbnail: job.thumbnail || '' });
+        return;
+      }
+      if (job.errorCode !== 'VIDEO_ARCHIVE_PENDING' && Date.now() - Date.parse(job.createdAt) > config.taskTimeoutMs) {
         await refundJob(job.id, { code: 'VIDEO_JOB_TIMEOUT', message: '视频任务处理超时，已自动退款' });
         return;
       }
