@@ -5,11 +5,18 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { createApp } from '../app.js';
-import { cleanupExpiredAssets, migrateLegacyAssets } from '../assets.js';
+import { cleanupExpiredAssets, getDirectUploadLimit, migrateLegacyAssets } from '../assets.js';
 import { JsonDatabase } from '../store.js';
 
 const PNG_BYTES = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
 const PNG_DATA_URL = `data:image/png;base64,${PNG_BYTES.toString('base64')}`;
+
+test('direct upload limit defaults to 300 and accepts safe overrides', () => {
+  assert.equal(getDirectUploadLimit({}), 300);
+  assert.equal(getDirectUploadLimit({ ASSET_DIRECT_UPLOAD_LIMIT: '500' }), 500);
+  assert.equal(getDirectUploadLimit({ ASSET_DIRECT_UPLOAD_LIMIT: '20' }), 300);
+  assert.equal(getDirectUploadLimit({ ASSET_DIRECT_UPLOAD_LIMIT: 'not-a-number' }), 300);
+});
 
 async function register(baseUrl, username, sentCodes) {
   const email = `${username}@example.com`;

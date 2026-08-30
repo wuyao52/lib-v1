@@ -15,6 +15,15 @@ const ASSET_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SIGNED_URL_TTL_MS = 40 * 60 * 1000;
 const MAX_PROXY_RANGE_BYTES = 1024 * 1024;
+const DEFAULT_DIRECT_UPLOAD_LIMIT = 300;
+const DIRECT_UPLOAD_WINDOW_MS = 60 * 60 * 1000;
+
+export function getDirectUploadLimit(env = process.env) {
+  const configured = Number(env.ASSET_DIRECT_UPLOAD_LIMIT);
+  return Number.isSafeInteger(configured) && configured >= 60 && configured <= 10_000
+    ? configured
+    : DEFAULT_DIRECT_UPLOAD_LIMIT;
+}
 
 function parseImageDataUrl(value) {
   const match = DATA_URL_PATTERN.exec(String(value || '').trim());
@@ -342,7 +351,7 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
       return res.status(503).json({ error: 'DIRECT_UPLOAD_UNAVAILABLE', message: '当前对象存储不支持素材直传' });
     }
     if (db.consumeRateLimit) {
-      const bucket = await db.consumeRateLimit(`asset-direct-upload:${req.user.id}`, 60, 60 * 60 * 1000);
+      const bucket = await db.consumeRateLimit(`asset-direct-upload:${req.user.id}`, getDirectUploadLimit(), DIRECT_UPLOAD_WINDOW_MS);
       if (!bucket.allowed) {
         res.setHeader('Retry-After', String(Math.max(1, Math.ceil((bucket.resetAt - Date.now()) / 1000))));
         return res.status(429).json({ error: 'DIRECT_UPLOAD_RATE_LIMITED', message: '素材直传申请过于频繁，请稍后重试' });
