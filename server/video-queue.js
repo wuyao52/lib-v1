@@ -298,7 +298,15 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
         const downloadHeaders = adapter.resultHeaders ? adapter.resultHeaders() : undefined;
         durableResult = await generatedMedia.archive(job, result, { headers: downloadHeaders });
       }
-      catch (error) { console.error(`视频 ${job.id} 归档失败，暂时保留供应商地址:`, error); }
+      catch (error) {
+        // A provider completion URL may require server-only credentials or expire quickly.
+        // Do not report this as playable success when durable archiving failed.
+        console.error(`视频 ${job.id} 归档失败:`, error);
+        return refundJob(job.id, {
+          code: 'VIDEO_ARCHIVE_FAILED',
+          message: '视频已生成，但保存播放文件失败，已退款。请检查对象存储配置后重试',
+        });
+      }
     }
     const completedAt = nowIso();
     const patch = {

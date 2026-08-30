@@ -122,6 +122,39 @@ test('video queue accepts a completed ToAPIs-style result.data video response wi
   assert.equal(db.data.generationHistory[0]?.url, 'https://files.toapis.example/videos/finished.mp4');
 });
 
+test('video queue refunds instead of reporting success when an upstream-completed video cannot be archived', async () => {
+  const db = fakeDb({
+    users: [{ id: 'user-a', balanceCents: 75 }],
+    systemApis: [{ id: 'api-1', enabled: true, baseUrl: 'https://upstream.example', encryptedApiKey: 'secret' }],
+  });
+  const fetchImpl = async (_url, options) => {
+    assert.equal(options.method, 'POST');
+    return new Response(JSON.stringify({
+      status: 'completed',
+      video_url: 'https://provider.example/private-result.mp4',
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  const generatedMedia = {
+    archive: async () => { throw new Error('下载成功视频失败 (403)'); },
+    cleanup: async () => ({ deleted: 0 }),
+  };
+  const queue = await createVideoQueue({ db, vault: { decrypt: (value) => value }, fetchImpl, generatedMedia, autoStart: false });
+
+  await queue.enqueue({
+    id: 'archive-failure-job', userId: 'user-a', apiId: 'api-1', modelId: 'video',
+    requestBody: { prompt: 'archive failure reproduction' }, chargeCents: 75, billingReference: 'archive-failure-job',
+  });
+
+  await waitFor(() => db.data.generationJobs[0]?.status === 'failed');
+  const job = db.data.generationJobs[0];
+  assert.equal(job.resultUrl, null);
+  assert.equal(job.errorCode, 'VIDEO_ARCHIVE_FAILED');
+  assert.match(job.errorMessage, /保存播放文件失败/);
+  assert.equal(db.data.generationHistory.length, 0);
+  assert.equal(db.data.users[0].balanceCents, 75);
+  assert.equal(db.data.balanceTransactions.filter((item) => item.type === 'model_refund' && item.referenceId === job.billingReference).length, 1);
+});
+
 test('video queue accepts OneAPI result.videos as string URLs', async () => {
   const db = fakeDb({
     users: [{ id: 'user-a', balanceCents: 0 }],
