@@ -14,6 +14,8 @@ test('object storage accepts a complete Alibaba Cloud OSS S3 configuration', () 
   assert.equal(storage.provider, 'aliyun-oss');
   assert.equal(clientConfig.endpoint, 'https://oss-cn-hangzhou.aliyuncs.com');
   assert.equal(clientConfig.forcePathStyle, false);
+  assert.equal(clientConfig.requestChecksumCalculation, 'WHEN_REQUIRED');
+  assert.equal(clientConfig.responseChecksumValidation, 'WHEN_REQUIRED');
   assert.equal(typeof storage.put, 'function');
   assert.equal(typeof storage.createUploadUrl, 'function');
   assert.equal(typeof storage.createDownloadUrl, 'function');

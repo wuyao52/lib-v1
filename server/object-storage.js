@@ -74,6 +74,12 @@ export function createObjectStorageFromEnv(env = process.env, { clientFactory = 
     region: config.region,
     endpoint: config.endpoint,
     forcePathStyle: false,
+    // Alibaba Cloud OSS does not implement AWS's trailing-checksum
+    // chunked encoding (`STREAMING-UNSIGNED-PAYLOAD-TRAILER`).
+    ...(provider.id === 'aliyun-oss' ? {
+      requestChecksumCalculation: 'WHEN_REQUIRED',
+      responseChecksumValidation: 'WHEN_REQUIRED',
+    } : {}),
     credentials: {
       accessKeyId: config.accessKeyId,
       secretAccessKey: config.secretAccessKey,
