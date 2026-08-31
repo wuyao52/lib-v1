@@ -62,7 +62,16 @@ export const normalizeProjectShape = (project: DramaProject): DramaProject => {
   });
   return {
     ...project,
-    nodes: Array.isArray(project?.nodes) ? project.nodes : [],
+    nodes: (Array.isArray(project?.nodes) ? project.nodes : []).map((node) => {
+      // A completed result can be saved before a stale auto-save writes the
+      // previous generating flag. Prefer the durable result on reload.
+      const hasCompletedVideo = node.data?.type === 'video'
+        && Boolean(node.data?.generatedContent)
+        && Boolean(node.data?.generationMeta?.completedAt);
+      return hasCompletedVideo && node.data.status === 'generating'
+        ? { ...node, data: { ...node.data, status: 'completed', progress: 100, error: undefined, generationMessage: undefined } }
+        : node;
+    }),
     edges: Array.isArray(project?.edges) ? project.edges : [],
     settings: {
       ...defaultSettings,
