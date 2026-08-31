@@ -468,6 +468,7 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
         await updateJob(job.id, { attemptCount: Number(job.attemptCount || 0) + 1, nextPollAt: Date.now() + 15000 });
       } else if (responseError) {
         pollBalanceFailureStreaks.delete(job.id);
+        console.warn(JSON.stringify(upstreamFailureDiagnostic({ job, adapter, response, body })));
         await refundJob(job.id, responseError);
       } else if (completedVideoResponse(status, result)) {
         await completeJob(job.id, result);
