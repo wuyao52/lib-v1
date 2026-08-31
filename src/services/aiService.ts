@@ -16,6 +16,7 @@ const VIDEO_POLL_MAX_ATTEMPTS = 240;
 const MANAGED_VIDEO_POLL_MAX_ATTEMPTS = 1440;
 const VIDEO_POLL_TIMEOUT_MESSAGE = '视频任务等待超时（约 20 分钟），服务商任务可能仍在处理中';
 const MANAGED_VIDEO_POLL_TIMEOUT_MESSAGE = '视频任务等待超时（约 2 小时），服务商任务可能仍在处理中';
+const RETRYABLE_VIDEO_POLL_STATUS = new Set([408, 429, 502, 503, 504]);
 
 // 安全地解析 JSON 响应
 async function safeJsonParse(response: Response): Promise<any> {
@@ -578,6 +579,12 @@ export class SeedanceService extends AIService {
 
         const data = await safeJsonParse(response);
         const businessError = providerErrorMessage(data);
+        // Gateway/upstream outages are transient while the provider task may
+        // still be running. Keep polling instead of marking the video failed.
+        if (!response.ok && RETRYABLE_VIDEO_POLL_STATUS.has(response.status)) {
+          console.warn('轮询暂时不可用，将继续重试:', response.status);
+          continue;
+        }
         if (!response.ok || businessError) {
           const providerError = new Error(businessError || data.message || data.msg || data.error?.message || `轮询失败: ${response.status}`);
           providerError.name = 'ProviderError';
