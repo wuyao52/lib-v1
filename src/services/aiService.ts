@@ -203,8 +203,14 @@ export function extractVideoResult(response: any): { url: string; thumbnail?: st
     response?.result?.videos?.[0]?.url, response?.result?.videos?.[0], response?.data?.result?.videos?.[0]?.url, response?.data?.result?.videos?.[0],
   ];
   const thumbnails = [payload?.thumbnail_url, payload?.thumbnailUrl, response?.thumbnail_url, response?.thumbnailUrl, response?.result?.thumbnail_url, response?.result?.thumbnailUrl, response?.output?.thumbnail_url, response?.output?.thumbnailUrl];
-  const url = urls.find((value) => typeof value === 'string' && /^https?:\/\//i.test(value.trim()))?.trim() || '';
-  const thumbnail = thumbnails.find((value) => typeof value === 'string' && /^https?:\/\//i.test(value.trim()))?.trim();
+  // Managed video jobs are archived server-side and intentionally return a
+  // same-origin `/api/generated-media/...` path. Keep accepting provider HTTPS
+  // URLs for direct integrations, but do not treat arbitrary relative paths as
+  // media sources.
+  const isMediaUrl = (value: unknown): value is string => typeof value === 'string'
+    && (/^https?:\/\//i.test(value.trim()) || /^\/api\/(?:generated-media|assets)\//i.test(value.trim()));
+  const url = urls.find(isMediaUrl)?.trim() || '';
+  const thumbnail = thumbnails.find(isMediaUrl)?.trim();
   return { url, ...(thumbnail ? { thumbnail } : {}) };
 }
 
