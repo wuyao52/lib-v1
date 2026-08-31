@@ -135,6 +135,10 @@ export function createObjectStorageFromEnv(env = process.env, { clientFactory = 
     },
     async putStream({ key, body, mimeType, contentLength }) {
       const stream = body && typeof body.getReader === 'function' && typeof Readable.fromWeb === 'function' ? Readable.fromWeb(body) : body;
+      // Aborting the source fetch can emit an asynchronous stream error after
+      // the SDK request rejects. Always attach a listener so it cannot crash
+      // the Node process as an unhandled `error` event.
+      if (stream && typeof stream.on === 'function') stream.on('error', () => undefined);
       if (contentLength) {
         await client.send(new PutObjectCommand({ Bucket: config.bucket, Key: key, Body: stream, ContentType: mimeType, ContentLength: contentLength }));
         return;
