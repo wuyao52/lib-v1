@@ -34,12 +34,13 @@ const TABLES = {
       name VARCHAR(80) NOT NULL,
       password_hash VARCHAR(255) NOT NULL,
       role VARCHAR(16) NOT NULL DEFAULT 'user',
+      account_type VARCHAR(16) NOT NULL DEFAULT 'special',
       balance_cents BIGINT NOT NULL DEFAULT 0,
       created_at VARCHAR(35) NOT NULL
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
-    select: 'SELECT id, username, email, name, password_hash AS passwordHash, role, balance_cents AS balanceCents, created_at AS createdAt FROM users',
-    insert: 'INSERT INTO users (id, username, email, name, password_hash, role, balance_cents, created_at) VALUES ?',
-    values: (row) => [row.id, row.username, row.email, row.name, row.passwordHash, row.role || 'user', row.balanceCents || 0, row.createdAt],
+    select: 'SELECT id, username, email, name, password_hash AS passwordHash, role, account_type AS accountType, balance_cents AS balanceCents, created_at AS createdAt FROM users',
+    insert: 'INSERT INTO users (id, username, email, name, password_hash, role, account_type, balance_cents, created_at) VALUES ?',
+    values: (row) => [row.id, row.username, row.email, row.name, row.passwordHash, row.role || 'user', row.accountType || 'special', row.balanceCents || 0, row.createdAt],
   },
   sessions: {
     create: `CREATE TABLE IF NOT EXISTS sessions (
@@ -203,6 +204,14 @@ const TABLES = {
     insert: 'INSERT INTO model_pricing (id, api_id, model_id, display_name, category, billing_unit, unit_price_cents, min_duration_sec, max_duration_sec, allowed_durations_sec, allowed_resolutions, max_reference_images, max_reference_audios, max_reference_videos, enabled, created_at, updated_at) VALUES ?',
     values: (row) => [row.id, row.apiId, row.modelId, row.displayName, row.category, row.billingUnit, row.unitPriceCents, row.minDurationSec || null, row.maxDurationSec || null, JSON.stringify(row.allowedDurationsSec || []), JSON.stringify(row.allowedResolutions || []), Number.isInteger(Number(row.maxReferenceImages)) ? Number(row.maxReferenceImages) : 4, Number.isInteger(Number(row.maxReferenceAudios)) ? Number(row.maxReferenceAudios) : 0, Number.isInteger(Number(row.maxReferenceVideos)) ? Number(row.maxReferenceVideos) : 0, row.enabled ? 1 : 0, row.createdAt, row.updatedAt],
     parse: (row) => ({ ...row, enabled: Boolean(row.enabled), allowedDurationsSec: typeof row.allowedDurationsSec === 'string' ? JSON.parse(row.allowedDurationsSec || '[]') : (row.allowedDurationsSec || []), allowedResolutions: typeof row.allowedResolutions === 'string' ? JSON.parse(row.allowedResolutions || '[]') : (row.allowedResolutions || []) }),
+  },
+  userModelAccess: {
+    table: 'user_model_access',
+    create: `CREATE TABLE IF NOT EXISTS user_model_access (id CHAR(36) PRIMARY KEY, user_id CHAR(36) NOT NULL, pricing_id CHAR(36) NOT NULL, unit_price_cents INT NOT NULL DEFAULT 0, enabled TINYINT(1) NOT NULL DEFAULT 1, created_at VARCHAR(35) NOT NULL, updated_at VARCHAR(35) NOT NULL, UNIQUE KEY user_model_access_unique (user_id, pricing_id), INDEX user_model_access_user_idx (user_id)) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+    select: 'SELECT id, user_id AS userId, pricing_id AS pricingId, unit_price_cents AS unitPriceCents, enabled, created_at AS createdAt, updated_at AS updatedAt FROM user_model_access',
+    insert: 'INSERT INTO user_model_access (id, user_id, pricing_id, unit_price_cents, enabled, created_at, updated_at) VALUES ?',
+    values: (row) => [row.id, row.userId, row.pricingId, Number(row.unitPriceCents || 0), row.enabled === false ? 0 : 1, row.createdAt, row.updatedAt],
+    parse: (row) => ({ ...row, enabled: Boolean(row.enabled) }),
   },
   balanceTransactions: {
     table: 'balance_transactions',

@@ -8,6 +8,7 @@ export interface AuthUser {
   name: string;
   createdAt: string;
   role: 'user' | 'system';
+  accountType?: 'user' | 'special' | 'system';
   balanceCents: number;
 }
 

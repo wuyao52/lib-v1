@@ -76,7 +76,7 @@ export default function ModelConfigPanel() {
   useEffect(() => {
     if (!showModelConfig) return;
     void Promise.all([
-      apiRequest<{ models: Array<AIModelConfig & { category: ModelCategory }> }>('/api/catalog/models')
+      apiRequest<{ models: Array<AIModelConfig & { category: ModelCategory; apiName?: string }> }>('/api/catalog/models')
         .then(({ models }) => setManagedModels(models.map((model) => ({ ...model, apiKey: '', parameters: {} })))).catch(() => setManagedModels([])),
       apiRequest<{ configs: UserApiConfig[] }>('/api/user-api-configs')
         .then(({ configs }) => setUserApiConfigs(configs)).catch(() => setUserApiConfigs([])),
@@ -310,7 +310,7 @@ export default function ModelConfigPanel() {
                 <div className="space-y-2">
                   <label className="text-xs font-medium text-dark-300">系统模型</label>
                   <div className="space-y-2">
-                    {managedModels.filter((model) => model.category === activeTab).map((model) => (
+                    {Object.entries(managedModels.filter((model) => model.category === activeTab).reduce<Record<string, typeof managedModels>>((groups, model) => { const key = (model as any).apiName || model.provider || '系统模型'; (groups[key] ||= []).push(model); return groups; }, {})).map(([apiName, models]) => <div key={apiName} className="space-y-1"><div className="text-[11px] text-primary-300">{apiName}</div>{models.map((model) => (
                       <button key={model.id} onClick={() => {
                         const allowedResolutions = (model.allowedResolutions || []).map((value) => String(value).toLowerCase()).filter(Boolean);
                         const currentResolution = String(activeModel.parameters?.resolution || '').toLowerCase();
@@ -322,8 +322,7 @@ export default function ModelConfigPanel() {
                         <div className="flex items-center justify-between gap-3"><span className="text-sm text-white">{model.name}</span><span className="text-xs text-green-400">¥{((model.unitPriceCents || 0) / 100).toFixed(2)} / {model.billingUnit === 'second' ? '秒' : model.billingUnit === 'image' ? '张' : '次'}</span></div>
                         <div className="text-[10px] text-dark-400 mt-1">{model.provider} · 密钥由系统安全托管</div>
                         {model.category === 'video' && <div className="mt-1 text-[10px] text-primary-300">{describeModelDuration(model)}{model.allowedResolutions?.length ? ` · ${model.allowedResolutions.map(resolutionLabel).join('、')}` : ''} · 最多 {Number.isInteger(model.maxReferenceImages) ? model.maxReferenceImages : 4} 张参考图</div>}
-                      </button>
-                    ))}
+                      </button>))}</div>)}
                   </div>
                 </div>
               )}

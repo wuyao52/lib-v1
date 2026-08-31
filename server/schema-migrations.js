@@ -4,6 +4,7 @@ const migrations = [
     name: 'legacy_schema_alignment',
     async up({ query, ensureColumn }) {
       await ensureColumn('users', 'role', "VARCHAR(16) NOT NULL DEFAULT 'user'");
+      await ensureColumn('users', 'account_type', "VARCHAR(16) NOT NULL DEFAULT 'special'");
       await ensureColumn('users', 'balance_cents', 'BIGINT NOT NULL DEFAULT 0');
       await ensureColumn('model_pricing', 'min_duration_sec', 'INT NULL');
       await ensureColumn('model_pricing', 'max_duration_sec', 'INT NULL');
@@ -19,6 +20,11 @@ const migrations = [
       await query('ALTER TABLE `assets` MODIFY COLUMN `data_base64` MEDIUMTEXT NULL');
       await query('ALTER TABLE `audit_logs` MODIFY COLUMN `user_id` CHAR(36) NULL');
     },
+  },
+  {
+    version: 12,
+    name: 'special_user_model_access',
+    async up({ query }) { await query(`CREATE TABLE IF NOT EXISTS user_model_access (id CHAR(36) PRIMARY KEY, user_id CHAR(36) NOT NULL, pricing_id CHAR(36) NOT NULL, unit_price_cents INT NOT NULL DEFAULT 0, enabled TINYINT(1) NOT NULL DEFAULT 1, created_at VARCHAR(35) NOT NULL, updated_at VARCHAR(35) NOT NULL, UNIQUE KEY user_model_access_unique (user_id, pricing_id), INDEX user_model_access_user_idx (user_id)) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`); },
   },
   {
     version: 2,

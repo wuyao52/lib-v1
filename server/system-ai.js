@@ -277,6 +277,11 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
       const modelId = String(requestBody?.model || '').trim();
       pricing = db.read('modelPricing').find((item) => item.apiId === api.id && item.modelId === modelId && item.enabled);
       if (!pricing) return res.status(403).json({ error: 'MODEL_NOT_PRICED', message: '该模型未开放或尚未定价' });
+      if (req.user.accountType === 'special' && req.user.role !== 'system') {
+        const grant = db.read('userModelAccess').find((item) => item.userId === req.user.id && item.pricingId === pricing.id && item.enabled);
+        if (!grant) return res.status(403).json({ error: 'MODEL_NOT_ASSIGNED', message: '该特殊用户尚未分配此模型' });
+        pricing = { ...pricing, unitPriceCents: Number(grant.unitPriceCents || 0) };
+      }
       try {
         requestBody = normalizeManagedVideoResolution(pricing, api, requestBody);
         enforceReferenceImageLimit(pricing, requestBody);

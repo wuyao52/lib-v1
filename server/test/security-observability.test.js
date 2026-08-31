@@ -51,6 +51,7 @@ test('managed model audit keeps the request trace while excluding prompt and API
   const user = await register('model-audit-user');
   await db.mutate((data) => {
     data.users.find((item) => item.id === admin.user.id).role = 'system';
+    data.users.find((item) => item.id === user.user.id).accountType = 'user';
     data.users.find((item) => item.id === user.user.id).balanceCents = 500;
   });
   const apiResponse = await fetch(`${origin}/api/admin/system-apis`, { method: 'POST', headers: { cookie: admin.cookie, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Audit provider', provider: 'Test', baseUrl: 'https://provider.example/api', apiKey: upstreamKey }) });

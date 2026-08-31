@@ -48,7 +48,7 @@ test('full creator workflow keeps project, asset, billing, queue and history con
   const request = (path, cookie, options = {}) => fetch(`${origin}${path}`, { ...options, headers: { ...(options.body ? { 'content-type': 'application/json' } : {}), cookie, ...options.headers } });
   const user = await register('workflow-user');
   const admin = await register('workflow-admin');
-  await db.mutate((data) => { data.users.find((item) => item.id === admin.user.id).role = 'system'; });
+  await db.mutate((data) => { data.users.find((item) => item.id === admin.user.id).role = 'system'; data.users.find((item) => item.id === user.user.id).accountType = 'user'; });
 
   const apiResponse = await request('/api/admin/system-apis', admin.cookie, { method: 'POST', body: JSON.stringify({ name: 'Integration API', provider: 'Test Provider', baseUrl: 'https://upstream.example', apiKey: 'integration-secret-key' }) });
   assert.equal(apiResponse.status, 201);

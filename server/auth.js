@@ -52,6 +52,7 @@ function publicUser(user) {
     email: user.email,
     name: user.name,
     role: user.role || 'user',
+    accountType: user.accountType || (user.role === 'system' ? 'system' : 'user'),
     balanceCents: Number(user.balanceCents || 0),
     createdAt: user.createdAt,
   };
@@ -294,6 +295,7 @@ export function createAuthService(db, { secureCookies = false, sendEmailCode, ge
           name: username,
           passwordHash: await hashPassword(req.body.password),
           role: systemUserEmails.has(email) ? 'system' : 'user',
+          accountType: systemUserEmails.has(email) ? 'system' : 'special',
           balanceCents: 0,
           createdAt: new Date().toISOString(),
         };

@@ -106,12 +106,16 @@ export function registerCatalogRoutes(router, { db, requireAuth }) {
   router.use(requireAuth);
   router.get('/models', (req, res) => {
     const apis = new Map(db.read('systemApis').filter((api) => api.enabled).map((api) => [api.id, api]));
-    const models = db.read('modelPricing').filter((price) => price.enabled && apis.has(price.apiId)).map((price) => {
+    const access = new Map(db.read('userModelAccess').filter((item) => item.userId === req.user.id && item.enabled).map((item) => [item.pricingId, item]));
+    const restricted = req.user.accountType === 'special' && req.user.role !== 'system';
+    const models = db.read('modelPricing').filter((price) => price.enabled && apis.has(price.apiId) && (!restricted || access.has(price.id))).map((price) => {
       const api = apis.get(price.apiId);
+      const grant = access.get(price.id);
       return {
         id: price.id, apiId: api.id, modelId: price.modelId, name: price.displayName,
         provider: api.provider, category: price.category, billingUnit: price.billingUnit,
-        unitPriceCents: price.unitPriceCents, baseUrl: `/api/system-ai/${api.id}`, managed: true,
+        unitPriceCents: grant ? grant.unitPriceCents : price.unitPriceCents, baseUrl: `/api/system-ai/${api.id}`, managed: true,
+        apiName: api.name,
         textProtocol: api.textProtocol || 'auto',
         minDurationSec: price.minDurationSec, maxDurationSec: price.maxDurationSec, allowedDurationsSec: price.allowedDurationsSec,
         allowedResolutions: (price.allowedResolutions?.length ? price.allowedResolutions : knownVideoResolutions(api.provider, price.modelId)),
@@ -120,7 +124,8 @@ export function registerCatalogRoutes(router, { db, requireAuth }) {
         maxReferenceVideos: Number.isInteger(Number(price.maxReferenceVideos)) ? Number(price.maxReferenceVideos) : 0,
       };
     });
-    return res.json({ models, balanceCents: Number(req.user.balanceCents || 0), role: req.user.role });
+    models.sort((a, b) => a.apiName.localeCompare(b.apiName, 'zh-CN') || a.name.localeCompare(b.name, 'zh-CN'));
+    return res.json({ models, balanceCents: Number(req.user.balanceCents || 0), role: req.user.role, accountType: req.user.accountType || 'user' });
   });
 }
 
@@ -426,6 +431,28 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
     return res.json({ checkedAt: nowIso(), ok: !paidWithoutCredit.length && !creditWithoutOrder.length && !amountMismatch.length, paidWithoutCredit, creditWithoutOrder, amountMismatch });
   });
   router.get('/users', (_req, res) => res.json({ users: db.read('users').map(safeUser) }));
+  router.get('/users/:id/model-access', (req, res) => {
+    const user = db.read('users').find((item) => item.id === req.params.id);
+    if (!user) return res.status(404).json({ error: 'USER_NOT_FOUND', message: '用户不存在' });
+    const grants = db.read('userModelAccess').filter((item) => item.userId === user.id);
+    return res.json({ user: safeUser(user), access: grants, pricing: db.read('modelPricing') });
+  });
+  router.put('/users/:id/model-access', async (req, res) => {
+    const user = db.read('users').find((item) => item.id === req.params.id);
+    if (!user) return res.status(404).json({ error: 'USER_NOT_FOUND', message: '用户不存在' });
+    const entries = Array.isArray(req.body?.models) ? req.body.models : [];
+    const valid = new Map(db.read('modelPricing').map((item) => [item.id, item]));
+    const normalized = entries.map((entry) => ({ pricingId: String(entry.pricingId || ''), unitPriceCents: integer(entry.unitPriceCents), enabled: entry.enabled !== false })).filter((entry) => valid.has(entry.pricingId));
+    if (normalized.some((entry) => !Number.isInteger(entry.unitPriceCents) || entry.unitPriceCents < 0 || entry.unitPriceCents > 10_000_000)) return res.status(400).json({ error: 'INVALID_MODEL_PRICE', message: '特殊用户模型价格无效' });
+    const now = nowIso();
+    await db.mutate((data) => {
+      data.userModelAccess = data.userModelAccess.filter((item) => item.userId !== user.id);
+      data.userModelAccess.push(...normalized.map((entry) => ({ id: randomUUID(), userId: user.id, ...entry, createdAt: now, updatedAt: now })));
+      user.accountType = 'special';
+    });
+    await audit(req, 'user_model_access_updated', 'user', user.id, { modelCount: normalized.length });
+    return res.json({ access: db.read('userModelAccess').filter((item) => item.userId === user.id) });
+  });
   router.patch('/users/:id/role', async (req, res) => {
     const role = String(req.body.role || '');
     if (!['user', 'system'].includes(role)) return res.status(400).json({ error: 'INVALID_ROLE', message: '角色无效' });
@@ -551,6 +578,27 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
       return res.status(201).json({ pricing });
     } catch (error) { return res.status(400).json({ error: 'PRICING_VALIDATION_ERROR', message: error.message }); }
   });
+  // Keep the literal batch route ahead of the parameter route so Express does not
+  // interpret "batch" as a pricing record id.
+  router.put('/pricing/batch', async (req, res) => {
+    const entries = Array.isArray(req.body?.pricing) ? req.body.pricing : [];
+    let updated = []; let failure = null;
+    try {
+      await db.mutate((data) => {
+        for (const entry of entries) {
+          const pricing = data.modelPricing.find((item) => item.id === String(entry.id || ''));
+          if (!pricing) { failure = 'PRICING_NOT_FOUND'; break; }
+          const normalized = normalizePricingInput(entry, pricing);
+          Object.assign(pricing, normalized, { updatedAt: nowIso() });
+        }
+        if (!failure) updated = entries.map((entry) => data.modelPricing.find((item) => item.id === String(entry.id))).filter(Boolean).map((item) => ({ ...item }));
+      });
+    } catch (error) { return res.status(400).json({ error: 'PRICING_VALIDATION_ERROR', message: error.message }); }
+    if (failure) return res.status(404).json({ error: failure, message: '模型定价不存在' });
+    await audit(req, 'model_pricing_batch_updated', 'model_pricing', null, { count: updated.length });
+    return res.json({ pricing: updated });
+  });
+
   router.put('/pricing/:id', async (req, res) => {
     try {
       let updated; let failure;
@@ -568,6 +616,24 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
       await audit(req, 'model_pricing_updated', 'model_pricing', updated.id, { apiId: updated.apiId, modelId: updated.modelId, unitPriceCents: updated.unitPriceCents });
       return res.json({ pricing: updated });
     } catch (error) { return res.status(400).json({ error: 'PRICING_VALIDATION_ERROR', message: error.message }); }
+  });
+  router.put('/pricing/batch', async (req, res) => {
+    const entries = Array.isArray(req.body?.pricing) ? req.body.pricing : [];
+    let updated = []; let failure = null;
+    try {
+      await db.mutate((data) => {
+        for (const entry of entries) {
+          const pricing = data.modelPricing.find((item) => item.id === String(entry.id || ''));
+          if (!pricing) { failure = 'PRICING_NOT_FOUND'; break; }
+          const normalized = normalizePricingInput(entry, pricing);
+          Object.assign(pricing, normalized, { updatedAt: nowIso() });
+        }
+        if (!failure) updated = entries.map((entry) => data.modelPricing.find((item) => item.id === String(entry.id))).filter(Boolean).map((item) => ({ ...item }));
+      });
+    } catch (error) { return res.status(400).json({ error: 'PRICING_VALIDATION_ERROR', message: error.message }); }
+    if (failure) return res.status(404).json({ error: failure, message: '模型定价不存在' });
+    await audit(req, 'model_pricing_batch_updated', 'model_pricing', null, { count: updated.length });
+    return res.json({ pricing: updated });
   });
   router.delete('/pricing/:id', async (req, res) => {
     let found = false;

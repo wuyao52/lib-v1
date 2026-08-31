@@ -101,6 +101,7 @@ test('managed video replaces owned asset paths with public OSS URLs before calli
   const admin = await context.register('asset-video-admin');
   await context.db.mutate((data) => {
     data.users.find((item) => item.id === admin.user.id).role = 'system';
+    data.users.find((item) => item.id === normal.user.id).accountType = 'user';
     data.users.find((item) => item.id === normal.user.id).balanceCents = 1000;
     data.assets.push({ id: 'owned-image', userId: normal.user.id, objectKey: 'assets/owned-image.png', mimeType: 'image/png', byteSize: 10, createdAt: new Date().toISOString() });
     data.assets.push({ id: 'owned-image-2', userId: normal.user.id, objectKey: 'assets/owned-image-2.png', mimeType: 'image/png', byteSize: 10, createdAt: new Date().toISOString() });
@@ -163,7 +164,7 @@ test('system APIs, pricing, balances and managed gateway enforce roles and billi
   t.after(() => context.server.close());
   const normal = await context.register('normal');
   const admin = await context.register('admin');
-  await context.db.mutate((data) => { data.users.find((item) => item.id === admin.user.id).role = 'system'; });
+  await context.db.mutate((data) => { data.users.find((item) => item.id === admin.user.id).role = 'system'; data.users.find((item) => item.id === normal.user.id).accountType = 'user'; });
 
   assert.equal((await context.request('/api/admin/users', normal.cookie)).status, 403);
   assert.equal((await context.request('/api/admin/system-apis/discover', normal.cookie, { method: 'POST', body: JSON.stringify({ baseUrl: 'https://upstream.example', apiKey: 'secret-system-key' }) })).status, 403);
@@ -378,7 +379,7 @@ test('managed video requests use the persistent queue protocol and expose an adm
   t.after(() => context.server.close());
   const normal = await context.register('queue-normal');
   const admin = await context.register('queue-admin');
-  await context.db.mutate((data) => { data.users.find((item) => item.id === admin.user.id).role = 'system'; });
+  await context.db.mutate((data) => { data.users.find((item) => item.id === admin.user.id).role = 'system'; data.users.find((item) => item.id === normal.user.id).accountType = 'user'; });
   const apiResponse = await context.request('/api/admin/system-apis', admin.cookie, {
     method: 'POST', body: JSON.stringify({ name: 'Queue API', provider: 'Compatible', baseUrl: 'https://upstream.example', apiKey: 'secret-system-key' }),
   });

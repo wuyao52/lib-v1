@@ -11,6 +11,7 @@ const EMPTY_DATABASE = {
   projectRevisions: [],
   systemApis: [],
   modelPricing: [],
+  userModelAccess: [],
   balanceTransactions: [],
   rechargeRequests: [],
   generationHistory: [],
