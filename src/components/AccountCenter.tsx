@@ -387,7 +387,7 @@ function OperationsView({ metrics, operationsAlerts, securityAlerts, storageUsag
     ['平均等待', metrics?.recent.averageQueueWaitMs == null ? '-' : `${Math.round(metrics.recent.averageQueueWaitMs / 1000)} 秒`],
     ['活跃用户', String(metrics?.recent.activeUsers ?? 0)],
     ['API P95', metrics?.http?.p95Ms == null ? '-' : `${metrics.http.p95Ms} ms`],
-    ['AI 网关错误', `${((metrics?.http?.managedAi.errorRate ?? 0) * 100).toFixed(1)}%`],
+    ['AI 网关错误', `${((metrics?.http?.managedAi?.errorRate ?? 0) * 100).toFixed(1)}%`],
   ];
   const labels: Record<string, string> = { QUEUE_BACKLOG: '队列积压', GENERATION_FAILURE_RATE: '生成失败率偏高', PROCESSING_DELAYED: '任务处理延迟', BACKUP_FAILED: '最近备份失败', BACKUP_STALE: '备份超过时限' };
   const alertLabels = { ...labels, DATABASE_CAPACITY_WARNING: '数据库容量接近上限', OBJECT_STORAGE_CAPACITY_WARNING: '对象存储容量接近上限' };
