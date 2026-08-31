@@ -22,11 +22,6 @@ const migrations = [
     },
   },
   {
-    version: 12,
-    name: 'special_user_model_access',
-    async up({ query }) { await query(`CREATE TABLE IF NOT EXISTS user_model_access (id CHAR(36) PRIMARY KEY, user_id CHAR(36) NOT NULL, pricing_id CHAR(36) NOT NULL, unit_price_cents INT NOT NULL DEFAULT 0, enabled TINYINT(1) NOT NULL DEFAULT 1, created_at VARCHAR(35) NOT NULL, updated_at VARCHAR(35) NOT NULL, UNIQUE KEY user_model_access_unique (user_id, pricing_id), INDEX user_model_access_user_idx (user_id)) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`); },
-  },
-  {
     version: 2,
     name: 'persistent_request_metric_buckets',
     async up({ query }) {
@@ -128,6 +123,20 @@ const migrations = [
       if (!indexes.length) {
         await query('ALTER TABLE `project_revisions` ADD INDEX `project_revisions_rank_idx` (`project_id`, `version` DESC, `created_at` DESC, `id`)');
       }
+    },
+  },
+  {
+    version: 12,
+    name: 'special_user_model_access',
+    async up({ query }) { await query(`CREATE TABLE IF NOT EXISTS user_model_access (id CHAR(36) PRIMARY KEY, user_id CHAR(36) NOT NULL, pricing_id CHAR(36) NOT NULL, unit_price_cents INT NOT NULL DEFAULT 0, enabled TINYINT(1) NOT NULL DEFAULT 1, created_at VARCHAR(35) NOT NULL, updated_at VARCHAR(35) NOT NULL, UNIQUE KEY user_model_access_unique (user_id, pricing_id), INDEX user_model_access_user_idx (user_id)) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`); },
+  },
+  {
+    version: 13,
+    name: 'backfill_special_user_account_type',
+    async up({ ensureColumn }) {
+      // Version 1 may already be recorded on deployed databases from before this
+      // column existed, so this must remain a new, independently applied migration.
+      await ensureColumn('users', 'account_type', "VARCHAR(16) NOT NULL DEFAULT 'special'");
     },
   },
 ];

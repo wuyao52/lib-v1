@@ -274,6 +274,45 @@ test('schema migrations execute once and skip all ALTER statements on later star
   assert.equal(statements.some((sql) => /CREATE TABLE IF NOT EXISTS request_metric_buckets/i.test(sql)), false);
 });
 
+test('schema migration backfills account_type on legacy databases that recorded migration 1', async () => {
+  const applied = new Set(Array.from({ length: 12 }, (_, index) => index + 1));
+  const statements = [];
+  let accountTypeExists = false;
+  const connection = {
+    release() {},
+    async query(sql, params) {
+      statements.push({ sql, params });
+      if (/GET_LOCK/i.test(sql)) return [[{ acquired: 1 }]];
+      if (/RELEASE_LOCK/i.test(sql)) return [[{ released: 1 }]];
+      if (/SELECT version FROM schema_migrations/i.test(sql)) return [[...applied].map((version) => ({ version }))];
+      if (/information_schema\.columns/i.test(sql)) {
+        return [accountTypeExists && params?.[1] === 'account_type' ? [{ exists: 1 }] : []];
+      }
+      if (/ALTER TABLE `users` ADD COLUMN `account_type`/i.test(sql)) {
+        accountTypeExists = true;
+        return [{ affectedRows: 0 }];
+      }
+      if (/INSERT INTO schema_migrations/i.test(sql)) {
+        applied.add(Number(params[0]));
+        return [{ affectedRows: 1 }];
+      }
+      return [{ affectedRows: 0 }];
+    },
+  };
+  const pool = { getConnection: async () => connection };
+
+  const first = await runSchemaMigrations(pool);
+  assert.equal(first.currentVersion, 13);
+  assert.equal(statements.filter(({ sql }) => /ALTER TABLE `users` ADD COLUMN `account_type`/i.test(sql)).length, 1);
+  assert.match(statements.find(({ sql }) => /ALTER TABLE `users` ADD COLUMN `account_type`/i.test(sql)).sql, /VARCHAR\(16\) NOT NULL DEFAULT 'special'/i);
+  assert.equal(applied.has(13), true);
+
+  statements.length = 0;
+  const second = await runSchemaMigrations(pool);
+  assert.equal(second.currentVersion, 13);
+  assert.equal(statements.some(({ sql }) => /^ALTER TABLE/i.test(sql)), false);
+});
+
 test('project revision startup ranking excludes large JSON payloads from the window sort', () => {
   const sql = selectForCollection('projectRevisions', { select: 'fallback' });
   const rankedQuery = sql.match(/INNER JOIN \(([\s\S]+?)\) ranked/i)?.[1] || '';
