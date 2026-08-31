@@ -78,7 +78,52 @@ export default function ModelConfigPanel() {
     if (!showModelConfig) return;
     void Promise.all([
       apiRequest<{ models: Array<AIModelConfig & { category: ModelCategory; apiName?: string }> }>('/api/catalog/models')
-        .then(({ models }) => setManagedModels(models.map((model) => ({ ...model, apiKey: '', parameters: {} })))).catch(() => setManagedModels([])),
+        .then(({ models }) => {
+          const catalog = Array.isArray(models)
+            ? models.map((model) => ({ ...model, apiKey: '', parameters: {} }))
+            : [];
+          setManagedModels(catalog);
+
+          const current = project?.settings.multiModel;
+          if (!current) return;
+
+          const clearUnauthorizedManagedModel = (model: AIModelConfig, category: ModelCategory) => {
+            if (!model.managed) return model;
+            const authorized = catalog.some((candidate) => candidate.category === category && (
+              candidate.id === model.id ||
+              ((candidate as any).apiId === (model as any).apiId && candidate.modelId === model.modelId)
+            ));
+            if (authorized) return model;
+            return {
+              ...model,
+              id: `unconfigured-${category}`,
+              name: '未选择模型',
+              provider: '',
+              baseUrl: '',
+              apiKey: '',
+              modelId: '',
+              managed: false,
+              credentialManaged: false,
+              credentialConfigId: undefined,
+              parameters: {},
+            };
+          };
+
+          const next = {
+            ...current,
+            textModel: clearUnauthorizedManagedModel(current.textModel, 'text'),
+            videoModel: clearUnauthorizedManagedModel(current.videoModel, 'video'),
+            imageModel: clearUnauthorizedManagedModel(current.imageModel, 'image'),
+          };
+          if (
+            next.textModel !== current.textModel ||
+            next.videoModel !== current.videoModel ||
+            next.imageModel !== current.imageModel
+          ) {
+            updateProjectSettings({ multiModel: next });
+          }
+        })
+        .catch(() => setManagedModels([])),
       apiRequest<{ configs: UserApiConfig[] }>('/api/user-api-configs')
         .then(({ configs }) => setUserApiConfigs(configs)).catch(() => setUserApiConfigs([])),
     ]);
