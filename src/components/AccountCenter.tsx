@@ -412,10 +412,10 @@ function BillingView({ balance, transactions, recharges, amount, setAmount, prov
 function OperationsView({ metrics, operationsAlerts, securityAlerts, storageUsage }: { metrics: AdminMetrics | null; operationsAlerts: OperationsAlerts | null; securityAlerts: SecurityAlerts | null; storageUsage: StorageUsage | null }) {
   const formatBytes = (bytes: number) => bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(2)} GB` : bytes >= 1024 ** 2 ? `${(bytes / 1024 ** 2).toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`;
   const stats = [
-    ['队列积压', String(metrics?.recent.queueBacklog ?? 0)],
-    ['24h 失败率', `${((metrics?.recent.failureRate ?? 0) * 100).toFixed(1)}%`],
-    ['平均等待', metrics?.recent.averageQueueWaitMs == null ? '-' : `${Math.round(metrics.recent.averageQueueWaitMs / 1000)} 秒`],
-    ['活跃用户', String(metrics?.recent.activeUsers ?? 0)],
+    ['队列积压', String(metrics?.recent?.queueBacklog ?? 0)],
+    ['24h 失败率', `${((metrics?.recent?.failureRate ?? 0) * 100).toFixed(1)}%`],
+    ['平均等待', metrics?.recent?.averageQueueWaitMs == null ? '-' : `${Math.round(metrics.recent.averageQueueWaitMs / 1000)} 秒`],
+    ['活跃用户', String(metrics?.recent?.activeUsers ?? 0)],
     ['API P95', metrics?.http?.p95Ms == null ? '-' : `${metrics.http.p95Ms} ms`],
     ['AI 网关错误', `${((metrics?.http?.managedAi?.errorRate ?? 0) * 100).toFixed(1)}%`],
   ];
