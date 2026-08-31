@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Component, useCallback, useEffect, useState, type ErrorInfo, type ReactNode } from 'react';
 import { Activity, Archive, Check, Cloud, Coins, Copy, Database, Eye, EyeOff, HardDrive, Pencil, Play, Plus, RefreshCw, Shield, Trash2, Wallet, X } from 'lucide-react';
 import { apiRequest } from '@/services/apiClient';
 import { useAuth, type AuthUser } from '@/auth/AuthContext';
@@ -40,7 +40,7 @@ const field = 'w-full px-3 py-2 bg-dark-900 border border-dark-600 rounded text-
 const emptyApi: { name: string; provider: string; textProtocol: TextProtocol; baseUrl: string; apiKey: string } = { name: '', provider: '', textProtocol: 'auto', baseUrl: '', apiKey: '' };
 const emptyPrice = { apiId: '', modelId: '', displayName: '', category: 'text', billingUnit: 'request', priceYuan: '', minDurationSec: '', maxDurationSec: '', allowedDurations: '', allowedResolutions: '', maxReferenceImages: '4', maxReferenceAudios: '0', maxReferenceVideos: '0' };
 
-export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'admin'; onClose: () => void }) {
+function AccountCenterContent({ mode, onClose }: { mode: 'billing' | 'admin'; onClose: () => void }) {
   const { user, refresh } = useAuth();
   const [balance, setBalance] = useState(0);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -104,7 +104,11 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
       apiRequest<QueueOverview>('/api/admin/video-queue'),
       apiRequest<{ orders: PaymentOrder[] }>('/api/payments/admin/orders'),
     ]);
-    setApis(apiData.apis); setPricing(priceData.pricing); setPriceDrafts(Object.fromEntries(priceData.pricing.map((item) => [item.id, String(item.unitPriceCents / 100)]))); setUsers(userData.users); setRecharges(rechargeData.recharges);
+    const nextApis = Array.isArray(apiData.apis) ? apiData.apis : [];
+    const nextPricing = Array.isArray(priceData.pricing) ? priceData.pricing : [];
+    const nextUsers = Array.isArray(userData.users) ? userData.users : [];
+    const nextRecharges = Array.isArray(rechargeData.recharges) ? rechargeData.recharges : [];
+    setApis(nextApis); setPricing(nextPricing); setPriceDrafts(Object.fromEntries(nextPricing.map((item) => [item.id, String(item.unitPriceCents / 100)]))); setUsers(nextUsers); setRecharges(nextRecharges);
     setQueue(queueData);
     setPaymentOrders(paymentData.orders);
     void Promise.all([
@@ -116,7 +120,7 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
       apiRequest<{ records: QuarantineRecord[] }>('/api/admin/storage-quarantine').catch(() => ({ records: [] })),
     ]).then(([metricData, operationData, securityData, backupData, storageData, quarantineData]) => {
       setMetrics(metricData); setOperationsAlerts(operationData); setSecurityAlerts(securityData);
-      setBackupOverview(backupData); setStorageUsage(storageData); setQuarantineRecords(quarantineData.records);
+      setBackupOverview(backupData); setStorageUsage(storageData); setQuarantineRecords(Array.isArray(quarantineData?.records) ? quarantineData.records : []);
     }).catch(() => undefined);
   }, [mode]);
 
@@ -375,6 +379,32 @@ export default function AccountCenter({ mode, onClose }: { mode: 'billing' | 'ad
   </div>;
 }
 
+type AccountCenterBoundaryProps = { mode: 'billing' | 'admin'; onClose: () => void };
+type AccountCenterBoundaryState = { error: Error | null };
+
+class AccountCenterBoundary extends Component<AccountCenterBoundaryProps, AccountCenterBoundaryState> {
+  state: AccountCenterBoundaryState = { error: null };
+
+  static getDerivedStateFromError(error: Error): AccountCenterBoundaryState {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('系统管理页面渲染失败', error, info.componentStack);
+  }
+
+  render(): ReactNode {
+    if (this.state.error) {
+      return <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 p-4"><section className="w-full max-w-md rounded-lg border border-red-500/40 bg-dark-800 p-5 text-white"><h2 className="text-base font-semibold">系统管理暂时无法显示</h2><p className="mt-2 text-sm text-dark-300">管理接口返回了不完整数据，请关闭后刷新页面重试。</p><button className="mt-4 rounded bg-primary-600 px-3 py-2 text-sm" onClick={this.props.onClose}>关闭</button></section></div>;
+    }
+    return <AccountCenterContent {...this.props} />;
+  }
+}
+
+export default function AccountCenter(props: AccountCenterBoundaryProps) {
+  return <AccountCenterBoundary {...props} />;
+}
+
 function BillingView({ balance, transactions, recharges, amount, setAmount, providers, provider, setProvider, orders, startPayment }: BillingProps) {
   return <><div className="grid md:grid-cols-[1fr_2fr] gap-5"><div><div className="text-xs text-dark-400">当前余额</div><div className="text-3xl text-white font-semibold mt-1">{yuan(balance)}</div><div className="mt-5 space-y-3"><div className="grid grid-cols-2 gap-2"><button disabled={!providers.alipay} onClick={() => setProvider('alipay')} className={`border px-3 py-2 text-sm ${provider === 'alipay' ? 'border-blue-500 bg-blue-500/10 text-blue-300' : 'border-dark-600 text-dark-300'} disabled:text-dark-600`}>支付宝</button><button disabled={!providers.wechat} onClick={() => setProvider('wechat')} className={`border px-3 py-2 text-sm ${provider === 'wechat' ? 'border-green-500 bg-green-500/10 text-green-300' : 'border-dark-600 text-dark-300'} disabled:text-dark-600`}>微信支付</button></div><input className={field} type="number" min="1" max="100000" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="充值金额（元）" /><button disabled={!providers[provider] || !Number(amount)} className="w-full bg-primary-600 py-2 text-sm text-white disabled:bg-dark-700 disabled:text-dark-500" onClick={startPayment}>前往安全支付</button>{!providers.alipay && !providers.wechat && <p className="text-xs text-amber-300">支付商户参数尚未在 Railway 配置，当前不能创建在线订单。</p>}</div></div><div><h3 className="text-sm text-white mb-2">余额流水</h3><div className="divide-y divide-dark-700">{transactions.map((item: Transaction) => <div key={item.id} className="py-2 flex justify-between text-sm"><span className="text-dark-300">{item.description}<small className="block text-dark-500">{new Date(item.createdAt).toLocaleString()}</small></span><span className={item.amountCents >= 0 ? 'text-green-400' : 'text-red-400'}>{item.amountCents >= 0 ? '+' : ''}{yuan(item.amountCents)}</span></div>)}</div></div></div><div><h3 className="text-sm text-white mb-2">在线支付订单</h3><div className="divide-y divide-dark-700">{orders.map((item: PaymentOrder) => <div key={item.id} className="py-2 flex justify-between text-sm text-dark-300"><span>{item.provider === 'alipay' ? '支付宝' : '微信支付'} · {yuan(item.amountCents)}<small className="block text-dark-500">{new Date(item.createdAt).toLocaleString()}</small></span><span>{item.status === 'paid' ? '已到账' : item.status === 'pending' ? '待支付' : item.status}</span></div>)}</div>{recharges.length > 0 && <p className="mt-3 text-xs text-dark-500">历史人工充值申请保留只读记录，共 {recharges.length} 条。</p>}</div></>;
 }
@@ -394,8 +424,8 @@ function OperationsView({ metrics, operationsAlerts, securityAlerts, storageUsag
   return <section className="border border-dark-600 bg-dark-900/30 p-4 rounded">
     <div className="flex items-center justify-between gap-3"><div><h3 className="flex items-center gap-2 text-sm font-medium text-white"><Activity className="h-4 w-4 text-cyan-400" />运行监测</h3><p className="mt-1 text-xs text-dark-400">每 5 秒自动刷新，仅展示聚合指标与任务标识。</p></div><span className={operationsAlerts?.healthy ? 'text-xs text-green-400' : 'text-xs text-amber-300'}>{operationsAlerts?.healthy ? '运行正常' : '需要处理告警'}</span></div>
     <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">{stats.map(([label, value]) => <div key={label} className="border border-dark-600 bg-dark-900 px-3 py-2 rounded"><p className="text-[10px] text-dark-500">{label}</p><p className="mt-1 text-lg text-white">{value}</p></div>)}</div>
-    <div className="mt-3 space-y-1 text-xs">{operationsAlerts?.alerts.length ? operationsAlerts.alerts.map((alert) => <div key={alert.code} className="flex items-center justify-between gap-3 border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-amber-200 rounded"><span>{alertLabels[alert.code as keyof typeof alertLabels] || alert.code}</span><span>{alert.code === 'GENERATION_FAILURE_RATE' ? `${alert.count}/${alert.total} (${((alert.rate || 0) * 100).toFixed(1)}%)` : `${alert.count} 项`}</span></div>) : <p className="text-dark-400">暂无运营告警</p>}</div>
-    <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-dark-400"><span>登录异常 IP：{securityAlerts?.alerts.loginBruteForce.length ?? 0}</span><span>敏感管理操作：{securityAlerts?.alerts.privilegedActions ?? 0}</span><span>系统模型调用：{securityAlerts?.alerts.modelCalls ?? 0}</span></div>
+    <div className="mt-3 space-y-1 text-xs">{operationsAlerts?.alerts?.length ? operationsAlerts.alerts.map((alert) => <div key={alert.code} className="flex items-center justify-between gap-3 border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-amber-200 rounded"><span>{alertLabels[alert.code as keyof typeof alertLabels] || alert.code}</span><span>{alert.code === 'GENERATION_FAILURE_RATE' ? `${alert.count}/${alert.total} (${((alert.rate || 0) * 100).toFixed(1)}%)` : `${alert.count} 项`}</span></div>) : <p className="text-dark-400">暂无运营告警</p>}</div>
+    <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-dark-400"><span>登录异常 IP：{securityAlerts?.alerts?.loginBruteForce?.length ?? 0}</span><span>敏感管理操作：{securityAlerts?.alerts?.privilegedActions ?? 0}</span><span>系统模型调用：{securityAlerts?.alerts?.modelCalls ?? 0}</span></div>
     <div className="mt-4 grid gap-2 md:grid-cols-3">
       <div className={`flex items-center gap-3 rounded border px-3 py-2 ${storageUsage?.databaseWarning ? 'border-amber-500/40 bg-amber-500/5' : 'border-dark-600 bg-dark-900'}`}><Database className="h-4 w-4 text-cyan-400" /><div><p className="text-[10px] text-dark-500">数据库占用</p><p className="text-sm text-white">{storageUsage?.database ? formatBytes(storageUsage.database.bytes) : '-'} <span className="text-xs text-dark-500">{storageUsage?.database?.rows ?? 0} 行</span></p></div></div>
       <div className={`flex items-center gap-3 rounded border px-3 py-2 ${storageUsage?.warning ? 'border-amber-500/40 bg-amber-500/5' : 'border-dark-600 bg-dark-900'}`}><Cloud className="h-4 w-4 text-green-400" /><div><p className="text-[10px] text-dark-500">对象存储占用</p><p className="text-sm text-white">{storageUsage ? formatBytes(storageUsage.bytes) : '-'} <span className="text-xs text-dark-500">{storageUsage?.objects ?? 0} 个对象</span></p></div></div>
@@ -428,9 +458,9 @@ function BackupManagementView({ overview, currentPassword, onStart, onRefresh, s
       <div><h3 className="flex items-center gap-2 text-sm font-medium text-white"><Archive className="h-4 w-4 text-green-400" />生产备份与恢复演练</h3><p className="mt-1 text-xs text-dark-400">对象仅展示元数据；备份正文、数据库内容和加密密钥不会返回浏览器。</p></div>
       <div className="flex items-center gap-2"><button title="刷新备份状态" onClick={() => void onRefresh().catch((error) => setMessage(errorMessage(error)))} className="p-2 text-dark-400 hover:text-white"><RefreshCw className="h-4 w-4" /></button><button disabled={!currentPassword || overview?.running || !overview} onClick={() => void onStart()} className="flex items-center gap-2 border border-green-500/40 px-3 py-2 text-xs text-green-300 disabled:border-dark-600 disabled:text-dark-600"><Play className="h-4 w-4" />{overview?.running ? '演练进行中' : '开始恢复演练'}</button></div>
     </div>
-    <div className="flex flex-wrap gap-x-5 gap-y-1 border-y border-dark-700 py-2 text-xs text-dark-400"><span>存储：{overview?.provider || '未连接'}</span><span>保留：{overview?.policy.retentionDays ?? '-'} 天</span><span>最低副本：{overview?.policy.minimumCopies ?? '-'}</span><span>对象数：{overview?.backups.length ?? 0}</span></div>
-    <div className="max-h-64 divide-y divide-dark-700 overflow-y-auto">{overview?.backups.length ? overview.backups.map((item) => <div key={item.key} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4 py-3 text-xs"><span className="min-w-0 text-dark-300"><span className="block text-sm text-white">{item.kind === 'drill' ? '恢复演练备份' : '定时数据库备份'} · {item.verification === 'backup_drill_completed' || item.verification === 'backup_completed' ? <span className="text-green-400">验证完成</span> : <span className="text-dark-400">已存储</span>}</span><code className="mt-1 block truncate text-[10px] text-dark-500" title={item.key}>{item.key}</code></span><span className="text-right text-dark-400">{formatBytes(item.size)}<small className="block text-dark-500">{item.lastModified ? new Date(item.lastModified).toLocaleString() : '时间未知'}</small></span></div>) : <p className="py-5 text-center text-xs text-dark-500">暂无可见备份对象</p>}</div>
-    <div className="mt-3 text-xs text-dark-400"><span className="mr-2">最近事件：</span>{overview?.events[0] ? <span className={overview.events[0].action.endsWith('failed') ? 'text-red-400' : overview.events[0].action.endsWith('completed') ? 'text-green-400' : 'text-cyan-400'}>{eventLabels[overview.events[0].action] || overview.events[0].action} · {new Date(overview.events[0].createdAt).toLocaleString()}</span> : '暂无事件'}</div>
+    <div className="flex flex-wrap gap-x-5 gap-y-1 border-y border-dark-700 py-2 text-xs text-dark-400"><span>存储：{overview?.provider || '未连接'}</span><span>保留：{overview?.policy?.retentionDays ?? '-'} 天</span><span>最低副本：{overview?.policy?.minimumCopies ?? '-'}</span><span>对象数：{overview?.backups?.length ?? 0}</span></div>
+    <div className="max-h-64 divide-y divide-dark-700 overflow-y-auto">{overview?.backups?.length ? overview.backups.map((item) => <div key={item.key} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4 py-3 text-xs"><span className="min-w-0 text-dark-300"><span className="block text-sm text-white">{item.kind === 'drill' ? '恢复演练备份' : '定时数据库备份'} · {item.verification === 'backup_drill_completed' || item.verification === 'backup_completed' ? <span className="text-green-400">验证完成</span> : <span className="text-dark-400">已存储</span>}</span><code className="mt-1 block truncate text-[10px] text-dark-500" title={item.key}>{item.key}</code></span><span className="text-right text-dark-400">{formatBytes(item.size)}<small className="block text-dark-500">{item.lastModified ? new Date(item.lastModified).toLocaleString() : '时间未知'}</small></span></div>) : <p className="py-5 text-center text-xs text-dark-500">暂无可见备份对象</p>}</div>
+    <div className="mt-3 text-xs text-dark-400"><span className="mr-2">最近事件：</span>{overview?.events?.[0] ? <span className={overview.events[0].action.endsWith('failed') ? 'text-red-400' : overview.events[0].action.endsWith('completed') ? 'text-green-400' : 'text-cyan-400'}>{eventLabels[overview.events[0].action] || overview.events[0].action} · {new Date(overview.events[0].createdAt).toLocaleString()}</span> : '暂无事件'}</div>
   </section>;
 }
 
@@ -439,8 +469,8 @@ function QueueView({ overview, users }: { overview: QueueOverview | null; users:
   const userNames = new Map(users.map((user) => [user.id, user.username]));
   return <section>
     <div className="mb-3 flex items-center justify-between gap-3"><div><h3 className="flex items-center gap-2 text-sm font-medium text-white"><Activity className="h-4 w-4 text-cyan-400" />视频任务队列</h3><p className="mt-1 text-xs text-dark-400">每 5 秒刷新。并发限制由 Railway 环境变量控制。</p></div>{overview?.config && <span className="text-xs text-dark-400">全站 {overview.config.globalConcurrency} · 单用户 {overview.config.userConcurrency} · 单 API {overview.config.apiConcurrency}</span>}</div>
-    <div className="grid grid-cols-2 gap-2 md:grid-cols-5">{Object.entries(labels).map(([status, label]) => <div key={status} className="rounded border border-dark-600 bg-dark-900 px-3 py-2"><p className="text-[10px] text-dark-500">{label}</p><p className="mt-1 text-lg text-white">{overview?.counts[status as keyof QueueOverview['counts']] || 0}</p></div>)}</div>
-    <div className="mt-3 max-h-52 overflow-y-auto divide-y divide-dark-700">{overview?.recent.length ? overview.recent.map((job) => <div key={job.id} className="grid grid-cols-[1fr_auto] gap-3 py-2 text-xs"><span className="min-w-0 text-dark-300"><span className="block truncate">{userNames.get(job.userId) || job.userId} · {job.modelId}</span><small className="text-dark-500">{new Date(job.createdAt).toLocaleString()} · {job.id.slice(0, 8)}</small></span><span className={job.status === 'failed' ? 'text-red-400' : job.status === 'completed' ? 'text-green-400' : 'text-cyan-400'}>{labels[job.status] || job.status}{job.status === 'processing' && job.progress ? ` ${job.progress}%` : ''}{job.errorCode ? ` · ${job.errorCode}` : ''}</span></div>) : <p className="py-5 text-center text-xs text-dark-500">暂无视频队列任务</p>}</div>
+    <div className="grid grid-cols-2 gap-2 md:grid-cols-5">{Object.entries(labels).map(([status, label]) => <div key={status} className="rounded border border-dark-600 bg-dark-900 px-3 py-2"><p className="text-[10px] text-dark-500">{label}</p><p className="mt-1 text-lg text-white">{overview?.counts?.[status as keyof QueueOverview['counts']] || 0}</p></div>)}</div>
+    <div className="mt-3 max-h-52 overflow-y-auto divide-y divide-dark-700">{overview?.recent?.length ? overview.recent.map((job) => <div key={job.id} className="grid grid-cols-[1fr_auto] gap-3 py-2 text-xs"><span className="min-w-0 text-dark-300"><span className="block truncate">{userNames.get(job.userId) || job.userId} · {job.modelId}</span><small className="text-dark-500">{new Date(job.createdAt).toLocaleString()} · {job.id.slice(0, 8)}</small></span><span className={job.status === 'failed' ? 'text-red-400' : job.status === 'completed' ? 'text-green-400' : 'text-cyan-400'}>{labels[job.status] || job.status}{job.status === 'processing' && job.progress ? ` ${job.progress}%` : ''}{job.errorCode ? ` · ${job.errorCode}` : ''}</span></div>) : <p className="py-5 text-center text-xs text-dark-500">暂无视频队列任务</p>}</div>
   </section>;
 }
 
