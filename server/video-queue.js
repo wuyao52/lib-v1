@@ -405,16 +405,27 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
     const controller = new AbortController();
     controllers.set(`poll:${job.id}`, controller);
     try {
+      const api = apiForJob(job);
+      const adapter = createVideoProviderAdapter(api, { fetchImpl, resolveHost });
       if (job.errorCode === 'VIDEO_ARCHIVE_PENDING' && job.resultUrl) {
-        await completeJob(job.id, { url: job.resultUrl, thumbnail: job.thumbnail || '' });
+        // Signed provider URLs can expire after an archive failure. Refresh the
+        // provider result before retrying so we do not loop forever on a dead URL.
+        let archiveResult = { url: job.resultUrl, thumbnail: job.thumbnail || '' };
+        if (job.providerTaskId && adapter.refreshResult) {
+          const refreshed = await adapter.refreshResult(job.providerTaskId, controller.signal);
+          if (refreshed?.ok) {
+            const refreshedBody = await jsonResponse(refreshed);
+            const refreshedResult = videoResultOf(refreshedBody);
+            if (refreshedResult.url) archiveResult = refreshedResult;
+          }
+        }
+        await completeJob(job.id, archiveResult);
         return;
       }
       if (job.errorCode !== 'VIDEO_ARCHIVE_PENDING' && Date.now() - Date.parse(job.createdAt) > config.taskTimeoutMs) {
         await refundJob(job.id, { code: 'VIDEO_JOB_TIMEOUT', message: '视频任务处理超时，已自动退款' });
         return;
       }
-      const api = apiForJob(job);
-      const adapter = createVideoProviderAdapter(api, { fetchImpl, resolveHost });
       const response = await adapter.poll(job.providerTaskId, controller.signal);
       let body = await jsonResponse(response);
       let status = statusOf(body);
