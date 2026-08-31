@@ -68,6 +68,7 @@ export default function ModelConfigPanel() {
   const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [selectedModelId, setSelectedModelId] = useState<string>('');
   const [managedModels, setManagedModels] = useState<Array<AIModelConfig & { category: ModelCategory }>>([]);
+  const [selectedManagedApiId, setSelectedManagedApiId] = useState('');
   const [userApiConfigs, setUserApiConfigs] = useState<UserApiConfig[]>([]);
   const [draftApiKey, setDraftApiKey] = useState('');
   const [draftBaseUrl, setDraftBaseUrl] = useState('');
@@ -291,6 +292,7 @@ export default function ModelConfigPanel() {
                     setSelectedModelId('');
                     setDraftApiKey('');
                     setDraftBaseUrl('');
+                    setSelectedManagedApiId('');
                   }}
                   className={`flex-1 flex items-center justify-center gap-2 py-3 text-sm font-medium transition-colors
                     ${activeTab === tab.id
@@ -308,9 +310,9 @@ export default function ModelConfigPanel() {
             <div className="flex-1 p-4 space-y-4 overflow-y-auto">
               {managedModels.some((model) => model.category === activeTab) && (
                 <div className="space-y-2">
-                  <label className="text-xs font-medium text-dark-300">系统模型</label>
+                  <label className="text-xs font-medium text-dark-300">系统模型端口</label>
                   <div className="space-y-2">
-                    {Object.entries(managedModels.filter((model) => model.category === activeTab).reduce<Record<string, typeof managedModels>>((groups, model) => { const key = (model as any).apiName || model.provider || '系统模型'; (groups[key] ||= []).push(model); return groups; }, {})).map(([apiName, models]) => <div key={apiName} className="space-y-1"><div className="text-[11px] text-primary-300">{apiName}</div>{models.map((model) => (
+                    {Object.entries(managedModels.filter((model) => model.category === activeTab).reduce<Record<string, typeof managedModels>>((groups, model) => { const key = String((model as any).apiId || (model as any).apiName || model.provider || 'system'); (groups[key] ||= []).push(model); return groups; }, {})).map(([apiId, models]) => <div key={apiId} className="space-y-1"><button onClick={() => setSelectedManagedApiId(apiId)} className={`w-full p-3 rounded-lg border text-left ${selectedManagedApiId === apiId ? 'border-primary-500 bg-primary-500/10' : 'border-dark-600 bg-dark-700 hover:border-dark-400'}`}><div className="text-sm text-white">{(models[0] as any).apiName || models[0].provider || '系统模型'}</div><div className="mt-1 text-[10px] text-dark-400">{models.length} 个可用模型</div></button>{selectedManagedApiId === apiId && <div className="space-y-1 pt-1">{models.map((model) => (
                       <button key={model.id} onClick={() => {
                         const allowedResolutions = (model.allowedResolutions || []).map((value) => String(value).toLowerCase()).filter(Boolean);
                         const currentResolution = String(activeModel.parameters?.resolution || '').toLowerCase();
@@ -322,7 +324,7 @@ export default function ModelConfigPanel() {
                         <div className="flex items-center justify-between gap-3"><span className="text-sm text-white">{model.name}</span><span className="text-xs text-green-400">¥{((model.unitPriceCents || 0) / 100).toFixed(2)} / {model.billingUnit === 'second' ? '秒' : model.billingUnit === 'image' ? '张' : '次'}</span></div>
                         <div className="text-[10px] text-dark-400 mt-1">{model.provider} · 密钥由系统安全托管</div>
                         {model.category === 'video' && <div className="mt-1 text-[10px] text-primary-300">{describeModelDuration(model)}{model.allowedResolutions?.length ? ` · ${model.allowedResolutions.map(resolutionLabel).join('、')}` : ''} · 最多 {Number.isInteger(model.maxReferenceImages) ? model.maxReferenceImages : 4} 张参考图</div>}
-                      </button>))}</div>)}
+                      </button>))}</div>}</div>)}
                   </div>
                 </div>
               )}
