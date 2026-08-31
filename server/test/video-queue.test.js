@@ -437,6 +437,21 @@ test('video queue recovers interrupted submissions and only cleans expired termi
   });
 });
 
+test('video queue resolves legacy provider task IDs when resuming a saved generation', async () => {
+  const db = fakeDb({
+    generationJobs: [{
+      id: 'internal-job-id', userId: 'user-a', providerTaskId: 'task_1788166267870_ckbyqv9d_video_generation',
+      status: 'processing', progress: 100, createdAt: new Date().toISOString(),
+    }],
+  });
+  const queue = await createVideoQueue({ db, vault: { decrypt: (value) => value }, autoStart: false });
+  const result = queue.get('task_1788166267870_ckbyqv9d_video_generation', 'user-a');
+  assert.deepEqual(result, {
+    id: 'internal-job-id', status: 'processing', progress: 100,
+  });
+  assert.equal(queue.get('task_1788166267870_ckbyqv9d_video_generation', 'other-user'), null);
+});
+
 test('video queue reserves balance atomically and never charges a rejected enqueue', async () => {
   const db = fakeDb({ users: [{ id: 'user-a', balanceCents: 10 }] });
   const queue = await createVideoQueue({ db, vault: { decrypt: (value) => value }, autoStart: false });

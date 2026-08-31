@@ -576,8 +576,14 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
     return { job, queuePosition: db.read('generationJobs').filter((item) => item.status === 'queued' && item.createdAt <= job.createdAt).length };
   };
 
+  // Older clients persisted the provider task ID instead of our internal job ID.
+  // Resolve both identifiers so those tasks can still be resumed after a reload.
+  const findOwnedJob = (jobId, userId) => db.read('generationJobs').find((item) => (
+    item.userId === userId && (item.id === jobId || item.providerTaskId === jobId)
+  ));
+
   const get = (jobId, userId) => {
-    const job = db.read('generationJobs').find((item) => item.id === jobId && item.userId === userId);
+    const job = findOwnedJob(jobId, userId);
     if (!job) return null;
     const queuePosition = job.status === 'queued'
       ? db.read('generationJobs').filter((item) => item.status === 'queued' && item.createdAt <= job.createdAt).length
@@ -586,7 +592,7 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
   };
 
   const cancel = async (jobId, userId) => {
-    const job = db.read('generationJobs').find((item) => item.id === jobId && item.userId === userId);
+    const job = findOwnedJob(jobId, userId);
     if (!job) {
       const error = new Error('视频任务不存在'); error.code = 'VIDEO_JOB_NOT_FOUND'; throw error;
     }
