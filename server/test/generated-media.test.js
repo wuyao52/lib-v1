@@ -84,6 +84,28 @@ test('generated-media archive forwards provider authentication only to the serve
   assert.deepEqual(seen, ['Bearer server-only-secret']);
 });
 
+test('generated-media archive accepts provider redirects to the final video file', async () => {
+  const bytes = Buffer.from('redirected-video');
+  let requestOptions;
+  const service = createGeneratedMediaService({
+    db: { read: () => [], mutate: async () => {} },
+    storage: { put: async ({ bytes: value }) => assert.deepEqual(Buffer.from(value), bytes) },
+    fetchImpl: async (_url, options) => {
+      requestOptions = options;
+      const response = new Response(bytes, {
+        status: 200,
+        headers: { 'content-type': 'video/mp4', 'content-length': String(bytes.length) },
+      });
+      Object.defineProperty(response, 'url', { value: 'https://cdn.provider.example/final.mp4' });
+      return response;
+    },
+    resolveHost: async () => [{ address: '203.0.113.10', family: 4 }],
+  });
+  const archived = await service.archive({ id: 'redirect-job', userId: 'user-1' }, { url: 'https://provider.example/redirect.mp4' });
+  assert.equal(requestOptions.redirect, 'follow');
+  assert.match(archived.url, /^\/api\/generated-media\//);
+});
+
 test('non-streaming storage rejects a declared large video before buffering it', async () => {
   let stored = false;
   const storage = {

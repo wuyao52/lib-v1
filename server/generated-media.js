@@ -59,7 +59,14 @@ export function createGeneratedMediaService({ db, storage, fetchImpl = fetch, re
       const headers = options?.headers instanceof Headers
         ? options.headers
         : options?.headers && typeof options.headers === 'object' ? new Headers(options.headers) : undefined;
-      const response = await fetchImpl(target, { method: 'GET', redirect: 'error', headers, signal: controller.signal });
+      const response = await fetchImpl(target, { method: 'GET', redirect: 'follow', headers, signal: controller.signal });
+      // Providers commonly return a short-lived 3xx URL before the actual video.
+      // Validate the final URL as well so following redirects cannot become SSRF.
+      if (response.url) {
+        const finalTarget = new URL(response.url);
+        if (finalTarget.protocol !== 'https:') throw new Error('生成视频跳转地址必须使用 HTTPS 来源');
+        await assertPublicHost(finalTarget.hostname, resolveHost);
+      }
       if (!response.ok || !response.body) throw new Error(`下载成功视频失败 (${response.status})`);
       const contentLength = Number(response.headers.get('content-length') || 0);
       if (contentLength > maxVideoBytes()) throw new Error('生成视频超过平台归档大小限制');
