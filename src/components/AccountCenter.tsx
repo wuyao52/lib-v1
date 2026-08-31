@@ -110,7 +110,7 @@ function AccountCenterContent({ mode, onClose }: { mode: 'billing' | 'admin'; on
     const nextRecharges = Array.isArray(rechargeData.recharges) ? rechargeData.recharges : [];
     setApis(nextApis); setPricing(nextPricing); setPriceDrafts(Object.fromEntries(nextPricing.map((item) => [item.id, String(item.unitPriceCents / 100)]))); setUsers(nextUsers); setRecharges(nextRecharges);
     setQueue(queueData);
-    setPaymentOrders(paymentData.orders);
+    setPaymentOrders(Array.isArray(paymentData.orders) ? paymentData.orders : []);
     void Promise.all([
       apiRequest<AdminMetrics>('/api/admin/metrics'),
       apiRequest<OperationsAlerts>('/api/admin/operations-alerts'),
