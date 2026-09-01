@@ -242,8 +242,9 @@ test('MySQL startup applies versioned legacy alignment for system audit events',
   assert.equal(statements.some((sql) => /CREATE TABLE IF NOT EXISTS audit_logs[\s\S]*user_id CHAR\(36\) NULL/i.test(sql)), true);
   assert.equal(statements.some((sql) => /CREATE TABLE IF NOT EXISTS storage_quarantine[\s\S]*quarantine_key VARCHAR\(255\) NOT NULL UNIQUE/i.test(sql)), true);
   assert.equal(statements.some((sql) => /quarantine_key VARCHAR\(1024\) NOT NULL UNIQUE/i.test(sql)), false);
-  assert.equal(statements.some((sql) => /CREATE TABLE IF NOT EXISTS generation_jobs[\s\S]*id VARCHAR\(64\) PRIMARY KEY/i.test(sql)), true);
+  assert.equal(statements.some((sql) => /CREATE TABLE IF NOT EXISTS generation_jobs[\s\S]*id VARCHAR\(191\) PRIMARY KEY/i.test(sql)), true);
   assert.equal(statements.some((sql) => /ALTER TABLE `generation_jobs` MODIFY COLUMN `id` VARCHAR\(64\) NOT NULL/i.test(sql)), true);
+  assert.equal(statements.some((sql) => /ALTER TABLE `generation_jobs` MODIFY COLUMN `id` VARCHAR\(191\) NOT NULL/i.test(sql)), true);
   assert.equal(statements.some((sql) => /CREATE TABLE IF NOT EXISTS project_revisions[\s\S]*project_revisions_rank_idx/i.test(sql)), true);
   assert.equal(statements.some((sql) => /ALTER TABLE `project_revisions` ADD INDEX `project_revisions_rank_idx`/i.test(sql)), true);
 });
@@ -266,7 +267,7 @@ test('schema migrations execute once and skip all ALTER statements on later star
   const pool = { getConnection: async () => connection };
   await runSchemaMigrations(pool);
   const firstAlterCount = statements.filter((sql) => /^ALTER TABLE/i.test(sql)).length;
-  assert.equal(firstAlterCount, 3);
+  assert.equal(firstAlterCount, 4);
   assert.deepEqual([...applied], schemaMigrationVersions.map((item) => item.version));
   statements.length = 0;
   await runSchemaMigrations(pool);
@@ -302,15 +303,38 @@ test('schema migration backfills account_type on legacy databases that recorded 
   const pool = { getConnection: async () => connection };
 
   const first = await runSchemaMigrations(pool);
-  assert.equal(first.currentVersion, 13);
+  assert.equal(first.currentVersion, 14);
   assert.equal(statements.filter(({ sql }) => /ALTER TABLE `users` ADD COLUMN `account_type`/i.test(sql)).length, 1);
   assert.match(statements.find(({ sql }) => /ALTER TABLE `users` ADD COLUMN `account_type`/i.test(sql)).sql, /VARCHAR\(16\) NOT NULL DEFAULT 'special'/i);
   assert.equal(applied.has(13), true);
+  assert.equal(applied.has(14), true);
 
   statements.length = 0;
   const second = await runSchemaMigrations(pool);
-  assert.equal(second.currentVersion, 13);
+  assert.equal(second.currentVersion, 14);
   assert.equal(statements.some(({ sql }) => /^ALTER TABLE/i.test(sql)), false);
+});
+
+test('schema migration repairs generation job IDs when the earlier length migration was recorded', async () => {
+  const applied = new Set(Array.from({ length: 13 }, (_, index) => index + 1));
+  const statements = [];
+  const connection = {
+    release() {},
+    async query(sql, params) {
+      statements.push({ sql, params });
+      if (/GET_LOCK/i.test(sql)) return [[{ acquired: 1 }]];
+      if (/RELEASE_LOCK/i.test(sql)) return [[{ released: 1 }]];
+      if (/SELECT version FROM schema_migrations/i.test(sql)) return [[...applied].map((version) => ({ version }))];
+      if (/INSERT INTO schema_migrations/i.test(sql)) { applied.add(Number(params[0])); return [{ affectedRows: 1 }]; }
+      return [{ affectedRows: 0 }];
+    },
+  };
+
+  const result = await runSchemaMigrations({ getConnection: async () => connection });
+  assert.equal(result.ready, true);
+  assert.equal(result.currentVersion, 14);
+  assert.equal(statements.filter(({ sql }) => /ALTER TABLE `generation_jobs` MODIFY COLUMN `id` VARCHAR\(191\) NOT NULL/i.test(sql)).length, 1);
+  assert.equal(applied.has(14), true);
 });
 
 test('project revision startup ranking excludes large JSON payloads from the window sort', () => {

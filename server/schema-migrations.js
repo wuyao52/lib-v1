@@ -139,6 +139,15 @@ const migrations = [
       await ensureColumn('users', 'account_type', "VARCHAR(16) NOT NULL DEFAULT 'special'");
     },
   },
+  {
+    version: 14,
+    name: 'repair_generation_job_id_length',
+    async up({ query }) {
+      // Some deployed databases recorded migration 10 while retaining an older,
+      // shorter column. Reassert the schema under a new version without changing IDs.
+      await query('ALTER TABLE `generation_jobs` MODIFY COLUMN `id` VARCHAR(191) NOT NULL');
+    },
+  },
 ];
 
 export async function runSchemaMigrations(pool) {
