@@ -531,6 +531,37 @@ export class MySqlDatabase {
     await operation;
   }
 
+  async restoreCollections(collections, { batchSize = 10 } = {}) {
+    const names = Object.keys(collections || {}).filter((name) => TABLES[name] && Array.isArray(collections[name]));
+    const size = Math.max(1, Math.min(100, Number.parseInt(batchSize, 10) || 10));
+    const operation = this.writeQueue.then(async () => {
+      for (const name of names) {
+        const spec = TABLES[name];
+        const table = spec.table || name;
+        const rows = collections[name];
+        const connection = await this.pool.getConnection();
+        try {
+          await connection.beginTransaction();
+          await connection.query(`DELETE FROM \`${table}\``);
+          for (let offset = 0; offset < rows.length; offset += size) {
+            await connection.query(spec.insert, [rows.slice(offset, offset + size).map(spec.values)]);
+          }
+          await connection.commit();
+        } catch (error) {
+          await connection.rollback();
+          throw error;
+        } finally {
+          connection.release();
+        }
+        // Reuse the decoded backup rows instead of retaining another full copy.
+        this.data[name] = rows;
+        this.collectionRefreshedAt.set(name, Date.now());
+      }
+    });
+    this.writeQueue = operation.catch(() => undefined);
+    await operation;
+  }
+
   async createUser(user) {
     let result = { created: false, error: null };
     const operation = this.writeQueue.then(async () => {
