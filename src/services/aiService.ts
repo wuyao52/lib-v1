@@ -719,6 +719,7 @@ export class SeedanceService extends AIService {
         model: modelId,
         prompt: prompt,
         aspect_ratio: settings.aspect_ratio || '1:1',
+        quality: String(settings.quality || this.config.parameters?.quality || 'auto').trim() || 'auto',
       };
       if (settings.resolution) requestBody.resolution = settings.resolution;
 

@@ -497,6 +497,7 @@ function AdminPaymentOrders({ orders, users, currentPassword, act }: { orders: P
 }
 
 function PricingCatalog({ pricing, apis, priceDrafts, setPriceDrafts, onTogglePublished, onEdit, onDelete, onSaveBatch }: { pricing: Pricing[]; apis: SystemApi[]; priceDrafts: Record<string, string>; setPriceDrafts: (value: Record<string, string> | ((current: Record<string, string>) => Record<string, string>)) => void; onTogglePublished: (item: Pricing) => Promise<unknown>; onEdit: (item: Pricing) => void; onDelete: (item: Pricing) => Promise<unknown>; onSaveBatch: () => Promise<void> }) {
+  pricing = pricing.slice().sort((left, right) => left.displayName.localeCompare(right.displayName, 'zh-CN'));
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const categoryLabels: Record<string, string> = { text: '文本模型', video: '视频模型', image: '图片模型' };
   const categories = ['text', 'video', 'image'];
