@@ -27,8 +27,8 @@ let selectedKey = null;
 
 async function recordDrillEvent(action, metadata = {}) {
   await admin.query(
-    'INSERT INTO audit_logs (id, user_id, action, target_type, target_id, ip_address, user_agent, metadata, created_at) VALUES ?',
-    [[randomUUID(), null, action, 'backup', metadata.objectKey || null, 'system', 'maintenance', JSON.stringify(metadata), new Date().toISOString()]],
+    'INSERT INTO audit_logs (id, user_id, action, target_type, target_id, ip_address, user_agent, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [randomUUID(), null, action, 'backup', metadata.objectKey || null, 'system', 'maintenance', JSON.stringify(metadata), new Date().toISOString()],
   );
 }
 
@@ -61,7 +61,9 @@ try {
   for (const [name, expected] of Object.entries(payload.collections)) {
     await target.refreshCollections([name]);
     const actual = target.read(name);
-    if (actual.length !== expected.length || canonicalDigest(actual) !== canonicalDigest(expected)) mismatches.push(name);
+    const actualStored = target.storageRowsForComparison(name, actual);
+    const expectedStored = target.storageRowsForComparison(name, expected);
+    if (actual.length !== expected.length || canonicalDigest(actualStored) !== canonicalDigest(expectedStored)) mismatches.push(name);
     target.data[name] = expected;
   }
   if (mismatches.length) throw new Error(`Temporary MySQL restore mismatch: ${mismatches.join(',')}`);

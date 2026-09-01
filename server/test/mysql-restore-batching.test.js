@@ -33,3 +33,20 @@ test('restoreCollections writes the observed 634-row backup collection in bounde
   assert.equal(calls.some(([name]) => name === 'rollback'), false);
   assert.equal(database.data.users, users);
 });
+
+test('restore verification compares model pricing after database default normalization', () => {
+  const fromBackup = [{
+    id: 'pricing-1', apiId: 'api-1', modelId: 'video-1', displayName: 'Video', category: 'video', billingUnit: 'second',
+    unitPriceCents: 10, minDurationSec: null, maxDurationSec: null, allowedDurationsSec: [], allowedResolutions: [],
+    maxReferenceImages: null, maxReferenceAudios: null, maxReferenceVideos: null, enabled: true,
+    createdAt: '2026-09-01T00:00:00.000Z', updatedAt: '2026-09-01T00:00:00.000Z',
+  }];
+  const fromRestoredDatabase = [{
+    ...fromBackup[0], maxReferenceImages: 0, maxReferenceAudios: 0, maxReferenceVideos: 0,
+  }];
+
+  const backupRows = MySqlDatabase.prototype.storageRowsForComparison('modelPricing', fromBackup);
+  const restoredRows = MySqlDatabase.prototype.storageRowsForComparison('modelPricing', fromRestoredDatabase);
+
+  assert.deepEqual(backupRows, restoredRows);
+});

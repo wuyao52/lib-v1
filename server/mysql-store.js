@@ -562,6 +562,12 @@ export class MySqlDatabase {
     await operation;
   }
 
+  storageRowsForComparison(collection, rows) {
+    const spec = TABLES[collection];
+    if (!spec || !Array.isArray(rows)) return [];
+    return rows.map((row) => ({ id: row.id, values: spec.values(row) }));
+  }
+
   async createUser(user) {
     let result = { created: false, error: null };
     const operation = this.writeQueue.then(async () => {
