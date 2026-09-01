@@ -158,6 +158,16 @@ function AccountCenterContent({ mode, onClose }: { mode: 'billing' | 'admin'; on
     try { await job(); await load(); await refresh(); setMessage(success); } catch (error: any) { setMessage(error.message); }
   };
 
+  const changeUserIdentity = async (userId: string, accountType: 'user' | 'special' | 'system') => {
+    try {
+      const path = accountType === 'system' ? `/api/admin/users/${userId}/role` : `/api/admin/users/${userId}/account-type`;
+      const body = accountType === 'system' ? { role: 'system', currentPassword: adminPassword } : { accountType, currentPassword: adminPassword };
+      const result = await apiRequest<{ user: AuthUser }>(path, { method: 'PATCH', body: JSON.stringify(body) });
+      setUsers((current) => current.map((item) => item.id === userId ? { ...item, ...result.user } : item));
+      setMessage(accountType === 'system' ? '用户已设为系统用户' : accountType === 'special' ? '用户已设为特殊用户' : '用户已设为普通用户');
+    } catch (error) { setMessage(errorMessage(error)); }
+  };
+
   const startPayment = async () => {
     try {
       const { order } = await apiRequest<{ order: PaymentOrder }>('/api/payments/orders', { method: 'POST', body: JSON.stringify({ provider: paymentProvider, amountCents: Math.round(Number(amount) * 100) }) });
@@ -377,7 +387,8 @@ function AccountCenterContent({ mode, onClose }: { mode: 'billing' | 'admin'; on
           <BackupManagementView overview={backupOverview} currentPassword={adminPassword} onStart={startBackupDrill} onRefresh={loadBackups} setMessage={setMessage} />
           <QueueView overview={queue} users={users} />
           <AdminPaymentOrders orders={paymentOrders} users={users} currentPassword={adminPassword} act={act} />
-          <UserIdentityControls users={users} currentUserId={user?.id} currentPassword={adminPassword} act={act} />
+          <style>{`section.mb-6 + section.grid > div:first-child > div.divide-y > div > div.flex > select { display: none; }`}</style>
+          <UserIdentityControls users={users} currentUserId={user?.id} onChangeIdentity={changeUserIdentity} />
           <AdminUsers users={users} currentUserId={user?.id} recharges={recharges} pricing={pricing} accessUserId={accessUserId} accessDraft={accessDraft} setAccessDraft={setAccessDraft} balanceAdjustments={balanceAdjustments} setBalanceAdjustments={setBalanceAdjustments} currentPassword={adminPassword} act={act} loadModelAccess={loadModelAccess} saveModelAccess={saveModelAccess} />
         </>}
       </div>
@@ -485,8 +496,8 @@ function AdminPaymentOrders({ orders, users, currentPassword, act }: { orders: P
   return <section><h3 className="mb-2 text-sm font-medium text-white">在线支付与退款</h3><div className="max-h-64 divide-y divide-dark-700 overflow-y-auto">{orders.length ? orders.map((order) => <div key={order.id} className="grid grid-cols-[1fr_auto] items-center gap-3 py-2 text-sm"><span className="text-dark-300">{names.get(order.userId || '') || order.userId} · {order.provider === 'alipay' ? '支付宝' : '微信支付'} · {yuan(order.amountCents)}<small className="block text-dark-500">{new Date(order.createdAt).toLocaleString()} · {order.status}</small></span>{order.status === 'paid' && <button className="border border-red-500/40 px-2 py-1 text-xs text-red-300" onClick={() => void act(() => apiRequest(`/api/payments/admin/orders/${order.id}/refund`, { method: 'POST', body: JSON.stringify({ currentPassword }) }), '退款已提交')}>原路退款</button>}</div>) : <p className="py-4 text-xs text-dark-500">暂无在线支付订单</p>}</div></section>;
 }
 
-function UserIdentityControls({ users, currentUserId, currentPassword, act }: { users: AuthUser[]; currentUserId?: string; currentPassword: string; act: (job: () => Promise<unknown>, success: string) => Promise<void> }) {
-  return <section className="mb-6 border border-dark-600 bg-dark-900/30 p-4 rounded"><h3 className="text-sm font-medium text-white">用户身份设置</h3><p className="mt-1 mb-3 text-xs text-dark-400">新注册用户默认为特殊用户且没有模型权限。特殊用户需单独授权；普通用户自动使用全部已发布模型。</p><div className="grid gap-2 sm:grid-cols-2">{users.map((item) => <label key={item.id} className="flex items-center justify-between gap-3 rounded border border-dark-700 bg-dark-900 px-3 py-2 text-xs"><span className="min-w-0"><span className="block truncate text-dark-200">{item.username}</span><span className="block truncate text-dark-500">{item.email}</span></span><select aria-label={`${item.username}用户身份`} className="shrink-0 rounded border border-dark-600 bg-dark-800 px-2 py-1 text-dark-200" disabled={item.id === currentUserId || item.role === 'system'} value={item.role === 'system' ? 'system' : (item.accountType || 'special')} onChange={(event) => { const value = event.target.value; if (value === 'system') void act(() => apiRequest(`/api/admin/users/${item.id}/role`, { method: 'PATCH', body: JSON.stringify({ role: 'system', currentPassword }) }), '用户已设为系统用户'); else void act(() => apiRequest(`/api/admin/users/${item.id}/account-type`, { method: 'PATCH', body: JSON.stringify({ accountType: value, currentPassword }) }), value === 'special' ? '用户已设为特殊用户' : '用户已设为普通用户'); }}><option value="special">特殊用户</option><option value="user">普通用户</option><option value="system">系统用户</option></select></label>)}</div></section>;
+function UserIdentityControls({ users, currentUserId, onChangeIdentity }: { users: AuthUser[]; currentUserId?: string; onChangeIdentity: (userId: string, accountType: 'user' | 'special' | 'system') => Promise<void> }) {
+  return <section className="mb-6 rounded border border-dark-600 bg-dark-900/30 p-4"><h3 className="text-sm font-medium text-white">用户身份设置</h3><p className="mt-1 mb-3 text-xs text-dark-400">新注册用户默认为特殊用户且没有模型权限。特殊用户需单独授权；普通用户自动使用全部已发布模型。身份切换会即时同步到下方用户列表，无需刷新页面。</p><div className="grid gap-2 sm:grid-cols-2">{users.map((item) => <label key={item.id} className="flex items-center justify-between gap-3 rounded border border-dark-700 bg-dark-900 px-3 py-2 text-xs"><span className="min-w-0"><span className="block truncate text-dark-200">{item.username}</span><span className="block truncate text-dark-500">{item.email}</span></span><select aria-label={`${item.username}用户身份`} className="shrink-0 rounded border border-dark-600 bg-dark-800 px-2 py-1 text-dark-200" disabled={item.id === currentUserId || item.role === 'system'} value={item.role === 'system' ? 'system' : (item.accountType || 'special')} onChange={(event) => { void onChangeIdentity(item.id, event.target.value as 'user' | 'special' | 'system'); }}><option value="special">特殊用户</option><option value="user">普通用户</option><option value="system">系统用户</option></select></label>)}</div></section>;
 }
 
 function AdminUsers({ users, currentUserId, recharges, pricing, accessUserId, accessDraft, setAccessDraft, balanceAdjustments, setBalanceAdjustments, currentPassword, act, loadModelAccess, saveModelAccess }: AdminUsersProps) {
