@@ -15,9 +15,9 @@ import '@xyflow/react/dist/style.css';
 import useProjectStore from '@/store/useProjectStore';
 import SceneNodeComponent from './SceneNode';
 import GenerationModal, { GenerationSettings } from './GenerationModal';
-import RemoveWatermarkModal from './RemoveWatermarkModal';
+import AIImageGenerationModal from './AIImageGenerationModal';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Upload, Image, Video, Droplets, Wand2, Plus, Wallet, GitMerge } from 'lucide-react';
+import { Upload, Image, Video, Images, Wand2, Plus, Wallet, GitMerge } from 'lucide-react';
 import { useAuth } from '@/auth/AuthContext';
 import { ApiError, apiRequest } from '@/services/apiClient';
 import { uploadAssetFile } from '@/services/assetService';
@@ -94,9 +94,7 @@ export default function Canvas() {
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [showGenerationModal, setShowGenerationModal] = useState(false);
-  const [showWatermarkModal, setShowWatermarkModal] = useState(false);
-  const [watermarkSourceUrl, setWatermarkSourceUrl] = useState('');
-  const [watermarkSourceType, setWatermarkSourceType] = useState<'image' | 'video'>('image');
+  const [showImageGenerationModal, setShowImageGenerationModal] = useState(false);
   const [balanceCents, setBalanceCents] = useState(user?.balanceCents || 0);
   const [batchConnection, setBatchConnection] = useState<{ start: { x: number; y: number }; current: { x: number; y: number }; targetId: string | null } | null>(null);
   const [alignmentGuides, setAlignmentGuides] = useState<AlignmentGuide[]>([]);
@@ -125,7 +123,7 @@ export default function Canvas() {
   }, []);
 
   // 检查是否有弹窗打开
-  const hasModalOpen = showGenerationModal || showWatermarkModal;
+  const hasModalOpen = showGenerationModal || showImageGenerationModal;
 
   const largeGraph = project.nodes.length > 120 || project.edges.length > 180;
   const renderedEdges = useMemo(() => project.edges.map((edge) => ({
@@ -490,17 +488,14 @@ export default function Canvas() {
         </button>
 
         <button
-          onClick={() => {
-            setWatermarkSourceUrl('');
-            setWatermarkSourceType('image');
-            setShowWatermarkModal(true);
-          }}
+          onClick={() => setShowImageGenerationModal(true)}
           className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-all
             bg-dark-800/90 text-dark-300 hover:text-white border border-dark-600/50 hover:border-cyan-500/50 hover:bg-cyan-500/10"
-          title="去除水印"
+          title="AI 生图"
+          data-testid="open-ai-image-generation"
         >
-          <Droplets className="w-4 h-4" />
-          去水印
+          <Images className="w-4 h-4" />
+          AI 生图
         </button>
       </div>
 
@@ -649,12 +644,44 @@ export default function Canvas() {
         maxReferenceImages={Number.isInteger(configuredVideoModel.maxReferenceImages) ? configuredVideoModel.maxReferenceImages : 4}
       />
 
-      {/* 去水印弹窗 */}
-      <RemoveWatermarkModal
-        isOpen={showWatermarkModal}
-        onClose={() => setShowWatermarkModal(false)}
-        sourceUrl={watermarkSourceUrl}
-        sourceType={watermarkSourceType}
+      <AIImageGenerationModal
+        isOpen={showImageGenerationModal}
+        projectId={project.id}
+        onClose={() => setShowImageGenerationModal(false)}
+        onAddToCanvas={({ url, prompt, model, aspectRatio, resolution }) => {
+          const canvasBounds = reactFlowWrapper.current?.getBoundingClientRect();
+          const position = screenToFlowPosition({
+            x: (canvasBounds?.left || 0) + (canvasBounds?.width || window.innerWidth) / 2,
+            y: (canvasBounds?.top || 0) + (canvasBounds?.height || window.innerHeight) / 2,
+          });
+          const id = `scene-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          addNode({
+            id,
+            type: 'sceneNode',
+            position,
+            data: {
+              label: 'AI 生成图片',
+              type: 'image',
+              content: 'AI 生成完成 - 点击预览',
+              prompt,
+              generatedContent: url,
+              mediaSource: 'generated',
+              status: 'completed',
+              progress: 100,
+              duration: 5,
+              settings: { aspectRatio, resolution },
+              generationMeta: {
+                configId: model.id,
+                apiId: model.apiId,
+                modelId: model.modelId,
+                modelName: model.name,
+                provider: model.provider,
+                completedAt: new Date().toISOString(),
+              },
+            },
+          });
+          setSelectedNode(id);
+        }}
       />
     </div>
   );

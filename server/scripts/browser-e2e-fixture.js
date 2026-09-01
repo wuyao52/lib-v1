@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createApp } from '../app.js';
 import { JsonDatabase } from '../store.js';
+import { createSecretVault } from '../secrets.js';
 
 const port = Number(process.env.E2E_PORT || 8790);
 const directory = await mkdtemp(join(tmpdir(), 'ai-drama-browser-e2e-'));
@@ -12,6 +13,7 @@ const db = await new JsonDatabase(join(directory, 'database.json')).init();
 const userId = randomUUID();
 const token = `e2e-${randomUUID()}`;
 const now = new Date();
+const vault = createSecretVault('local-development-encryption-key-change-me');
 const storedObjects = new Map();
 const storedMetadata = new Map();
 const FIXTURE_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAEAQH/2p4ZxQAAAABJRU5ErkJggg==', 'base64');
@@ -51,6 +53,14 @@ await db.mutate((data) => {
   data.users.push({ id: userId, username: 'browser-admin', email: 'browser-admin@example.test', name: 'browser-admin', passwordHash: 'fixture:not-used', role: 'system', balanceCents: 5000, createdAt: now.toISOString() });
   data.sessions.push({ id: randomUUID(), userId, tokenHash: createHash('sha256').update(token).digest('hex'), createdAt: now.getTime(), expiresAt: now.getTime() + 60 * 60 * 1000, userAgent: 'browser-e2e' });
   data.assets.push({ id: 'refresh-image', userId, sha256: createHash('sha256').update(FIXTURE_PNG).digest('hex'), mimeType: 'image/png', byteSize: FIXTURE_PNG.length, objectKey: fixtureAssetKey, storageProvider: fixtureStorage.provider, dataBase64: null, createdAt: now.toISOString() });
+  data.systemApis.push(
+    { id: 'fixture-image-api-a', name: '绘图端口 A', provider: 'Provider A', baseUrl: vault.encrypt('https://images-a.example.test'), encryptedApiKey: vault.encrypt('fixture-key-a'), enabled: true, createdAt: now.toISOString(), updatedAt: now.toISOString() },
+    { id: 'fixture-image-api-b', name: '绘图端口 B', provider: 'Provider B', baseUrl: vault.encrypt('https://images-b.example.test'), encryptedApiKey: vault.encrypt('fixture-key-b'), enabled: true, createdAt: now.toISOString(), updatedAt: now.toISOString() },
+  );
+  data.modelPricing.push(
+    { id: 'fixture-image-price-a', apiId: 'fixture-image-api-a', modelId: 'fixture-image-a', displayName: '写实图片模型', category: 'image', billingUnit: 'image', unitPriceCents: 25, allowedDurationsSec: [], allowedResolutions: ['720p'], enabled: true, createdAt: now.toISOString(), updatedAt: now.toISOString() },
+    { id: 'fixture-image-price-b', apiId: 'fixture-image-api-b', modelId: 'fixture-image-b', displayName: '插画图片模型', category: 'image', billingUnit: 'image', unitPriceCents: 35, allowedDurationsSec: [], allowedResolutions: ['720p', '1080p'], enabled: true, createdAt: now.toISOString(), updatedAt: now.toISOString() },
+  );
   const fixtureNodes = [
     { id: 'refresh-image-node', type: 'sceneNode', position: { x: 440, y: 86 }, data: { label: '刷新后仍显示图片', type: 'image', content: '云端图片', duration: 5, prompt: '', generatedContent: 'https://stale-railway.example/api/assets/public/refresh-image?expires=1&signature=expired', mediaSource: 'uploaded', settings: {}, status: 'completed', progress: 100 } },
     { id: 'alignment-image-node', type: 'sceneNode', position: { x: 1000, y: 500 }, data: { label: '待排列图片', type: 'image', content: '排列测试图片', duration: 5, prompt: '', generatedContent: 'https://stale-railway.example/api/assets/public/refresh-image?expires=1&signature=expired', mediaSource: 'uploaded', settings: {}, status: 'completed', progress: 100 } },

@@ -11,6 +11,9 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   page.on('console', (message) => {
     if (message.type() === 'error') browserErrors.push(message.text());
   });
+  page.on('response', (response) => {
+    if (response.status() >= 400) browserErrors.push(`${response.status()} ${response.request().method()} ${response.url()}`);
+  });
   page.on('request', (request) => {
     if (request.method() === 'PUT' && request.url().endsWith('/api/projects/browser-project')) projectPutCount += 1;
   });
@@ -18,7 +21,7 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   await page.goto('/__e2e/login');
   await expect(page.getByTestId('project-browser-project')).toBeVisible();
   await page.getByTestId('project-browser-project').click();
-  await expect(page.getByTestId('add-image-node')).toBeVisible();
+  await expect(page.getByTestId('open-ai-image-generation')).toBeVisible();
 
   await expect(page.locator('.react-flow__node')).toHaveCount(5);
   const refreshedImage = page.locator('.react-flow__node[data-id="refresh-image-node"] img').first();
@@ -183,8 +186,34 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   await expect(promptEditor.locator('[data-mention-id="batch-source-b"]').first()).toBeVisible();
   await page.locator('.react-flow__pane').click({ position: { x: 1100, y: 650 } });
 
-  await page.getByTestId('add-image-node').click();
+  await page.route('**/api/system-ai/*/v1/images', async (route) => {
+    const body = route.request().postDataJSON();
+    expect(body.model).toBe('fixture-image-b');
+    expect(body.prompt).toBe('雨夜霓虹街道，电影质感');
+    expect(body.aspect_ratio).toBe('9:16');
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ data: [{ url: '/api/assets/public/refresh-image' }] }),
+    });
+  });
+  await page.getByTestId('open-ai-image-generation').click();
+  const imageModal = page.getByTestId('ai-image-generation-modal');
+  await expect(imageModal).toBeVisible();
+  await expect(imageModal.getByTestId('image-model-list').getByRole('button')).toHaveCount(2);
+  await expect(imageModal).toContainText('写实图片模型');
+  await expect(imageModal).toContainText('插画图片模型');
+  await expect(imageModal).not.toContainText('绘图端口 A');
+  await imageModal.getByRole('button', { name: /插画图片模型/ }).click();
+  await imageModal.getByRole('button', { name: '9:16', exact: true }).click();
+  await imageModal.getByRole('textbox', { name: '图片提示词' }).fill('雨夜霓虹街道，电影质感');
+  await imageModal.getByRole('button', { name: '生成图片' }).click();
+  await expect(imageModal.getByAltText('AI 生成结果')).toBeVisible();
+  await expect(imageModal).toContainText('图片已生成并保存到站内素材');
+  await imageModal.getByRole('button', { name: '添加到画布' }).click();
   await expect(page.locator('.react-flow__node')).toHaveCount(10);
+  await expect(page.locator('.react-flow__node').filter({ hasText: 'AI 生成图片' })).toBeVisible();
+  await imageModal.getByTitle('关闭').click();
 
   const batchSaved = page.waitForResponse((response) => response.url().endsWith('/api/projects/browser-project') && response.request().method() === 'PUT' && response.ok());
   await page.getByTestId('save-project').click();

@@ -40,7 +40,10 @@ export function registerGenerationHistoryRoutes(router, { db, requireAuth }) {
   });
   router.post('/', async (req, res) => {
     const url = String(req.body?.url || '').trim();
-    if (!url || !/^https?:|^data:/.test(url)) return res.status(400).json({ error: 'INVALID_URL', message: '生成结果地址无效' });
+    const isAllowedResultUrl = /^https?:\/\//i.test(url)
+      || /^data:(?:image|video)\//i.test(url)
+      || /^\/api\/(?:assets\/public|generated-media)\//i.test(url);
+    if (!url || !isAllowedResultUrl) return res.status(400).json({ error: 'INVALID_URL', message: '生成结果地址无效' });
     const existing = db.read('generationHistory').find((item) => item.userId === req.user.id && item.url === url && Date.parse(item.expiresAt) > Date.now());
     if (existing) return res.json({ item: existing });
     const createdAt = new Date();

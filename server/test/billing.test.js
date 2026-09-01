@@ -21,6 +21,7 @@ async function setup({ videoQueue = false, videoQueueAutoStart = true, assetStor
     if (body.prompt === 'upstream-balance') return new Response(JSON.stringify({ error: { message: '余额不足，当前余额 ¥0.23，需要 ¥2.08' } }), { status: 402, headers: { 'content-type': 'application/json' } });
     if (body.prompt === 'upstream-precharge-balance') return new Response(JSON.stringify({ error: { message: '预扣费额度失败, 用户剩余额度: ¥1.100000, 需要预扣费额度: ¥3.400000' } }), { status: 402, headers: { 'content-type': 'application/json' } });
     if (body.prompt === 'privacy-fail') return new Response(JSON.stringify({ error: { code: '***.PrivacyInformation', message: "The request failed because the input image 'content[1]' may contain real person. Request id: test-request-id" } }), { status: 400, headers: { 'content-type': 'application/json' } });
+    if (body.prompt === 'image-ok') return new Response(JSON.stringify({ created: 1, data: [{ url: 'https://images.example.test/generated.png' }] }), { status: 200, headers: { 'content-type': 'application/json' } });
     if (body.prompt === 'moderation-later') return new Response(JSON.stringify({ id: 'moderation-task', status: 'queued' }), { status: 200, headers: { 'content-type': 'application/json' } });
     return new Response(JSON.stringify({ id: 'task-1', status: 'queued' }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
@@ -45,6 +46,55 @@ async function setup({ videoQueue = false, videoQueueAutoStart = true, assetStor
   const request = (path, cookie, options = {}) => fetch(`${baseUrl}${path}`, { ...options, headers: { ...(options.body ? { 'content-type': 'application/json' } : {}), cookie, ...options.headers } });
   return { server, db, register, request, upstreamCalls, videoQueue: queue };
 }
+
+test('managed image models are cataloged, billed, refunded on failure, and isolated from video models', async (t) => {
+  const context = await setup();
+  t.after(() => context.server.close());
+  const normal = await context.register('image-user');
+  const admin = await context.register('image-admin');
+  await context.db.mutate((data) => {
+    data.users.find((item) => item.id === admin.user.id).role = 'system';
+    const user = data.users.find((item) => item.id === normal.user.id);
+    user.accountType = 'user';
+    user.balanceCents = 100;
+  });
+  const api = (await (await context.request('/api/admin/system-apis', admin.cookie, {
+    method: 'POST', body: JSON.stringify({ name: '图片端口', provider: 'OpenAI Compatible', baseUrl: 'https://upstream.example', apiKey: 'secret-system-key' }),
+  })).json()).api;
+  await context.request('/api/admin/pricing', admin.cookie, {
+    method: 'POST', body: JSON.stringify({ apiId: api.id, modelId: 'image-model-a', displayName: '写实生图', category: 'image', billingUnit: 'image', unitPriceCents: 25 }),
+  });
+  await context.request('/api/admin/pricing', admin.cookie, {
+    method: 'POST', body: JSON.stringify({ apiId: api.id, modelId: 'video-model-a', displayName: '视频模型', category: 'video', billingUnit: 'second', unitPriceCents: 10, allowedDurationsSec: [5] }),
+  });
+
+  const catalog = await (await context.request('/api/catalog/models', normal.cookie)).json();
+  assert.deepEqual(catalog.models.filter((item) => item.category === 'image').map((item) => item.name), ['写实生图']);
+
+  const generated = await context.request(`/api/system-ai/${api.id}/v1/images`, normal.cookie, {
+    method: 'POST', body: JSON.stringify({ model: 'image-model-a', prompt: 'image-ok', aspect_ratio: '1:1', resolution: '720p' }),
+  });
+  assert.equal(generated.status, 200);
+  assert.equal((await generated.json()).data[0].url, 'https://images.example.test/generated.png');
+  let billing = await (await context.request('/api/billing/me', normal.cookie)).json();
+  assert.equal(billing.balanceCents, 75);
+  assert.equal(billing.transactions.some((item) => item.type === 'model_usage' && item.amountCents === -25), true);
+
+  const failed = await context.request(`/api/system-ai/${api.id}/v1/images`, normal.cookie, {
+    method: 'POST', body: JSON.stringify({ model: 'image-model-a', prompt: 'fail', aspect_ratio: '9:16', resolution: '720p' }),
+  });
+  assert.equal(failed.status, 500);
+  billing = await (await context.request('/api/billing/me', normal.cookie)).json();
+  assert.equal(billing.balanceCents, 75);
+  assert.equal(billing.transactions.some((item) => item.type === 'model_refund' && item.amountCents === 25), true);
+
+  const wrongCategory = await context.request(`/api/system-ai/${api.id}/v1/images`, normal.cookie, {
+    method: 'POST', body: JSON.stringify({ model: 'video-model-a', prompt: 'image-ok' }),
+  });
+  assert.equal(wrongCategory.status, 400);
+  assert.equal((await wrongCategory.json()).error, 'MODEL_CATEGORY_MISMATCH');
+  assert.equal((await (await context.request('/api/billing/me', normal.cookie)).json()).balanceCents, 75);
+});
 
 test('system model reference limits allow 30 images and 10 audio/video files', async (t) => {
   const context = await setup();

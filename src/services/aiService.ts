@@ -185,6 +185,32 @@ export function resolveVideoResolution(modelId: string, requested: unknown): str
   return requestedResolution || '1080p';
 }
 
+export function extractImageResult(response: any): string {
+  const payload = response?.data && typeof response.data === 'object' && !Array.isArray(response.data)
+    ? response.data
+    : response;
+  const values = [
+    payload?.url, payload?.image_url, payload?.imageUrl,
+    response?.url, response?.image_url, response?.imageUrl,
+    response?.data?.[0]?.url, response?.data?.[0]?.image_url, response?.data?.[0]?.imageUrl,
+    response?.images?.[0]?.url, response?.images?.[0],
+    response?.result?.url, response?.result?.image_url, response?.result?.imageUrl,
+    response?.result?.images?.[0]?.url, response?.result?.images?.[0],
+    response?.result?.data?.[0]?.url, response?.result?.data?.[0]?.image_url,
+    response?.output?.url, response?.output?.image_url, response?.output?.imageUrl,
+    response?.output?.images?.[0]?.url, response?.output?.images?.[0],
+    response?.output?.outputUrls?.[0], response?.outputs?.[0], response?.resultUrls?.[0],
+    response?.data?.result?.url, response?.data?.result?.image_url,
+    response?.data?.result?.images?.[0]?.url, response?.data?.result?.images?.[0],
+  ];
+  const url = values.find((value) => typeof value === 'string' && (
+    /^https?:\/\//i.test(value.trim()) || /^\/api\/assets\/public\//i.test(value.trim()) || /^data:image\//i.test(value.trim())
+  ));
+  if (url) return url.trim();
+  const base64 = response?.data?.[0]?.b64_json || response?.result?.data?.[0]?.b64_json || response?.b64_json;
+  return typeof base64 === 'string' && base64.trim() ? `data:image/png;base64,${base64.trim()}` : '';
+}
+
 export function extractVideoResult(response: any): { url: string; thumbnail?: string } {
   const payload = response?.data && typeof response.data === 'object' && !Array.isArray(response.data)
     ? response.data
@@ -721,7 +747,8 @@ export class SeedanceService extends AIService {
         }
 
         // 同步返回
-        const imageUrl = data.url || data.images?.[0] || data.result?.image_url || data.result?.images?.[0];
+        const imageUrl = extractImageResult(data);
+        if (!imageUrl) throw new Error('图片模型已响应，但未返回可用图片地址');
         return {
           success: true,
           data: { url: imageUrl, thumbnail: imageUrl, metadata: data },
@@ -772,7 +799,8 @@ export class SeedanceService extends AIService {
         console.log('轮询响应:', data);
 
         if (data.status === 'completed') {
-          const imageUrl = data.url || data.images?.[0] || data.result?.image_url || data.result?.images?.[0];
+          const imageUrl = extractImageResult(data);
+          if (!imageUrl) throw new Error('图片任务已完成，但未返回可用图片地址');
           return {
             success: true,
             data: { url: imageUrl, thumbnail: imageUrl, metadata: data },

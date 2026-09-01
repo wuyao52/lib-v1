@@ -277,6 +277,9 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
       const modelId = String(requestBody?.model || '').trim();
       pricing = db.read('modelPricing').find((item) => item.apiId === api.id && item.modelId === modelId && item.enabled);
       if (!pricing) return res.status(403).json({ error: 'MODEL_NOT_PRICED', message: '该模型未开放或尚未定价' });
+      if ((pathname === '/v1/images' && pricing.category !== 'image') || (pathname === '/v1/videos' && pricing.category !== 'video')) {
+        return res.status(400).json({ error: 'MODEL_CATEGORY_MISMATCH', message: pathname === '/v1/images' ? '该模型不是图片模型' : '该模型不是视频模型' });
+      }
       if (req.user.accountType === 'special' && req.user.role !== 'system') {
         const grant = db.read('userModelAccess').find((item) => item.userId === req.user.id && item.pricingId === pricing.id && item.enabled);
         if (!grant) return res.status(403).json({ error: 'MODEL_NOT_ASSIGNED', message: '该特殊用户尚未分配此模型' });
