@@ -40,6 +40,18 @@ const defaultModel: AIModelConfig = {
   },
 };
 
+const unconfiguredModel = (): AIModelConfig => ({
+  id: 'unconfigured',
+  name: '未选择模型',
+  provider: '',
+  apiKey: '',
+  baseUrl: '',
+  modelId: '',
+  managed: false,
+  credentialManaged: false,
+  parameters: {},
+});
+
 // 默认项目设置
 const defaultSettings: ProjectSettings = {
   aspectRatio: '16:9',
@@ -56,9 +68,9 @@ export const normalizeProjectShape = (project: DramaProject): DramaProject => {
   };
   const incomingMultiModel = incomingSettings.multiModel;
   const normalizeSlot = (slot?: AIModelConfig): AIModelConfig => ({
-    ...aiModel,
+    ...unconfiguredModel(),
     ...(slot || {}),
-    parameters: { ...aiModel.parameters, ...(slot?.parameters || {}) },
+    parameters: { ...(slot?.parameters || {}) },
   });
   return {
     ...project,
@@ -1229,15 +1241,11 @@ function launchGenerationTask(
   if (!project) return;
   let multiModel = project.settings.multiModel;
   if (!multiModel) {
-    const baseModel = project.settings.aiModel;
-    multiModel = { textModel: { ...baseModel }, videoModel: { ...baseModel }, imageModel: { ...baseModel } };
+    multiModel = { textModel: unconfiguredModel(), videoModel: unconfiguredModel(), imageModel: unconfiguredModel() };
     get().updateProjectSettings({ multiModel });
   }
   const isImage = execution.requestType === 'image' || execution.requestType === 'img2img';
   let selectedModel = isImage ? multiModel.imageModel : multiModel.videoModel;
-  if (!hasModelCredentials(selectedModel)) {
-    selectedModel = [multiModel.videoModel, multiModel.imageModel, project.settings.aiModel].find(hasModelCredentials) || selectedModel;
-  }
   if (!hasModelCredentials(selectedModel)) {
     markGenerationFailed(execution.sourceNodeId, execution.targetNodeId, '请先配置 API Key', get, set);
     return;

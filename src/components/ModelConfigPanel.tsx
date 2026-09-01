@@ -74,6 +74,18 @@ export default function ModelConfigPanel() {
   const [draftBaseUrl, setDraftBaseUrl] = useState('');
   const [savingCredentials, setSavingCredentials] = useState(false);
 
+  const unconfiguredModel = (category: ModelCategory): AIModelConfig => ({
+    id: `unconfigured-${category}`,
+    name: '未选择模型',
+    provider: '',
+    apiKey: '',
+    baseUrl: '',
+    modelId: '',
+    managed: false,
+    credentialManaged: false,
+    parameters: {},
+  });
+
   useEffect(() => {
     if (!showModelConfig) return;
     void Promise.all([
@@ -133,9 +145,9 @@ export default function ModelConfigPanel() {
 
   // 获取当前多模型配置
   const multiModel = project.settings.multiModel || {
-    textModel: { id: 'custom-text', name: '自定义文本模型', provider: 'Custom', apiKey: '', baseUrl: '', modelId: '', parameters: {} },
-    videoModel: { id: 'hongniao-seedance', name: '红鸟AI Seedance', provider: '红鸟AI', apiKey: '', baseUrl: '/api/hongniaoai', modelId: 'hongniao-seedance', parameters: {} },
-    imageModel: { id: 'hongniao-seedance', name: '红鸟AI Seedance', provider: '红鸟AI', apiKey: '', baseUrl: '/api/hongniaoai', modelId: 'hongniao-seedance', parameters: {} },
+    textModel: unconfiguredModel('text'),
+    videoModel: unconfiguredModel('video'),
+    imageModel: unconfiguredModel('image'),
   };
 
   const activeModel = activeTab === 'text'
