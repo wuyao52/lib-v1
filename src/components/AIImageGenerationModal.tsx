@@ -31,7 +31,6 @@ interface AIImageGenerationModalProps {
 }
 
 const ASPECT_RATIOS = ['1:1', '16:9', '9:16', '4:3', '3:4'];
-const DEFAULT_RESOLUTIONS = ['720p', '1080p', '2K', '4K'];
 const billingUnitLabel = (unit?: AIModelConfig['billingUnit']) => unit === 'second' ? '秒' : unit === 'request' ? '次' : '张';
 const localTaskId = () => typeof crypto !== 'undefined' && crypto.randomUUID
   ? crypto.randomUUID()
@@ -43,7 +42,7 @@ export default function AIImageGenerationModal({ isOpen, projectId, onClose, onA
   const [selectedModelId, setSelectedModelId] = useState('');
   const [prompt, setPrompt] = useState('');
   const [aspectRatio, setAspectRatio] = useState('1:1');
-  const [resolution, setResolution] = useState('720p');
+  const [resolution, setResolution] = useState('');
   const [loadingModels, setLoadingModels] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [error, setError] = useState('');
@@ -56,8 +55,7 @@ export default function AIImageGenerationModal({ isOpen, projectId, onClose, onA
   const previewTask = tasks.find((task) => task.id === previewTaskId && task.status === 'completed' && task.url) || null;
   const activeCount = tasks.filter((task) => task.status === 'generating').length;
   const resolutions = useMemo(() => {
-    const configured = selectedModel?.allowedResolutions?.filter(Boolean) || [];
-    return configured.length ? configured : DEFAULT_RESOLUTIONS;
+    return [...new Set((selectedModel?.allowedResolutions || []).map((value) => String(value).trim().toLowerCase()).filter(Boolean))];
   }, [selectedModel]);
 
   const updateTask = (id: string, updates: Partial<ImageGenerationTask>) => {
@@ -122,7 +120,7 @@ export default function AIImageGenerationModal({ isOpen, projectId, onClose, onA
   }, []);
 
   useEffect(() => {
-    if (!resolutions.includes(resolution)) setResolution(resolutions.includes('720p') ? '720p' : resolutions[0]);
+    if (!resolutions.includes(resolution)) setResolution(resolutions.includes('720p') ? '720p' : (resolutions[0] || ''));
   }, [resolutions, resolution]);
 
   const generate = async () => {
@@ -218,7 +216,7 @@ export default function AIImageGenerationModal({ isOpen, projectId, onClose, onA
                 </section>
 
                 <label className="block"><span className="mb-2 block text-sm font-medium text-dark-100">提示词</span><textarea aria-label="图片提示词" value={prompt} onChange={(event) => setPrompt(event.target.value)} maxLength={10000} rows={5} placeholder="描述主体、场景、构图、光线和风格" className="w-full resize-y rounded-md border border-dark-600 bg-dark-900 px-3 py-2 text-sm text-white outline-none placeholder:text-dark-500 focus:border-fuchsia-400" /><span className="mt-1 block text-right text-xs text-dark-500">{prompt.length}/10000</span></label>
-                <div className="grid gap-4 sm:grid-cols-2"><div><span className="mb-2 block text-sm font-medium text-dark-100">画面比例</span><div className="grid grid-cols-3 gap-2">{ASPECT_RATIOS.map((ratio) => <button key={ratio} type="button" aria-pressed={ratio === aspectRatio} onClick={() => setAspectRatio(ratio)} className={`h-9 rounded-md border text-xs ${ratio === aspectRatio ? 'border-fuchsia-400 bg-fuchsia-500/15 text-white' : 'border-dark-600 text-dark-300 hover:border-dark-500'}`}>{ratio}</button>)}</div></div><label><span className="mb-2 block text-sm font-medium text-dark-100">分辨率</span><select aria-label="图片分辨率" value={resolution} onChange={(event) => setResolution(event.target.value)} className="h-9 w-full rounded-md border border-dark-600 bg-dark-900 px-3 text-sm text-white outline-none focus:border-fuchsia-400">{resolutions.map((item) => <option key={item} value={item}>{item}</option>)}</select></label></div>
+                <div className="grid gap-4 sm:grid-cols-2"><div><span className="mb-2 block text-sm font-medium text-dark-100">画面比例</span><div className="grid grid-cols-3 gap-2">{ASPECT_RATIOS.map((ratio) => <button key={ratio} type="button" aria-pressed={ratio === aspectRatio} onClick={() => setAspectRatio(ratio)} className={`h-9 rounded-md border text-xs ${ratio === aspectRatio ? 'border-fuchsia-400 bg-fuchsia-500/15 text-white' : 'border-dark-600 text-dark-300 hover:border-dark-500'}`}>{ratio}</button>)}</div></div><label><span className="mb-2 block text-sm font-medium text-dark-100">分辨率</span><select aria-label="图片分辨率" value={resolution} disabled={resolutions.length <= 1} onChange={(event) => setResolution(event.target.value)} className="h-9 w-full rounded-md border border-dark-600 bg-dark-900 px-3 text-sm text-white outline-none focus:border-fuchsia-400 disabled:cursor-default disabled:text-dark-300">{resolutions.length ? resolutions.map((item) => <option key={item} value={item}>{item}</option>) : <option value="">模型未声明分辨率</option>}</select><span className="mt-1 block text-[10px] text-dark-500">{resolutions.length > 1 ? '该模型支持多个分辨率' : resolutions.length === 1 ? '该模型使用固定分辨率' : '请求时由模型使用自身默认分辨率'}</span></label></div>
                 {error && <div role="alert" className="flex items-start gap-2 rounded-md border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300"><AlertCircle className="mt-0.5 h-4 w-4 shrink-0" /><span className="break-words">{error}</span></div>}
               </div>
 

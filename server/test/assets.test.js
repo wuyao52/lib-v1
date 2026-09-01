@@ -57,6 +57,18 @@ async function uploadBinary(baseUrl, cookie, bytes = PNG_BYTES, mimeType = 'imag
   });
 }
 
+async function waitForImageImport(baseUrl, cookie, response) {
+  let status = response.status;
+  let payload = await response.json();
+  for (let attempt = 0; status === 202 && payload.importJob?.id && attempt < 100; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const polled = await fetch(`${baseUrl}/api/assets/import-image/${encodeURIComponent(payload.importJob.id)}`, { headers: { cookie } });
+    status = polled.status;
+    payload = await polled.json();
+  }
+  return { status, payload };
+}
+
 test('image assets require auth, persist exact bytes, deduplicate per user and validate input', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'ads-assets-'));
   const sentCodes = [];
@@ -254,16 +266,19 @@ test('generated image URLs are archived as durable owned assets and deduplicated
     body: JSON.stringify({ source: 'https://provider.example/generated/result.png' }),
   });
   const [first, second] = await Promise.all([archive(), archive()]);
-  assert.deepEqual([first.status, second.status].sort(), [200, 201]);
-  const firstAsset = (await first.json()).asset;
-  const secondAsset = (await second.json()).asset;
+  assert.deepEqual([first.status, second.status], [202, 202]);
+  const firstPayload = await first.clone().json();
+  const secondPayload = await second.clone().json();
+  assert.equal(firstPayload.importJob.id, secondPayload.importJob.id);
+  const firstAsset = (await waitForImageImport(baseUrl, cookie, first)).payload.asset;
+  const secondAsset = (await waitForImageImport(baseUrl, cookie, second)).payload.asset;
   assert.equal(firstAsset.id, secondAsset.id);
   const asset = firstAsset;
   assert.match(asset.url, /^\/api\/assets\/public\//);
   assert.equal(db.read('assets').length, 1);
   assert.equal(objects.size, 1);
   assert.equal(db.read('assets').length, 1);
-  assert.equal(downloads, 2);
+  assert.equal(downloads, 1);
 });
 
 test('generated image import detects real bytes, follows safe redirects, and rejects disguised responses', async (t) => {
@@ -304,24 +319,50 @@ test('generated image import detects real bytes, follows safe redirects, and rej
     method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ source }),
   });
 
-  const genericMime = await archive('https://provider.example/octet-stream.png');
-  assert.equal(genericMime.status, 201);
-  assert.equal((await genericMime.json()).asset.mimeType, 'image/png');
+  const genericMime = await waitForImageImport(baseUrl, cookie, await archive('https://provider.example/octet-stream.png'));
+  assert.equal(genericMime.status, 200);
+  assert.equal(genericMime.payload.asset.mimeType, 'image/png');
 
-  const redirected = await archive('https://provider.example/redirect.png');
+  const redirected = await waitForImageImport(baseUrl, cookie, await archive('https://provider.example/redirect.png'));
   assert.equal(redirected.status, 200);
-  assert.equal((await redirected.json()).asset.mimeType, 'image/png');
+  assert.equal(redirected.payload.asset.mimeType, 'image/png');
   assert.ok(resolvedHosts.includes('provider.example'));
   assert.ok(resolvedHosts.includes('cdn.example'));
 
-  const disguised = await archive('https://provider.example/disguised.png');
+  const disguised = await waitForImageImport(baseUrl, cookie, await archive('https://provider.example/disguised.png'));
   assert.equal(disguised.status, 400);
-  assert.equal((await disguised.json()).message, '生成结果不是支持的图片格式');
+  assert.equal(disguised.payload.message, '生成结果不是支持的图片格式');
 
-  const unsupported = await archive('https://provider.example/unknown.bin');
+  const unsupported = await waitForImageImport(baseUrl, cookie, await archive('https://provider.example/unknown.bin'));
   assert.equal(unsupported.status, 400);
-  assert.equal((await unsupported.json()).message, '生成结果不是支持的图片格式');
+  assert.equal(unsupported.payload.message, '生成结果不是支持的图片格式');
   assert.equal(db.read('assets').length, 1);
+});
+
+test('slow generated image import runs outside the request and reports its own timeout through polling', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'ads-generated-image-timeout-'));
+  const sentCodes = [];
+  const { app } = await createApp({
+    databasePath: join(directory, 'database.json'), secureCookies: false, imageImportTimeoutMs: 20,
+    sendEmailCode: async (message) => sentCodes.push(message),
+    resolveHost: async () => [{ address: '93.184.216.34', family: 4 }],
+    fetchImpl: async (_target, { signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+    }),
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  t.after(() => server.close());
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const cookie = await register(baseUrl, 'generated-image-timeout-user', sentCodes);
+  const submitted = await fetch(`${baseUrl}/api/assets/import-image`, {
+    method: 'POST', headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ source: 'https://slow-provider.example/result.png' }),
+  });
+  assert.equal(submitted.status, 202);
+  const result = await waitForImageImport(baseUrl, cookie, submitted);
+  assert.equal(result.status, 504);
+  assert.equal(result.payload.message, '生成图片归档超时');
 });
 
 test('R2 asset storage keeps bytes out of the database and migrates legacy assets', async (t) => {

@@ -327,7 +327,7 @@ export async function createApp(options = {}) {
   registerProjectRoutes(projectRouter, { db, requireAuth: auth.requireAuth });
   app.use('/api/projects', projectRouter);
   const assetRouter = express.Router();
-  registerAssetRoutes(assetRouter, { db, requireAuth: auth.requireAuth, assetStorage, assetSigningKey: encryptionKey || 'local-development-encryption-key-change-me', fetchImpl: options.fetchImpl, resolveHost: options.resolveHost });
+  registerAssetRoutes(assetRouter, { db, requireAuth: auth.requireAuth, assetStorage, assetSigningKey: encryptionKey || 'local-development-encryption-key-change-me', fetchImpl: options.fetchImpl, resolveHost: options.resolveHost, imageImportTimeoutMs: options.imageImportTimeoutMs });
   app.use('/api/assets', assetRouter);
   const generatedMediaRouter = express.Router();
   registerGeneratedMediaRoutes(generatedMediaRouter, { db, requireAuth: auth.requireAuth, storage: assetStorage });

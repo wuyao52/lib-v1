@@ -8,6 +8,28 @@ type AssetUploadResponse = {
   };
 };
 
+type AssetImportResponse = {
+  asset?: AssetUploadResponse['asset'];
+  importJob?: { id: string; status: 'processing' | 'completed' | 'failed' };
+};
+
+function waitForImportPoll(signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let timeout = 0;
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      signal?.removeEventListener('abort', abort);
+    };
+    const abort = () => {
+      cleanup();
+      reject(signal?.reason || new DOMException('操作已取消', 'AbortError'));
+    };
+    if (signal?.aborted) return abort();
+    signal?.addEventListener('abort', abort, { once: true });
+    timeout = window.setTimeout(() => { cleanup(); resolve(); }, 1000);
+  });
+}
+
 const ASSET_PATH = /\/api\/assets\/public\/([^/?#]+)/i;
 const GENERATED_MEDIA_PATH = /\/api\/generated-media\/([^/?#]+)/i;
 const signedAssetCache = new Map<string, { url: string; expiresAt: number }>();
@@ -149,8 +171,16 @@ export const uploadVideoAsset = uploadAssetFile;
 
 export async function archiveGeneratedImage(source: string, signal?: AbortSignal): Promise<string> {
   if (/^\/api\/assets\/public\//i.test(source)) return source;
-  const response = await apiRequest<AssetUploadResponse>('/api/assets/import-image', {
+  const response = await apiRequest<AssetImportResponse>('/api/assets/import-image', {
     method: 'POST', body: JSON.stringify({ source }), signal,
   });
-  return response.asset.url;
+  if (response.asset?.url) return response.asset.url;
+  if (!response.importJob?.id) throw new Error('图片归档任务创建失败');
+
+  for (let attempt = 0; attempt < 130; attempt += 1) {
+    await waitForImportPoll(signal);
+    const status = await apiRequest<AssetImportResponse>(`/api/assets/import-image/${encodeURIComponent(response.importJob.id)}`, { signal });
+    if (status.asset?.url) return status.asset.url;
+  }
+  throw new Error('图片已生成，但归档处理超时，请稍后在生成记录中刷新');
 }

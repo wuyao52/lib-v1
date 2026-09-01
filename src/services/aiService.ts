@@ -719,8 +719,8 @@ export class SeedanceService extends AIService {
         model: modelId,
         prompt: prompt,
         aspect_ratio: settings.aspect_ratio || '1:1',
-        resolution: settings.resolution || '720p',  // 使用 720p 作为默认值
       };
+      if (settings.resolution) requestBody.resolution = settings.resolution;
 
       if (settings.images && settings.images.length > 0) {
         requestBody.images = settings.images;

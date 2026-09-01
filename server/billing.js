@@ -76,7 +76,8 @@ function normalizePricingInput(input, existing) {
   const normalizeResolution = (value) => {
     const normalized = String(value || '').trim().toLowerCase().replace(/\s+/g, '');
     if (normalized === '1k') return '1080p';
-    return ['480p', '720p', '1080p', '2k', '4k'].includes(normalized) ? normalized : null;
+    if (category === 'video') return ['480p', '720p', '1080p', '2k', '4k'].includes(normalized) ? normalized : null;
+    return normalized.length <= 32 && /^[a-z0-9_.:-]+$/.test(normalized) ? normalized : null;
   };
   const rawResolutions = input.allowedResolutions ?? existing?.allowedResolutions ?? [];
   const allowedResolutions = [...new Set((Array.isArray(rawResolutions) ? rawResolutions : String(rawResolutions).split(',')).map(normalizeResolution).filter(Boolean))];
@@ -92,6 +93,7 @@ function normalizePricingInput(input, existing) {
   if (!Number.isInteger(unitPriceCents) || unitPriceCents < 0 || unitPriceCents > 10_000_000) throw new Error('模型价格必须是有效的分值');
   if ([minDurationSec, maxDurationSec, ...allowedDurationsSec].some((v) => Number.isNaN(v))) throw new Error('视频时长规则无效');
   if (category === 'video' && rawResolutions && allowedResolutions.length !== (Array.isArray(rawResolutions) ? rawResolutions.length : String(rawResolutions).split(',').map((value) => value.trim()).filter(Boolean).length)) throw new Error('视频分辨率仅支持 480p、720p、1080p、2K 或 4K');
+  if (category === 'image' && rawResolutions && allowedResolutions.length !== (Array.isArray(rawResolutions) ? rawResolutions.length : String(rawResolutions).split(',').map((value) => value.trim()).filter(Boolean).length)) throw new Error('图片分辨率格式无效');
   if (!Number.isInteger(maxReferenceImages) || maxReferenceImages < 0 || maxReferenceImages > 30) throw new Error('最大参考图数量必须是 0-30 的整数');
   if (!Number.isInteger(maxReferenceAudios) || maxReferenceAudios < 0 || maxReferenceAudios > 10) throw new Error('最大参考音频数量必须是 0-10 的整数');
   if (!Number.isInteger(maxReferenceVideos) || maxReferenceVideos < 0 || maxReferenceVideos > 10) throw new Error('最大参考视频数量必须是 0-10 的整数');

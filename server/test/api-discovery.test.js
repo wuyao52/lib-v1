@@ -38,6 +38,24 @@ test('system API discovery reads WeijinAPI video capabilities from /v1/models', 
   assert.deepEqual(result.models[0], { id: 'seedance2.0-one-full-flex-720p', name: 'Seedance ONE Full', type: 'video', supportedResolutions: ['720p'], allowedDurationsSec: [15], supportedRatios: ['16:9', '9:16'], maxReferenceImages: 9, maxReferenceVideos: 3, maxReferenceAudios: 3 });
 });
 
+test('system API discovery reads fixed and selectable image resolutions from common model fields', async () => {
+  const result = await discoverSystemApi({
+    baseUrl: 'https://images.example.com', apiKey: 'image-model-test-key',
+    fetchImpl: async () => new Response(JSON.stringify({ data: [
+      { id: 'fixed-image', name: 'Fixed Image', type: 'image_generation', resolution: '1K' },
+      { id: 'flex-image', name: 'Flex Image', type: 'image', supported_resolutions: ['720p', '1080p', '2K'] },
+      { id: 'sized-image', name: 'Sized Image', type: 'image', capabilities: { resolutions: '1024x1024,1536x1024' } },
+    ] }), { status: 200, headers: { 'content-type': 'application/json' } }),
+    resolveHost: async () => [{ address: '203.0.113.23', family: 4 }],
+  });
+  assert.deepEqual(result.models.map(({ id, supportedResolutions }) => ({ id, supportedResolutions })), [
+    { id: 'fixed-image', supportedResolutions: ['1080p'] },
+    { id: 'flex-image', supportedResolutions: ['720p', '1080p', '2k'] },
+    { id: 'sized-image', supportedResolutions: ['1024x1024', '1536x1024'] },
+  ]);
+  assert.ok(result.models.every(({ type }) => type === 'image'));
+});
+
 test('system API discovery exposes BYS video paths and model-specific duration rules', async () => {
   const result = await discoverSystemApi({
     baseUrl: 'https://www.boyesir.icu/', apiKey: 'boyesir-test-secret',

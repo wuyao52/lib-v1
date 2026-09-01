@@ -18,6 +18,8 @@ const MAX_PROXY_RANGE_BYTES = 1024 * 1024;
 const DEFAULT_DIRECT_UPLOAD_LIMIT = 300;
 const DIRECT_UPLOAD_WINDOW_MS = 60 * 60 * 1000;
 const MAX_IMAGE_IMPORT_REDIRECTS = 3;
+const IMAGE_IMPORT_TIMEOUT_MS = 120_000;
+const IMAGE_IMPORT_JOB_TTL_MS = 10 * 60 * 1000;
 
 export function getDirectUploadLimit(env = process.env) {
   const configured = Number(env.ASSET_DIRECT_UPLOAD_LIMIT);
@@ -262,9 +264,10 @@ export async function migrateLegacyAssets({ db, assetStorage, onError = console.
   return { migrated, failed };
 }
 
-export function registerAssetRoutes(router, { db, requireAuth, assetStorage = null, assetSigningKey, fetchImpl = fetch, resolveHost = lookup }) {
+export function registerAssetRoutes(router, { db, requireAuth, assetStorage = null, assetSigningKey, fetchImpl = fetch, resolveHost = lookup, imageImportTimeoutMs = IMAGE_IMPORT_TIMEOUT_MS }) {
   const signingKey = String(assetSigningKey || '');
   const mutateAssets = (mutator) => db.mutateCollections ? db.mutateCollections(['assets'], mutator) : db.mutate(mutator);
+  const imageImportJobs = new Map();
   if (signingKey.length < 24) throw new Error('素材签名密钥必须至少包含 24 个字符');
   const retentionDays = parseRetentionDays(process.env.ASSET_RETENTION_DAYS);
   let cleanupPromise = null;
@@ -443,46 +446,77 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
     return res.status(201).json({ asset: { id: record.id, url: getStableAssetUrl(record.id), mimeType: record.mimeType, byteSize: record.byteSize } });
   });
 
-  router.post('/import-image', requireAuth, async (req, res) => {
-    const source = String(req.body?.source || '').trim();
+  const storeImportedImage = async (userId, source, signal) => {
     let parsed;
-    try {
-      if (source.startsWith('data:')) parsed = parseImageDataUrl(source);
-      else {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 30_000);
-        try {
-          parsed = await downloadImportedImage(source, { fetchImpl, resolveHost, signal: controller.signal });
-        } finally { clearTimeout(timeout); }
-      }
-    } catch (error) {
-      return res.status(error.name === 'AbortError' ? 504 : 400).json({ error: 'IMAGE_IMPORT_FAILED', message: error.name === 'AbortError' ? '生成图片归档超时' : error.message });
-    }
-    if (parsed?.error) return res.status(parsed.error === 'ASSET_TOO_LARGE' ? 413 : 400).json(parsed);
+    if (source.startsWith('data:')) parsed = parseImageDataUrl(source);
+    else parsed = await downloadImportedImage(source, { fetchImpl, resolveHost, signal });
+    if (parsed?.error) throw Object.assign(new Error(parsed.message), { code: parsed.error, status: parsed.error === 'ASSET_TOO_LARGE' ? 413 : 400 });
     const sha256 = createHash('sha256').update(parsed.bytes).digest('hex');
-    const existing = db.read('assets').find((asset) => asset.userId === req.user.id && asset.sha256 === sha256);
+    const existing = db.read('assets').find((asset) => asset.userId === userId && asset.sha256 === sha256);
     if (existing?.deletedAt) await mutateAssets((data) => { const stored = data.assets.find((asset) => asset.id === existing.id); if (stored) stored.deletedAt = null; });
-    if (existing) return res.json({ asset: { id: existing.id, url: getStableAssetUrl(existing.id), mimeType: existing.mimeType, byteSize: existing.byteSize } });
+    if (existing) return { id: existing.id, url: getStableAssetUrl(existing.id), mimeType: existing.mimeType, byteSize: existing.byteSize };
     const quotaBytes = Number(process.env.ASSET_USER_QUOTA_BYTES) || DEFAULT_USER_QUOTA_BYTES;
-    const objectKey = assetStorage ? objectKeyFor(req.user.id, sha256, parsed.mimeType) : null;
+    const objectKey = assetStorage ? objectKeyFor(userId, sha256, parsed.mimeType) : null;
     if (assetStorage) {
       try { await assetStorage.put({ key: objectKey, bytes: parsed.bytes, mimeType: parsed.mimeType }); }
-      catch { return storageError(res); }
+      catch { throw Object.assign(new Error('云端素材存储暂时不可用，请稍后重试'), { code: 'ASSET_STORAGE_UNAVAILABLE', status: 502 }); }
     }
     let record; let duplicate = false; let quotaExceeded = false;
     await mutateAssets((data) => {
-      record = data.assets.find((asset) => asset.userId === req.user.id && asset.sha256 === sha256 && !asset.deletedAt);
+      record = data.assets.find((asset) => asset.userId === userId && asset.sha256 === sha256 && !asset.deletedAt);
       if (record) { duplicate = true; return; }
-      const usedBytes = data.assets.filter((asset) => asset.userId === req.user.id && !asset.deletedAt).reduce((sum, asset) => sum + Number(asset.byteSize || 0), 0);
+      const usedBytes = data.assets.filter((asset) => asset.userId === userId && !asset.deletedAt).reduce((sum, asset) => sum + Number(asset.byteSize || 0), 0);
       if (usedBytes + parsed.bytes.length > quotaBytes) { quotaExceeded = true; return; }
-      record = { id: randomUUID(), userId: req.user.id, sha256, mimeType: parsed.mimeType, dataBase64: assetStorage ? null : parsed.bytes.toString('base64'), objectKey, storageProvider: assetStorage?.provider || 'database', byteSize: parsed.bytes.length, createdAt: new Date().toISOString() };
+      record = { id: randomUUID(), userId, sha256, mimeType: parsed.mimeType, dataBase64: assetStorage ? null : parsed.bytes.toString('base64'), objectKey, storageProvider: assetStorage?.provider || 'database', byteSize: parsed.bytes.length, createdAt: new Date().toISOString() };
       data.assets.push(record);
     });
     if (quotaExceeded) {
       if (assetStorage) await assetStorage.delete?.(objectKey).catch(() => undefined);
-      return res.status(413).json({ error: 'ASSET_QUOTA_EXCEEDED', message: '云端素材容量已满' });
+      throw Object.assign(new Error('云端素材容量已满'), { code: 'ASSET_QUOTA_EXCEEDED', status: 413 });
     }
-    return res.status(duplicate ? 200 : 201).json({ asset: { id: record.id, url: getStableAssetUrl(record.id), mimeType: record.mimeType, byteSize: record.byteSize } });
+    return { id: record.id, url: getStableAssetUrl(record.id), mimeType: record.mimeType, byteSize: record.byteSize, duplicate };
+  };
+
+  router.post('/import-image', requireAuth, async (req, res) => {
+    const source = String(req.body?.source || '').trim();
+    if (source.startsWith('data:')) {
+      try { return res.status(201).json({ asset: await storeImportedImage(req.user.id, source) }); }
+      catch (error) { return res.status(error.status || 400).json({ error: error.code || 'IMAGE_IMPORT_FAILED', message: error.message }); }
+    }
+    try {
+      const target = new URL(source);
+      if (target.protocol !== 'https:') throw new Error('生成图片归档只允许 HTTPS 来源');
+      await assertPublicHost(target.hostname, resolveHost);
+    } catch (error) {
+      return res.status(400).json({ error: 'IMAGE_IMPORT_FAILED', message: error.message });
+    }
+    const existingJob = [...imageImportJobs.values()].find((job) => job.userId === req.user.id && job.source === source && job.expiresAt > Date.now());
+    if (existingJob) return res.status(existingJob.status === 'completed' ? 200 : 202).json({ importJob: { id: existingJob.id, status: existingJob.status }, ...(existingJob.asset ? { asset: existingJob.asset } : {}) });
+
+    const id = randomUUID();
+    const job = { id, userId: req.user.id, source, status: 'processing', asset: null, error: null, statusCode: 400, expiresAt: Date.now() + IMAGE_IMPORT_JOB_TTL_MS };
+    imageImportJobs.set(id, job);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), Math.max(1, Number(imageImportTimeoutMs) || IMAGE_IMPORT_TIMEOUT_MS));
+    timeout.unref?.();
+    void storeImportedImage(job.userId, source, controller.signal)
+      .then((asset) => { job.status = 'completed'; job.asset = asset; })
+      .catch((error) => {
+        job.status = 'failed';
+        job.statusCode = error.name === 'AbortError' ? 504 : (error.status || 400);
+        job.error = error.name === 'AbortError' ? '生成图片归档超时' : error.message;
+      })
+      .finally(() => clearTimeout(timeout));
+    const cleanup = setTimeout(() => imageImportJobs.delete(id), IMAGE_IMPORT_JOB_TTL_MS);
+    cleanup.unref?.();
+    return res.status(202).json({ importJob: { id, status: job.status } });
+  });
+
+  router.get('/import-image/:id', requireAuth, (req, res) => {
+    const job = imageImportJobs.get(req.params.id);
+    if (!job || job.userId !== req.user.id || job.expiresAt <= Date.now()) return res.status(404).json({ error: 'IMAGE_IMPORT_NOT_FOUND', message: '图片归档任务不存在或已过期' });
+    if (job.status === 'failed') return res.status(job.statusCode).json({ error: 'IMAGE_IMPORT_FAILED', message: job.error });
+    return res.status(job.status === 'completed' ? 200 : 202).json({ importJob: { id: job.id, status: job.status }, ...(job.asset ? { asset: job.asset } : {}) });
   });
 
   router.delete('/:id', requireAuth, async (req, res) => {

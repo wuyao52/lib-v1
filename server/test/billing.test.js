@@ -62,7 +62,7 @@ test('managed image models are cataloged, billed, refunded on failure, and isola
     method: 'POST', body: JSON.stringify({ name: '图片端口', provider: 'OpenAI Compatible', baseUrl: 'https://upstream.example', apiKey: 'secret-system-key' }),
   })).json()).api;
   await context.request('/api/admin/pricing', admin.cookie, {
-    method: 'POST', body: JSON.stringify({ apiId: api.id, modelId: 'image-model-a', displayName: '写实生图', category: 'image', billingUnit: 'image', unitPriceCents: 25 }),
+    method: 'POST', body: JSON.stringify({ apiId: api.id, modelId: 'image-model-a', displayName: '写实生图', category: 'image', billingUnit: 'image', unitPriceCents: 25, allowedResolutions: ['1080p', '2K'] }),
   });
   await context.request('/api/admin/pricing', admin.cookie, {
     method: 'POST', body: JSON.stringify({ apiId: api.id, modelId: 'video-model-a', displayName: '视频模型', category: 'video', billingUnit: 'second', unitPriceCents: 10, allowedDurationsSec: [5] }),
@@ -70,9 +70,10 @@ test('managed image models are cataloged, billed, refunded on failure, and isola
 
   const catalog = await (await context.request('/api/catalog/models', normal.cookie)).json();
   assert.deepEqual(catalog.models.filter((item) => item.category === 'image').map((item) => item.name), ['写实生图']);
+  assert.deepEqual(catalog.models.find((item) => item.category === 'image').allowedResolutions, ['1080p', '2k']);
 
   const generated = await context.request(`/api/system-ai/${api.id}/v1/images`, normal.cookie, {
-    method: 'POST', body: JSON.stringify({ model: 'image-model-a', prompt: 'image-ok', aspect_ratio: '1:1', resolution: '720p' }),
+    method: 'POST', body: JSON.stringify({ model: 'image-model-a', prompt: 'image-ok', aspect_ratio: '1:1', resolution: '1080p' }),
   });
   assert.equal(generated.status, 200);
   assert.equal((await generated.json()).data[0].url, 'https://images.example.test/generated.png');
@@ -80,8 +81,14 @@ test('managed image models are cataloged, billed, refunded on failure, and isola
   assert.equal(billing.balanceCents, 75);
   assert.equal(billing.transactions.some((item) => item.type === 'model_usage' && item.amountCents === -25), true);
 
+  const unsupportedResolution = await context.request(`/api/system-ai/${api.id}/v1/images`, normal.cookie, {
+    method: 'POST', body: JSON.stringify({ model: 'image-model-a', prompt: 'image-ok', aspect_ratio: '1:1', resolution: '720p' }),
+  });
+  assert.equal(unsupportedResolution.status, 400);
+  assert.equal((await unsupportedResolution.json()).error, 'INVALID_RESOLUTION');
+
   const failed = await context.request(`/api/system-ai/${api.id}/v1/images`, normal.cookie, {
-    method: 'POST', body: JSON.stringify({ model: 'image-model-a', prompt: 'fail', aspect_ratio: '9:16', resolution: '720p' }),
+    method: 'POST', body: JSON.stringify({ model: 'image-model-a', prompt: 'fail', aspect_ratio: '9:16', resolution: '2k' }),
   });
   assert.equal(failed.status, 500);
   billing = await (await context.request('/api/billing/me', normal.cookie)).json();

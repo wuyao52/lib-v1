@@ -214,7 +214,12 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   await expect(imageModal).toContainText('写实图片模型');
   await expect(imageModal).toContainText('插画图片模型');
   await expect(imageModal).not.toContainText('绘图端口 A');
+  await expect(imageModal.getByLabel('图片分辨率')).toBeDisabled();
+  await expect(imageModal.getByLabel('图片分辨率')).toHaveValue('720p');
+  await expect(imageModal).toContainText('该模型使用固定分辨率');
   await imageModal.getByRole('button', { name: /插画图片模型/ }).click();
+  await expect(imageModal.getByLabel('图片分辨率')).toBeEnabled();
+  await imageModal.getByLabel('图片分辨率').selectOption('1080p');
   await imageModal.getByRole('button', { name: '9:16', exact: true }).click();
   await imageModal.getByRole('textbox', { name: '图片提示词' }).fill('雨夜霓虹街道，电影质感');
   await imageModal.getByRole('button', { name: '生成图片' }).click();

@@ -124,9 +124,10 @@ function computeCharge(pricing, body) {
   return pricing.billingUnit === 'second' ? Math.ceil(seconds * Number(pricing.unitPriceCents)) : Number(pricing.unitPriceCents);
 }
 
-function normalizeManagedVideoResolution(pricing, api, body) {
-  if (pricing.category !== 'video' || !body || typeof body !== 'object') return body;
-  const allowed = (pricing.allowedResolutions?.length ? pricing.allowedResolutions : knownVideoResolutions(api.provider, pricing.modelId))
+function normalizeManagedResolution(pricing, api, body) {
+  if (!['image', 'video'].includes(pricing.category) || !body || typeof body !== 'object') return body;
+  const fallback = pricing.category === 'video' ? knownVideoResolutions(api.provider, pricing.modelId) : [];
+  const allowed = (pricing.allowedResolutions?.length ? pricing.allowedResolutions : fallback)
     .map((value) => String(value).toLowerCase());
   if (!allowed.length) return body;
   const supplied = String(body.resolution || '').trim().toLowerCase();
@@ -258,6 +259,7 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
         .map((item) => ({
           id: item.modelId, object: 'model', name: item.displayName, category: item.category,
           billingUnit: item.billingUnit, unitPriceCents: item.unitPriceCents,
+          allowedResolutions: item.allowedResolutions || [],
           maxReferenceImages: Number.isInteger(Number(item.maxReferenceImages)) ? Number(item.maxReferenceImages) : 4,
           maxReferenceAudios: Number.isInteger(Number(item.maxReferenceAudios)) ? Number(item.maxReferenceAudios) : 0,
           maxReferenceVideos: Number.isInteger(Number(item.maxReferenceVideos)) ? Number(item.maxReferenceVideos) : 0,
@@ -286,7 +288,7 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
         pricing = { ...pricing, unitPriceCents: Number(grant.unitPriceCents || 0) };
       }
       try {
-        requestBody = normalizeManagedVideoResolution(pricing, api, requestBody);
+        requestBody = normalizeManagedResolution(pricing, api, requestBody);
         enforceReferenceImageLimit(pricing, requestBody);
         enforceReferenceMediaLimits(pricing, requestBody);
         chargeCents = computeCharge(pricing, requestBody);

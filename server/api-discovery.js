@@ -68,8 +68,21 @@ function modelsFromPayload(payload) {
     const maxImages = model?.max_images ?? model?.maxReferenceImages;
     const maxVideos = model?.max_videos ?? model?.maxReferenceVideos;
     const maxAudios = model?.max_audios ?? model?.maxReferenceAudios;
-    const type = String(model?.type ?? model?.category ?? model?.task ?? '').trim().slice(0, 80)
-      || (durations || ratios || maxImages !== undefined || maxVideos !== undefined || maxAudios !== undefined ? 'video' : '');
+    const resolutionValue = model?.resolutions ?? model?.supported_resolutions ?? model?.supportedResolutions
+      ?? model?.allowed_resolutions ?? model?.output_resolutions ?? model?.image_resolutions
+      ?? model?.capabilities?.resolutions ?? model?.parameters?.resolutions ?? model?.parameters?.resolution
+      ?? model?.resolution;
+    const resolutionCandidates = Array.isArray(resolutionValue) ? resolutionValue : resolutionValue ? [resolutionValue] : [];
+    const supportedResolutions = [...new Set(resolutionCandidates
+      .flatMap((value) => typeof value === 'string' ? value.split(',') : [])
+      .map((value) => String(value).trim().toLowerCase())
+      .filter((value) => value && value.length <= 32 && /^[a-z0-9_.:-]+$/.test(value))
+      .map((value) => value === '1k' ? '1080p' : value))];
+    const rawType = String(model?.type ?? model?.category ?? model?.task ?? '').trim().slice(0, 80);
+    const type = /image|绘图|生图/i.test(rawType) ? 'image'
+      : /video|视频/i.test(rawType) ? 'video'
+        : /text|chat|language|文本|对话/i.test(rawType) ? 'text'
+          : rawType || (durations || ratios || maxImages !== undefined || maxVideos !== undefined || maxAudios !== undefined ? 'video' : '');
     return {
       id,
       name: String(model?.display_name ?? model?.displayName ?? model?.name ?? id).trim().slice(0, 160),
@@ -77,7 +90,7 @@ function modelsFromPayload(payload) {
       owner: String(model?.owned_by ?? model?.provider ?? model?.organization ?? '').trim().slice(0, 80),
       ...(Array.isArray(durations) ? { allowedDurationsSec: durations.map(Number).filter(Number.isFinite) } : {}),
       ...(Array.isArray(ratios) ? { supportedRatios: ratios.map((value) => String(value).trim()).filter(Boolean) } : {}),
-      ...(model?.resolution ? { supportedResolutions: [String(model.resolution).trim().toLowerCase()] } : {}),
+      ...(supportedResolutions.length ? { supportedResolutions } : {}),
       ...(Number.isFinite(Number(maxImages)) ? { maxReferenceImages: Number(maxImages) } : {}),
       ...(Number.isFinite(Number(maxVideos)) ? { maxReferenceVideos: Number(maxVideos) } : {}),
       ...(Number.isFinite(Number(maxAudios)) ? { maxReferenceAudios: Number(maxAudios) } : {}),
