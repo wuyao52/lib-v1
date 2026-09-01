@@ -40,7 +40,9 @@ export function registerUserApiConfigRoutes(router, { db, requireAuth, vault, fe
   router.use(requireAuth);
 
   router.get('/', (req, res) => {
-    const configs = db.read('userApiConfigs').filter((item) => item.userId === req.user.id).map(publicConfig);
+    const configs = db.read('userApiConfigs')
+      .filter((item) => item.userId === req.user.id && item.enabled !== false)
+      .map(publicConfig);
     return res.json({ configs });
   });
 

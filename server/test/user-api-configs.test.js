@@ -70,6 +70,8 @@ test('user API configs are encrypted, isolated, and proxied without exposing cre
   assert.equal(disabled.status, 200);
   assert.equal((await disabled.json()).disabled, true);
   assert.equal(db.read('userApiConfigs')[0].enabled, false);
+  const refreshedList = await (await request('/api/user-api-configs', ownerCookie)).json();
+  assert.equal(refreshedList.configs.length, 0);
   assert.equal((await request(`/api/user-ai/${created.id}/v1/models`, ownerCookie)).status, 410);
 });
 

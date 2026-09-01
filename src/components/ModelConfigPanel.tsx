@@ -96,7 +96,7 @@ export default function ModelConfigPanel() {
             : [];
           setManagedModels(catalog);
 
-          const current = project?.settings.multiModel;
+          const current = useProjectStore.getState().project?.settings.multiModel;
           if (!current) return;
 
           const clearUnauthorizedManagedModel = (model: AIModelConfig, category: ModelCategory) => {
@@ -137,7 +137,25 @@ export default function ModelConfigPanel() {
         })
         .catch(() => setManagedModels([])),
       apiRequest<{ configs: UserApiConfig[] }>('/api/user-api-configs')
-        .then(({ configs }) => setUserApiConfigs(configs)).catch(() => setUserApiConfigs([])),
+        .then(({ configs }) => {
+          setUserApiConfigs(configs);
+          const current = useProjectStore.getState().project?.settings.multiModel;
+          if (!current) return;
+          const availableIds = new Set(configs.map((config) => config.id));
+          const clearUnavailableCredential = (model: AIModelConfig, category: ModelCategory) => (
+            model.credentialManaged && model.credentialConfigId && !availableIds.has(model.credentialConfigId)
+              ? unconfiguredModel(category)
+              : model
+          );
+          const next = {
+            textModel: clearUnavailableCredential(current.textModel, 'text'),
+            videoModel: clearUnavailableCredential(current.videoModel, 'video'),
+            imageModel: clearUnavailableCredential(current.imageModel, 'image'),
+          };
+          if (next.textModel !== current.textModel || next.videoModel !== current.videoModel || next.imageModel !== current.imageModel) {
+            updateProjectSettings({ multiModel: next });
+          }
+        }).catch(() => setUserApiConfigs([])),
     ]);
   }, [showModelConfig]);
 
@@ -257,8 +275,16 @@ export default function ModelConfigPanel() {
   const deleteUserApiConfig = async (config: UserApiConfig) => {
     await apiRequest(`/api/user-api-configs/${config.id}`, { method: 'DELETE' });
     setUserApiConfigs((items) => items.filter((item) => item.id !== config.id));
-    if (activeModel.credentialConfigId === config.id) {
-      updateActiveModel({ baseUrl: '', apiKey: '', credentialManaged: false, credentialConfigId: undefined });
+    const current = useProjectStore.getState().project?.settings.multiModel;
+    if (current) {
+      const clearDeletedCredential = (model: AIModelConfig, category: ModelCategory) => (
+        model.credentialConfigId === config.id ? unconfiguredModel(category) : model
+      );
+      updateProjectSettings({ multiModel: {
+        textModel: clearDeletedCredential(current.textModel, 'text'),
+        videoModel: clearDeletedCredential(current.videoModel, 'video'),
+        imageModel: clearDeletedCredential(current.imageModel, 'image'),
+      } });
     }
   };
 
