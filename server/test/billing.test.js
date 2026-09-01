@@ -77,7 +77,7 @@ test('managed image models are cataloged, billed, refunded on failure, and isola
   });
   assert.equal(generated.status, 200);
   assert.equal((await generated.json()).data[0].url, 'https://images.example.test/generated.png');
-  assert.equal(JSON.parse(context.upstreamCalls.at(-1).body).quality, 'auto');
+  assert.equal(Object.hasOwn(JSON.parse(context.upstreamCalls.at(-1).body), 'quality'), false);
   let billing = await (await context.request('/api/billing/me', normal.cookie)).json();
   assert.equal(billing.balanceCents, 75);
   assert.equal(billing.transactions.some((item) => item.type === 'model_usage' && item.amountCents === -25), true);
