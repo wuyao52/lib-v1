@@ -60,7 +60,7 @@ export default function Toolbar() {
     <motion.div
       initial={{ y: -20, opacity: 0 }}
       animate={{ y: 0, opacity: 1 }}
-      className="absolute top-4 left-1/2 -translate-x-1/2 z-50"
+      className="absolute top-4 right-4 z-50"
     >
       <div className="bg-dark-800/90 backdrop-blur-xl rounded-2xl border border-dark-600/50 p-2 shadow-2xl">
         <div className="flex items-center gap-1">
