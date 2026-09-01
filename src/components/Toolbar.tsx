@@ -2,30 +2,18 @@ import React from 'react';
 import { motion } from 'framer-motion';
 import {
   Plus,
-  Type,
-  Image,
   Video,
-  Music,
-  Wand2,
   Save,
   Download,
   Upload,
   Settings,
   Cpu,
-  Play,
-  ZoomIn,
-  ZoomOut,
-  Maximize2,
 } from 'lucide-react';
 import useProjectStore from '@/store/useProjectStore';
 import { SceneNodeData, SceneNodeType } from '@/types';
 
 const nodeTypes: { type: SceneNodeType; icon: React.ReactNode; label: string; color: string }[] = [
-  { type: 'text', icon: <Type className="w-4 h-4" />, label: '文本', color: 'from-blue-500 to-cyan-500' },
-  { type: 'image', icon: <Image className="w-4 h-4" />, label: '图片', color: 'from-purple-500 to-pink-500' },
   { type: 'video', icon: <Video className="w-4 h-4" />, label: '视频', color: 'from-orange-500 to-red-500' },
-  { type: 'audio', icon: <Music className="w-4 h-4" />, label: '音频', color: 'from-green-500 to-emerald-500' },
-  { type: 'transition', icon: <Wand2 className="w-4 h-4" />, label: '转场', color: 'from-yellow-500 to-amber-500' },
 ];
 
 export default function Toolbar() {
@@ -147,20 +135,6 @@ export default function Toolbar() {
             </button>
           </div>
 
-          <div className="w-px h-8 bg-dark-600 mx-2" />
-
-          {/* 预览按钮 */}
-          <button
-            className="flex items-center gap-2 px-4 py-2 rounded-xl
-              bg-gradient-to-r from-primary-600 to-primary-500
-              hover:from-primary-500 hover:to-primary-400
-              text-white text-sm font-medium
-              shadow-lg shadow-primary-500/20
-              transition-all active:scale-95"
-          >
-            <Play className="w-4 h-4" />
-            预览短剧
-          </button>
         </div>
       </div>
     </motion.div>
