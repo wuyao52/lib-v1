@@ -2,6 +2,7 @@ import { cleanupStoredBackups, createFreshEncryptedBackup, recordBackupEvent } f
 import { cleanupExpiredAssets, migrateLegacyAssets } from './assets.js';
 import { cleanupOperationalData } from './operational-cleanup.js';
 import { purgeExpiredQuarantine } from './storage-quarantine.js';
+import { cleanupExpiredGenerationHistory } from './generation-history.js';
 
 const HOUR = 60 * 60 * 1000;
 const intEnv = (name, fallback, min, max) => {
@@ -15,8 +16,9 @@ export async function runMaintenance({ db, storage, generatedMedia, now = new Da
     const lock = await db.consumeRateLimit('maintenance:global-lock', 1, lockMinutes * 60 * 1000, now.getTime());
     if (!lock.allowed) return { skipped: true, reason: 'MAINTENANCE_LOCKED', ranAt: now.toISOString() };
   }
-  const results = { ranAt: now.toISOString(), operationalData: null, assetMigration: null, assets: null, media: null, quarantine: null, backup: null };
+  const results = { ranAt: now.toISOString(), operationalData: null, generationHistory: null, assetMigration: null, assets: null, media: null, quarantine: null, backup: null };
   results.operationalData = await cleanupOperationalData({ db, now, auditRetentionDays: intEnv('AUDIT_LOG_RETENTION_DAYS', 180, 30, 3650) });
+  results.generationHistory = await cleanupExpiredGenerationHistory({ db, now });
   results.assetMigration = await migrateLegacyAssets({ db, assetStorage: storage });
   results.assets = await cleanupExpiredAssets({ db, assetStorage: storage, retentionDays: intEnv('ASSET_RETENTION_DAYS', 30, 1, 36500) });
   results.media = generatedMedia ? await generatedMedia.cleanup() : { deleted: 0 };

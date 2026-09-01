@@ -5,6 +5,7 @@ test.afterAll(async ({ request }) => {
 });
 
 test('旧项目、画布保存、历史、系统控制台和重登可联合使用', async ({ page }) => {
+  test.setTimeout(60_000);
   const browserErrors: string[] = [];
   let projectPutCount = 0;
   page.on('pageerror', (error) => browserErrors.push(error.message));
@@ -186,15 +187,24 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   await expect(promptEditor.locator('[data-mention-id="batch-source-b"]').first()).toBeVisible();
   await page.locator('.react-flow__pane').click({ position: { x: 1100, y: 650 } });
 
+  let submittedImageTasks = 0;
   await page.route('**/api/system-ai/*/v1/images', async (route) => {
     const body = route.request().postDataJSON();
     expect(body.model).toBe('fixture-image-b');
-    expect(body.prompt).toBe('雨夜霓虹街道，电影质感');
     expect(body.aspect_ratio).toBe('9:16');
+    submittedImageTasks += 1;
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ data: [{ url: '/api/assets/public/refresh-image' }] }),
+      body: JSON.stringify({ code: 200, data: { task_id: `fixture-image-task-${submittedImageTasks}`, status: 'processing', progress: 10 } }),
+    });
+  });
+  await page.route('**/api/system-ai/*/v1/images/*', async (route) => {
+    const taskId = route.request().url().split('/').at(-1);
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ code: 200, message: '查询成功', data: { task_id: taskId, status: 'completed', progress: 100, result: { images: [`/api/assets/public/refresh-image?task=${taskId}`], image_url: `/api/assets/public/refresh-image?task=${taskId}`, resultUrls: [`/api/assets/public/refresh-image?task=${taskId}`] } } }),
     });
   });
   await page.getByTestId('open-ai-image-generation').click();
@@ -208,9 +218,21 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   await imageModal.getByRole('button', { name: '9:16', exact: true }).click();
   await imageModal.getByRole('textbox', { name: '图片提示词' }).fill('雨夜霓虹街道，电影质感');
   await imageModal.getByRole('button', { name: '生成图片' }).click();
-  await expect(imageModal.getByAltText('AI 生成结果')).toBeVisible();
-  await expect(imageModal).toContainText('图片已生成并保存到站内素材');
-  await imageModal.getByRole('button', { name: '添加到画布' }).click();
+  await imageModal.getByRole('textbox', { name: '图片提示词' }).fill('星空下的未来城市');
+  await imageModal.getByRole('button', { name: '生成图片' }).click();
+  await expect(imageModal).toContainText('2 个生成中');
+  await imageModal.getByTitle('关闭').click();
+  await expect(imageModal).toBeHidden();
+  await page.getByTestId('open-ai-image-generation').click();
+  await expect(imageModal).toContainText('2 个生成中');
+  await expect(imageModal.getByAltText('AI 生成结果')).toHaveCount(2, { timeout: 15_000 });
+  expect(submittedImageTasks).toBe(2);
+  await expect(imageModal.getByTitle('查看')).toHaveCount(2);
+  await expect(imageModal.getByTitle('下载')).toHaveCount(2);
+  await imageModal.getByTitle('查看').first().click();
+  await expect(page.getByAltText('AI 图片大图预览')).toBeVisible();
+  await page.getByRole('button', { name: '关闭预览' }).click();
+  await imageModal.getByTitle('添加到画布').first().click();
   await expect(page.locator('.react-flow__node')).toHaveCount(10);
   await expect(page.locator('.react-flow__node').filter({ hasText: 'AI 生成图片' })).toBeVisible();
   await imageModal.getByTitle('关闭').click();

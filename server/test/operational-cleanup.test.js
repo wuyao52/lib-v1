@@ -18,13 +18,19 @@ test('maintenance removes expired operational rows while retaining active and re
     data.imageCaptchas.push({ id: 'expired-captcha', expiresAt: now.getTime() - 1 }, { id: 'active-captcha', expiresAt: now.getTime() + 60_000 });
     data.rateLimits.push({ id: 'expired-limit', resetAt: now.getTime() - 1 }, { id: 'active-limit', resetAt: now.getTime() + 60_000 });
     data.auditLogs.push({ id: 'old-audit', createdAt: oldAudit }, { id: 'recent-audit', createdAt: recentAudit });
+    data.generationHistory.push(
+      { id: 'old-image', type: 'image', createdAt: new Date(now.getTime() - 4 * 24 * 60 * 60 * 1000).toISOString(), expiresAt: new Date(now.getTime() + 86 * 24 * 60 * 60 * 1000).toISOString() },
+      { id: 'active-video', type: 'video', createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000).toISOString() },
+    );
   });
   const result = await runMaintenance({ db, storage: null, generatedMedia: { cleanup: async () => ({ deleted: 0 }) }, now });
   assert.deepEqual(result.operationalData.removed, { sessions: 1, emailVerifications: 1, imageCaptchas: 1, rateLimits: 1, auditLogs: 1, requestMetricBuckets: 0 });
+  assert.deepEqual(result.generationHistory, { removed: 1, shortened: 1 });
+  assert.deepEqual(db.read('generationHistory').map((item) => item.id), ['active-video']);
   assert.deepEqual(db.read('sessions').map((item) => item.id), ['active-session']);
   assert.deepEqual(db.read('auditLogs').map((item) => item.id), ['recent-audit']);
   const stats = await db.storageStats();
   assert.equal(stats.provider, 'json');
   assert.ok(stats.bytes > 0);
-  assert.equal(stats.rows, 5);
+  assert.equal(stats.rows, 6);
 });

@@ -26,6 +26,10 @@ test('generation history uses stable cursor pagination without duplicates', asyn
     body: JSON.stringify({ type: 'image', prompt: 'managed image', url: '/api/assets/public/owned-image', thumbnail: '/api/assets/public/owned-image' }),
   });
   assert.equal(managedImage.status, 201);
+  const managedImageItem = (await managedImage.json()).item;
+  assert.equal(Date.parse(managedImageItem.expiresAt) - Date.parse(managedImageItem.createdAt), 3 * 24 * 60 * 60 * 1000);
+  const imageOnly = await (await fetch(`${baseUrl}/api/generation-history?type=image&limit=10`, { headers: { cookie } })).json();
+  assert.deepEqual(imageOnly.history.map((item) => item.id), [managedImageItem.id]);
   const arbitraryRelativeUrl = await fetch(`${baseUrl}/api/generation-history`, {
     method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ url: '/untrusted/file.png' }),
   });

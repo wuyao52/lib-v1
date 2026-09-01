@@ -202,6 +202,7 @@ export function extractImageResult(response: any): string {
     response?.output?.outputUrls?.[0], response?.outputs?.[0], response?.resultUrls?.[0],
     response?.data?.result?.url, response?.data?.result?.image_url,
     response?.data?.result?.images?.[0]?.url, response?.data?.result?.images?.[0],
+    response?.data?.result?.resultUrls?.[0], response?.data?.result?.outputUrls?.[0],
   ];
   const url = values.find((value) => typeof value === 'string' && (
     /^https?:\/\//i.test(value.trim()) || /^\/api\/assets\/public\//i.test(value.trim()) || /^data:image\//i.test(value.trim())
@@ -210,6 +211,23 @@ export function extractImageResult(response: any): string {
   const base64 = response?.data?.[0]?.b64_json || response?.result?.data?.[0]?.b64_json || response?.b64_json;
   return typeof base64 === 'string' && base64.trim() ? `data:image/png;base64,${base64.trim()}` : '';
 }
+
+function imageTaskPayload(response: any): any {
+  return response?.data && typeof response.data === 'object' && !Array.isArray(response.data) ? response.data : response;
+}
+
+function imageTaskId(response: any): string {
+  const payload = imageTaskPayload(response);
+  return String(payload?.task_id || payload?.taskId || payload?.id || response?.task_id || response?.taskId || response?.id || '').trim();
+}
+
+function imageTaskStatus(response: any): string {
+  const payload = imageTaskPayload(response);
+  return String(payload?.status || payload?.state || response?.status || response?.state || '').trim().toLowerCase();
+}
+
+const imageTaskCompleted = (status: string) => ['completed', 'complete', 'success', 'succeeded', 'done', 'finished'].includes(status);
+const imageTaskFailed = (status: string) => ['failed', 'failure', 'error', 'rejected', 'cancelled', 'canceled'].includes(status);
 
 export function extractVideoResult(response: any): { url: string; thumbnail?: string } {
   const payload = response?.data && typeof response.data === 'object' && !Array.isArray(response.data)
@@ -741,17 +759,23 @@ export class SeedanceService extends AIService {
         }
 
         // 异步任务 - 轮询结果
-        if (data.id && (data.status === 'queued' || data.status === 'processing')) {
-          console.log('任务已创建，taskId:', data.id);
-          return await this.pollImageResult(data.id, signal);
+        const taskId = imageTaskId(data);
+        const taskStatus = imageTaskStatus(data);
+        const initialImageUrl = extractImageResult(data);
+        if (taskId && !initialImageUrl && !imageTaskCompleted(taskStatus) && !imageTaskFailed(taskStatus)) {
+          console.log('任务已创建，taskId:', taskId);
+          return await this.pollImageResult(taskId, signal);
+        }
+        if (imageTaskFailed(taskStatus)) {
+          const payload = imageTaskPayload(data);
+          throw new Error(payload?.error?.message || payload?.message || data.error?.message || data.message || '图片生成失败');
         }
 
         // 同步返回
-        const imageUrl = extractImageResult(data);
-        if (!imageUrl) throw new Error('图片模型已响应，但未返回可用图片地址');
+        if (!initialImageUrl) throw new Error('图片模型已响应，但未返回可用图片地址');
         return {
           success: true,
-          data: { url: imageUrl, thumbnail: imageUrl, metadata: data },
+          data: { url: initialImageUrl, thumbnail: initialImageUrl, metadata: data },
         };
       } catch (fetchError: any) {
         clearTimeout(timeoutId);
@@ -774,7 +798,7 @@ export class SeedanceService extends AIService {
 
   // 轮询图片任务
   private async pollImageResult(taskId: string, signal?: AbortSignal): Promise<GenerationResponse> {
-    const maxAttempts = 30;
+    const maxAttempts = 100;
     const pollInterval = 3000;
     const baseUrl = this.config.baseUrl.replace(/\/v1\/?$/, '');
 
@@ -798,27 +822,35 @@ export class SeedanceService extends AIService {
         const data = await safeJsonParse(response);
         console.log('轮询响应:', data);
 
-        if (data.status === 'completed') {
+        if (!response.ok) throw new Error(data.message || data.error?.message || `轮询请求失败: ${response.status}`);
+        const status = imageTaskStatus(data);
+        if (imageTaskCompleted(status)) {
           const imageUrl = extractImageResult(data);
-          if (!imageUrl) throw new Error('图片任务已完成，但未返回可用图片地址');
+          if (!imageUrl) {
+            const missingResult = new Error('图片任务已完成，但未返回可用图片地址');
+            missingResult.name = 'ProviderTaskFailed';
+            throw missingResult;
+          }
           return {
             success: true,
             data: { url: imageUrl, thumbnail: imageUrl, metadata: data },
           };
         }
 
-        if (data.status === 'failed') {
-          throw new Error(data.error?.message || '图片生成失败');
+        if (imageTaskFailed(status)) {
+          const payload = imageTaskPayload(data);
+          const failed = new Error(payload?.error?.message || payload?.message || data.error?.message || data.message || '图片生成失败');
+          failed.name = 'ProviderTaskFailed';
+          throw failed;
         }
 
-        if (data.progress !== undefined) {
-          console.log(`生成进度: ${data.progress}%`);
+        const payload = imageTaskPayload(data);
+        if (payload?.progress !== undefined || data.progress !== undefined) {
+          console.log(`生成进度: ${payload?.progress ?? data.progress}%`);
         }
       } catch (error: any) {
         if (isUserCancellation(error, signal)) throw userCancellationError();
-        if (error.message.includes('图片生成失败')) {
-          throw error;
-        }
+        if (error.name === 'ProviderTaskFailed') throw error;
         console.warn('轮询失败:', error.message);
       }
     }
