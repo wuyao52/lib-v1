@@ -266,6 +266,64 @@ test('generated image URLs are archived as durable owned assets and deduplicated
   assert.equal(downloads, 2);
 });
 
+test('generated image import detects real bytes, follows safe redirects, and rejects disguised responses', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'ads-generated-image-format-'));
+  const sentCodes = [];
+  const resolvedHosts = [];
+  const { app, db } = await createApp({
+    databasePath: join(directory, 'database.json'), secureCookies: false,
+    sendEmailCode: async (message) => sentCodes.push(message),
+    resolveHost: async (hostname) => {
+      resolvedHosts.push(hostname);
+      return [{ address: '93.184.216.34', family: 4 }];
+    },
+    fetchImpl: async (target, options) => {
+      assert.equal(options.redirect, 'manual');
+      const url = new URL(target);
+      if (url.pathname === '/octet-stream.png') {
+        return new Response(PNG_BYTES, { status: 200, headers: { 'content-type': 'application/octet-stream' } });
+      }
+      if (url.pathname === '/redirect.png') {
+        return new Response(null, { status: 302, headers: { location: 'https://cdn.example/final.png' } });
+      }
+      if (url.pathname === '/final.png') {
+        return new Response(PNG_BYTES, { status: 200, headers: { 'content-type': 'binary/octet-stream' } });
+      }
+      if (url.pathname === '/disguised.png') {
+        return new Response('<html>upstream error</html>', { status: 200, headers: { 'content-type': 'image/png' } });
+      }
+      return new Response(Buffer.from('not-an-image'), { status: 200, headers: { 'content-type': 'application/octet-stream' } });
+    },
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  t.after(() => server.close());
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const cookie = await register(baseUrl, 'generated-image-format-user', sentCodes);
+  const archive = (source) => fetch(`${baseUrl}/api/assets/import-image`, {
+    method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ source }),
+  });
+
+  const genericMime = await archive('https://provider.example/octet-stream.png');
+  assert.equal(genericMime.status, 201);
+  assert.equal((await genericMime.json()).asset.mimeType, 'image/png');
+
+  const redirected = await archive('https://provider.example/redirect.png');
+  assert.equal(redirected.status, 200);
+  assert.equal((await redirected.json()).asset.mimeType, 'image/png');
+  assert.ok(resolvedHosts.includes('provider.example'));
+  assert.ok(resolvedHosts.includes('cdn.example'));
+
+  const disguised = await archive('https://provider.example/disguised.png');
+  assert.equal(disguised.status, 400);
+  assert.equal((await disguised.json()).message, '生成结果不是支持的图片格式');
+
+  const unsupported = await archive('https://provider.example/unknown.bin');
+  assert.equal(unsupported.status, 400);
+  assert.equal((await unsupported.json()).message, '生成结果不是支持的图片格式');
+  assert.equal(db.read('assets').length, 1);
+});
+
 test('R2 asset storage keeps bytes out of the database and migrates legacy assets', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'ads-r2-assets-'));
   const sentCodes = [];

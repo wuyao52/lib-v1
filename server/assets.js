@@ -17,6 +17,7 @@ const SIGNED_URL_TTL_MS = 40 * 60 * 1000;
 const MAX_PROXY_RANGE_BYTES = 1024 * 1024;
 const DEFAULT_DIRECT_UPLOAD_LIMIT = 300;
 const DIRECT_UPLOAD_WINDOW_MS = 60 * 60 * 1000;
+const MAX_IMAGE_IMPORT_REDIRECTS = 3;
 
 export function getDirectUploadLimit(env = process.env) {
   const configured = Number(env.ASSET_DIRECT_UPLOAD_LIMIT);
@@ -119,6 +120,36 @@ const extensionForMimeType = (mimeType) => ({
 }[mimeType] || 'bin');
 
 const objectKeyFor = (userId, sha256, mimeType) => `assets/${userId}/${sha256}.${extensionForMimeType(mimeType)}`;
+
+function detectImageMimeType(bytes) {
+  if (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+  if (bytes.length >= 6 && (bytes.subarray(0, 6).toString('ascii') === 'GIF87a' || bytes.subarray(0, 6).toString('ascii') === 'GIF89a')) return 'image/gif';
+  if (bytes.length >= 12 && bytes.subarray(0, 4).toString('ascii') === 'RIFF' && bytes.subarray(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
+  return null;
+}
+
+async function downloadImportedImage(source, { fetchImpl, resolveHost, signal }) {
+  let target = new URL(source);
+  for (let redirects = 0; redirects <= MAX_IMAGE_IMPORT_REDIRECTS; redirects += 1) {
+    if (target.protocol !== 'https:') throw new Error(redirects ? '生成图片跳转地址必须使用 HTTPS' : '生成图片归档只允许 HTTPS 来源');
+    await assertPublicHost(target.hostname, resolveHost);
+    const response = await fetchImpl(target, { method: 'GET', redirect: 'manual', signal });
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location');
+      if (!location) throw new Error('生成图片跳转响应缺少地址');
+      if (redirects === MAX_IMAGE_IMPORT_REDIRECTS) throw new Error('生成图片跳转次数过多');
+      target = new URL(location, target);
+      continue;
+    }
+    if (!response.ok) throw new Error(`下载生成图片失败 (${response.status})`);
+    const bytes = await readLimitedBody(response, MAX_ASSET_BYTES);
+    const mimeType = detectImageMimeType(bytes);
+    if (!mimeType) throw new Error('生成结果不是支持的图片格式');
+    return { bytes, mimeType };
+  }
+  throw new Error('生成图片跳转次数过多');
+}
 
 function storageError(res) {
   return res.status(502).json({ error: 'ASSET_STORAGE_UNAVAILABLE', message: '云端素材存储暂时不可用，请稍后重试' });
@@ -418,17 +449,10 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
     try {
       if (source.startsWith('data:')) parsed = parseImageDataUrl(source);
       else {
-        const target = new URL(source);
-        if (target.protocol !== 'https:') throw new Error('生成图片归档只允许 HTTPS 来源');
-        await assertPublicHost(target.hostname, resolveHost);
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 30_000);
         try {
-          const response = await fetchImpl(target, { method: 'GET', redirect: 'error', signal: controller.signal });
-          if (!response.ok) throw new Error(`下载生成图片失败 (${response.status})`);
-          const mimeType = String(response.headers.get('content-type') || '').split(';')[0].toLowerCase();
-          if (!ALLOWED_IMAGE_TYPES.has(mimeType)) throw new Error('生成结果不是支持的图片格式');
-          parsed = { bytes: await readLimitedBody(response, MAX_ASSET_BYTES), mimeType };
+          parsed = await downloadImportedImage(source, { fetchImpl, resolveHost, signal: controller.signal });
         } finally { clearTimeout(timeout); }
       }
     } catch (error) {
