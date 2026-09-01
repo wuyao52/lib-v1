@@ -55,6 +55,13 @@ test('new special users start with no models, then receive only assigned models 
 
   const normalDenied = await context.request(`/api/system-ai/${apiB.id}/v1/chat/completions`, special.cookie, { method: 'POST', body: JSON.stringify({ model: 'b-model', prompt: 'denied' }) });
   assert.equal(normalDenied.status, 403);
+
+  const madeNormal = await context.request(`/api/admin/users/${special.user.id}/account-type`, admin.cookie, { method: 'PATCH', body: JSON.stringify({ accountType: 'user', currentPassword: 'correct-horse' }) });
+  assert.equal(madeNormal.status, 200);
+  assert.equal((await (await context.request('/api/catalog/models', special.cookie)).json()).models.length, 2);
+  const madeSpecial = await context.request(`/api/admin/users/${special.user.id}/account-type`, admin.cookie, { method: 'PATCH', body: JSON.stringify({ accountType: 'special', currentPassword: 'correct-horse' }) });
+  assert.equal(madeSpecial.status, 200);
+  assert.deepEqual((await (await context.request('/api/catalog/models', special.cookie)).json()).models.map((item) => item.modelId), ['a-model']);
 });
 
 test('catalog groups models by API name and batch pricing updates atomically', async (t) => {

@@ -20,6 +20,7 @@ function safeUser(user) {
     email: user.email,
     name: user.name,
     role: user.role || 'user',
+    accountType: user.accountType || (user.role === 'system' ? 'system' : 'special'),
     balanceCents: Number(user.balanceCents || 0),
     createdAt: user.createdAt,
   };
@@ -455,6 +456,23 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
     await audit(req, 'user_model_access_updated', 'user', user.id, { modelCount: normalized.length });
     return res.json({ access: db.read('userModelAccess').filter((item) => item.userId === user.id) });
   });
+  router.patch('/users/:id/account-type', async (req, res) => {
+    const accountType = String(req.body?.accountType || '');
+    if (!['user', 'special'].includes(accountType)) return res.status(400).json({ error: 'INVALID_ACCOUNT_TYPE', message: '用户身份无效' });
+    const target = db.read('users').find((item) => item.id === req.params.id);
+    if (!target) return res.status(404).json({ error: 'USER_NOT_FOUND', message: '用户不存在' });
+    if (target.role === 'system') return res.status(400).json({ error: 'SYSTEM_ACCOUNT_TYPE_FORBIDDEN', message: '系统用户不能设置为特殊用户或普通用户' });
+    if (!(await requireCurrentPassword(req, res, 'user_account_type_updated', 'user', target.id))) return;
+    let updated;
+    await db.mutate((data) => {
+      const user = data.users.find((item) => item.id === target.id);
+      if (!user) return;
+      user.accountType = accountType;
+      updated = safeUser(user);
+    });
+    await audit(req, 'user_account_type_updated', 'user', updated.id, { accountType });
+    return res.json({ user: updated });
+  });
   router.patch('/users/:id/role', async (req, res) => {
     const role = String(req.body.role || '');
     if (!['user', 'system'].includes(role)) return res.status(400).json({ error: 'INVALID_ROLE', message: '角色无效' });
@@ -464,7 +482,10 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
     await db.mutate((data) => {
       const user = data.users.find((item) => item.id === req.params.id);
       if (!user) return;
-      user.role = role; updated = safeUser(user);
+      user.role = role;
+      if (role === 'system') user.accountType = 'system';
+      else if (user.accountType === 'system') user.accountType = 'special';
+      updated = safeUser(user);
     });
     if (!updated) return res.status(404).json({ error: 'USER_NOT_FOUND', message: '用户不存在' });
     await audit(req, 'user_role_updated', 'user', updated.id, { role: updated.role });
