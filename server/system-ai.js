@@ -139,6 +139,12 @@ function normalizeManagedResolution(pricing, api, body) {
   return { ...body, resolution: supplied || (allowed.includes('720p') ? '720p' : allowed[0]) };
 }
 
+function normalizeImageQuality(pricing, body) {
+  if (pricing.category !== 'image' || !body || typeof body !== 'object') return body;
+  const quality = String(body.quality || '').trim();
+  return { ...body, quality: quality || 'auto' };
+}
+
 function enforceReferenceImageLimit(pricing, body) {
   if (pricing.category !== 'video' || !body || typeof body !== 'object') return;
   const images = Array.isArray(body.images) ? body.images : [];
@@ -289,6 +295,7 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
       }
       try {
         requestBody = normalizeManagedResolution(pricing, api, requestBody);
+        requestBody = normalizeImageQuality(pricing, requestBody);
         enforceReferenceImageLimit(pricing, requestBody);
         enforceReferenceMediaLimits(pricing, requestBody);
         chargeCents = computeCharge(pricing, requestBody);
