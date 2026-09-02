@@ -218,6 +218,10 @@ export function createAuthService(db, { secureCookies = false, sendEmailCode, ge
     const now = Date.now();
     const session = db.read('sessions').find((item) => item.tokenHash === hashToken(token) && item.expiresAt > now);
     if (!session) return next();
+    const latestSession = db.read('sessions')
+      .filter((item) => item.userId === session.userId && item.expiresAt > now)
+      .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0) || String(b.id).localeCompare(String(a.id)))[0];
+    if (!latestSession || latestSession.id !== session.id) return next();
     const user = db.read('users').find((item) => item.id === session.userId);
     if (user) req.user = publicUser(user);
     return next();
