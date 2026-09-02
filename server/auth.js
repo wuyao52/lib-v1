@@ -12,7 +12,7 @@ const IMAGE_CAPTCHA_TTL_MS = 5 * 60 * 1000;
 const IMAGE_CAPTCHA_MAX_ATTEMPTS = 5;
 // Limit concurrent login sessions across browsers, private windows, and devices.
 // Regular tabs in the same browser share one HttpOnly cookie and count as one session.
-const MAX_SESSIONS_PER_USER = 4;
+const MAX_SESSIONS_PER_USER = 1;
 
 const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
 const normalizeUsername = (value) => String(value || '').trim();

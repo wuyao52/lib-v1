@@ -530,12 +530,18 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     }
   },
 
-  closeProject: () => {
-    // 保存当前项目
-    const { project } = get();
+  closeProject: async () => {
+    const pendingTimer = get().autoSaveTimer;
+    if (pendingTimer) clearTimeout(pendingTimer);
+    set({ autoSaveTimer: null });
+
+    // Wait for an existing save before persisting the latest close snapshot.
+    while (get().isSaving) await new Promise((resolve) => setTimeout(resolve, 25));
+    const project = get().project;
     if (project) {
       saveProjectDataToStorage(project);
-      void saveProjectToCloud(project).catch((error) => console.error('关闭项目时云端保存失败', error));
+      try { await saveProjectToCloud(project); }
+      catch (error) { console.error('关闭项目时云端保存失败', error); }
     }
 
     set({
@@ -613,7 +619,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
 
     // Selection and React Flow's runtime measurements only affect the current view.
     // Persisting them causes a cloud write whenever a project opens or nodes are selected.
-    const persistsProject = changes.some((change) => change.type !== 'select' && change.type !== 'dimensions');
+    const persistsProject = changes.some((change) => !['select', 'dimensions', 'position'].includes(change.type));
     set({
       project: {
         ...project,
@@ -631,16 +637,16 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
 
     const newEdges = applyEdgeChanges(changes, project.edges);
 
+    const persistsProject = changes.some((change) => change.type !== 'select' && change.type !== 'dimensions');
     set({
       project: {
         ...project,
         edges: newEdges,
-        updatedAt: new Date().toISOString(),
+        updatedAt: persistsProject ? new Date().toISOString() : project.updatedAt,
       },
     });
 
-    // 触发自动保存
-    get().triggerAutoSave();
+    if (persistsProject) get().triggerAutoSave();
   },
 
   onConnect: (connection: Connection) => {
