@@ -12,6 +12,14 @@ const BILLING_UNITS = new Set(['request', 'image', 'second']);
 const TEXT_PROTOCOLS = new Set(['auto', 'openai-chat', 'openai-responses', 'anthropic-messages']);
 const nowIso = () => new Date().toISOString();
 const integer = (value) => Number.isSafeInteger(Number(value)) ? Number(value) : NaN;
+const isHighestSystemUser = (user) => {
+  const username = String(user?.username || '').trim().toLowerCase();
+  return username === 'zhaoyan';
+};
+
+function canModifyUser(actor, target) {
+  return isHighestSystemUser(actor) || !isHighestSystemUser(target);
+}
 
 function safeUser(user) {
   return {
@@ -443,6 +451,7 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
   router.put('/users/:id/model-access', async (req, res) => {
     const user = db.read('users').find((item) => item.id === req.params.id);
     if (!user) return res.status(404).json({ error: 'USER_NOT_FOUND', message: '用户不存在' });
+    if (!canModifyUser(req.user, user)) return res.status(403).json({ error: 'HIGHEST_SYSTEM_USER_PROTECTED', message: '最高系统用户只能由本人修改' });
     const entries = Array.isArray(req.body?.models) ? req.body.models : [];
     const valid = new Map(db.read('modelPricing').map((item) => [item.id, item]));
     const normalized = entries.map((entry) => ({ pricingId: String(entry.pricingId || ''), unitPriceCents: integer(entry.unitPriceCents), enabled: entry.enabled !== false })).filter((entry) => valid.has(entry.pricingId));
@@ -461,6 +470,7 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
     if (!['user', 'special'].includes(accountType)) return res.status(400).json({ error: 'INVALID_ACCOUNT_TYPE', message: '用户身份无效' });
     const target = db.read('users').find((item) => item.id === req.params.id);
     if (!target) return res.status(404).json({ error: 'USER_NOT_FOUND', message: '用户不存在' });
+    if (!canModifyUser(req.user, target)) return res.status(403).json({ error: 'HIGHEST_SYSTEM_USER_PROTECTED', message: '最高系统用户只能由本人修改' });
     if (target.role === 'system') return res.status(400).json({ error: 'SYSTEM_ACCOUNT_TYPE_FORBIDDEN', message: '系统用户不能设置为特殊用户或普通用户' });
     if (!(await requireCurrentPassword(req, res, 'user_account_type_updated', 'user', target.id))) return;
     let updated;
@@ -476,6 +486,9 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
   router.patch('/users/:id/role', async (req, res) => {
     const role = String(req.body.role || '');
     if (!['user', 'system'].includes(role)) return res.status(400).json({ error: 'INVALID_ROLE', message: '角色无效' });
+    const target = db.read('users').find((item) => item.id === req.params.id);
+    if (!target) return res.status(404).json({ error: 'USER_NOT_FOUND', message: '用户不存在' });
+    if (!canModifyUser(req.user, target)) return res.status(403).json({ error: 'HIGHEST_SYSTEM_USER_PROTECTED', message: '最高系统用户只能由本人修改' });
     if (req.params.id === req.user.id && role !== 'system') return res.status(400).json({ error: 'SELF_DEMOTION_FORBIDDEN', message: '不能取消自己的系统用户权限' });
     if (!(await requireCurrentPassword(req, res, 'user_role_updated', 'user', req.params.id))) return;
     let updated;
@@ -494,6 +507,9 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
   router.post('/users/:id/balance', async (req, res) => {
     const amountCents = integer(req.body.amountCents);
     if (!Number.isInteger(amountCents) || amountCents === 0 || Math.abs(amountCents) > 10_000_000) return res.status(400).json({ error: 'INVALID_AMOUNT', message: '调整金额无效' });
+    const target = db.read('users').find((item) => item.id === req.params.id);
+    if (!target) return res.status(404).json({ error: 'USER_NOT_FOUND', message: '用户不存在' });
+    if (!canModifyUser(req.user, target)) return res.status(403).json({ error: 'HIGHEST_SYSTEM_USER_PROTECTED', message: '最高系统用户只能由本人修改' });
     if (!(await requireCurrentPassword(req, res, 'user_balance_adjusted', 'user', req.params.id))) return;
     const suppliedKey = String(req.get('idempotency-key') || '').trim();
     if (suppliedKey && !/^[A-Za-z0-9_-]{16,100}$/.test(suppliedKey)) return res.status(400).json({ error: 'INVALID_IDEMPOTENCY_KEY', message: '幂等键无效' });

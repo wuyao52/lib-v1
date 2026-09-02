@@ -436,6 +436,23 @@ test('sensitive admin balance and role changes require the current system passwo
   assert.equal(context.db.read('users').find((item) => item.id === target.user.id).balanceCents, 500);
 });
 
+test('highest system user zhaoyan is protected from other system users', async (t) => {
+  const context = await setup();
+  t.after(() => context.server.close());
+  const root = await context.register('zhaoyan');
+  const admin = await context.register('another-admin');
+  await context.db.mutate((data) => {
+    data.users.find((item) => item.id === root.user.id).role = 'system';
+    data.users.find((item) => item.id === admin.user.id).role = 'system';
+  });
+  const response = await context.request(`/api/admin/users/${root.user.id}/role`, admin.cookie, {
+    method: 'PATCH', body: JSON.stringify({ role: 'user', currentPassword: 'correct-horse' }),
+  });
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error, 'HIGHEST_SYSTEM_USER_PROTECTED');
+  assert.equal(context.db.read('users').find((item) => item.id === root.user.id).role, 'system');
+});
+
 test('managed video requests use the persistent queue protocol and expose an admin overview', async (t) => {
   const context = await setup({ videoQueue: true, videoQueueAutoStart: false });
   t.after(() => context.server.close());

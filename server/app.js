@@ -136,15 +136,17 @@ export async function createApp(options = {}) {
   const paymentService = createPaymentService({ db, fetchImpl: options.fetchImpl, env: process.env, config: options.paymentConfig });
   const systemUserEmails = new Set(String(process.env.SYSTEM_USER_EMAILS || '')
     .split(',').map((value) => value.trim().toLowerCase()).filter(Boolean));
-  if (systemUserEmails.size) {
-    await db.mutate((data) => {
-      data.users.forEach((user) => {
-        if (systemUserEmails.has(user.email)) user.role = 'system';
-        if (!user.role) user.role = 'user';
-        if (!Number.isFinite(Number(user.balanceCents))) user.balanceCents = 0;
-      });
+  await db.mutate((data) => {
+    data.users.forEach((user) => {
+      if (String(user.username || '').trim().toLowerCase() === 'zhaoyan') {
+        user.role = 'system';
+        user.accountType = 'system';
+      }
+      if (systemUserEmails.has(String(user.email || '').trim().toLowerCase())) user.role = 'system';
+      if (!user.role) user.role = 'user';
+      if (!Number.isFinite(Number(user.balanceCents))) user.balanceCents = 0;
     });
-  }
+  });
   const emailSender = options.sendEmailCode || createEmailSenderFromEnv(process.env, { fetchImpl: options.fetchImpl });
   const emailConfigured = Boolean(
     (String(process.env.RESEND_API_KEY || '').trim() && String(process.env.EMAIL_FROM || '').trim())
