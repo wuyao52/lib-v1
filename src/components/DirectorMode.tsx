@@ -14,6 +14,7 @@ import VideoDurationControl from '@/components/VideoDurationControl';
 import { normalizeModelDuration, videoDurationRules } from '@/services/modelDuration';
 import { refreshManagedModel } from '@/services/managedModelCatalog';
 import { useAuth } from '@/auth/AuthContext';
+import { getPlayableMediaUrl, needsResolvedMediaUrl } from '@/services/assetService';
 
 interface DirectorModeProps {
   isOpen: boolean;
@@ -30,6 +31,18 @@ const voiceOptions = [
 
 const wait = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const planDuration = (plan: StoryboardPlan | null) => plan?.shots.reduce((sum, shot) => sum + shot.targetDurationSec, 0) || 0;
+
+function ResolvedDirectorVideo({ source, className, controls, autoPlay, onEnded }: { source: string; className?: string; controls?: boolean; autoPlay?: boolean; onEnded?: () => void }) {
+  const [url, setUrl] = useState(needsResolvedMediaUrl(source) ? '' : source);
+  useEffect(() => {
+    const controller = new AbortController();
+    setUrl(needsResolvedMediaUrl(source) ? '' : source);
+    void getPlayableMediaUrl(source, controller.signal).then(setUrl).catch(() => undefined);
+    return () => controller.abort();
+  }, [source]);
+  if (!url) return <div className={`${className || ''} flex items-center justify-center bg-black text-xs text-dark-400`}>正在读取视频</div>;
+  return <video src={url} className={className} controls={controls} autoPlay={autoPlay} onEnded={onEnded} playsInline />;
+}
 
 export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
   const { project, addNode, onConnect, updateNodeData, updateProjectSettings } = useProjectStore();
@@ -544,8 +557,8 @@ export default function DirectorMode({ isOpen, onClose }: DirectorModeProps) {
               {plan && <>
                 <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-medium">AI 导演方案</h3><p className="text-xs text-dark-400 mt-1">{plan.durationRecommendationReason}</p></div><div className="flex items-center gap-2">{selectedShotIds.length > 0 && <button type="button" onClick={() => void regenerateSelectedShots()} disabled={isGenerating} className="h-8 px-2.5 rounded-md bg-primary-600 hover:bg-primary-500 disabled:opacity-50 text-xs flex items-center gap-1.5"><RefreshCw className="w-3.5 h-3.5" />重出选中 ({selectedShotIds.length})</button>}<button type="button" onClick={() => setSelectedShotIds(selectedShotIds.length === plan.shots.length ? [] : plan.shots.map((shot) => shot.clipId))} disabled={isGenerating} className="h-8 px-2.5 rounded-md border border-dark-700 bg-dark-800 hover:bg-dark-700 disabled:opacity-50 text-xs">{selectedShotIds.length === plan.shots.length ? '取消全选' : '全选镜头'}</button><button type="button" onClick={() => void copyPlan()} disabled={isGenerating} className="h-8 px-2.5 rounded-md border border-dark-700 bg-dark-800 hover:bg-dark-700 disabled:opacity-50 text-xs flex items-center gap-1.5"><Copy className="w-3.5 h-3.5" />复制全部</button></div></div>
                 <div className="grid md:grid-cols-3 gap-3 text-sm"><div className="bg-dark-800 border border-dark-700 rounded-md p-3"><p className="text-dark-500 text-xs">故事承诺</p><p className="mt-1">{plan.storyPromise}</p></div><div className="bg-dark-800 border border-dark-700 rounded-md p-3"><p className="text-dark-500 text-xs">最终结果</p><p className="mt-1">{plan.finalOutcome}</p></div><div className="bg-dark-800 border border-dark-700 rounded-md p-3"><p className="text-dark-500 text-xs">当前总时长</p><p className="mt-1">{totalDurationSec} 秒</p></div></div>
-                {previewClip && <div className="border border-dark-700 rounded-md overflow-hidden bg-black"><video key={previewClip.clipId} src={previewClip.videoUrl} controls autoPlay onEnded={playNextClip} className="w-full aspect-video bg-black" /><div className="h-11 px-3 flex items-center gap-2 overflow-x-auto bg-dark-950">{completedClips.map((clip, index) => <button key={clip.clipId} onClick={() => setPreviewClipId(clip.clipId)} className={`h-7 px-2 rounded-md text-xs flex items-center gap-1.5 shrink-0 ${previewClip.clipId === clip.clipId ? 'bg-primary-600 text-white' : 'bg-dark-800 text-dark-300 hover:text-white'}`}><Play className="w-3 h-3" />{index + 1}</button>)}<button type="button" onClick={acceptPreviewClip} disabled={previewClip.accepted} className="ml-auto h-7 px-2 rounded-md bg-green-600 hover:bg-green-500 disabled:opacity-50 text-xs shrink-0">{previewClip.accepted ? '已验收' : '验收当前镜头'}</button></div></div>}
-                {finalVideoUrl && <div className="border border-green-500/40 rounded-md overflow-hidden bg-black"><video src={finalVideoUrl} controls className="w-full aspect-video bg-black" /><p className="px-3 py-2 text-xs text-green-300">最终短剧已归档，可在生成历史中查看</p></div>}
+                {previewClip && <div className="border border-dark-700 rounded-md overflow-hidden bg-black"><ResolvedDirectorVideo key={previewClip.clipId} source={previewClip.videoUrl} controls autoPlay onEnded={playNextClip} className="w-full aspect-video bg-black" /><div className="h-11 px-3 flex items-center gap-2 overflow-x-auto bg-dark-950">{completedClips.map((clip, index) => <button key={clip.clipId} onClick={() => setPreviewClipId(clip.clipId)} className={`h-7 px-2 rounded-md text-xs flex items-center gap-1.5 shrink-0 ${previewClip.clipId === clip.clipId ? 'bg-primary-600 text-white' : 'bg-dark-800 text-dark-300 hover:text-white'}`}><Play className="w-3 h-3" />{index + 1}</button>)}<button type="button" onClick={acceptPreviewClip} disabled={previewClip.accepted} className="ml-auto h-7 px-2 rounded-md bg-green-600 hover:bg-green-500 disabled:opacity-50 text-xs shrink-0">{previewClip.accepted ? '已验收' : '验收当前镜头'}</button></div></div>}
+                {finalVideoUrl && <div className="border border-green-500/40 rounded-md overflow-hidden bg-black"><ResolvedDirectorVideo source={finalVideoUrl} controls className="w-full aspect-video bg-black" /><p className="px-3 py-2 text-xs text-green-300">最终短剧已归档，可在生成历史中查看</p></div>}
                 <div className="space-y-3">{plan.shots.map((shot) => {
                   const generation = clipGenerations[shot.clipId];
                   const isSelected = selectedShotIds.includes(shot.clipId);

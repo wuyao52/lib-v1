@@ -67,10 +67,6 @@ export async function getPlayableMediaUrl(source: string, signal?: AbortSignal, 
   const assetId = parsed.pathname.match(ASSET_PATH)?.[1];
   const mediaId = parsed.pathname.match(GENERATED_MEDIA_PATH)?.[1];
   if (!assetId && !mediaId) return source;
-  // Keep generated videos on the same origin. Browser video elements often
-  // reject cross-origin signed OSS URLs when CORS or range headers differ;
-  // the backend media route already handles auth, ranges and Content-Type.
-  if (mediaId) return `${parsed.pathname}${parsed.search}`;
   const cacheKey = `${assetId ? 'asset' : 'media'}:${decodeURIComponent(assetId || mediaId || '')}`;
   const cached = playbackUrlCache.get(cacheKey);
   if (!forceRefresh && cached && cached.expiresAt > Date.now() + 60_000) return cached.url;
@@ -78,8 +74,9 @@ export async function getPlayableMediaUrl(source: string, signal?: AbortSignal, 
     ? `/api/assets/${encodeURIComponent(assetId)}/playback-url`
     : `/api/generated-media/${encodeURIComponent(mediaId!)}/playback-url`;
   const response = await apiRequest<{ url: string; expiresAt?: string }>(path, { signal });
-  playbackUrlCache.set(cacheKey, { url: response.url, expiresAt: Date.parse(response.expiresAt || '') || Date.now() + 10 * 60_000 });
-  return response.url;
+  const absoluteUrl = new URL(response.url, window.location.origin).toString();
+  playbackUrlCache.set(cacheKey, { url: absoluteUrl, expiresAt: Date.parse(response.expiresAt || '') || Date.now() + 10 * 60_000 });
+  return absoluteUrl;
 }
 
 // Leaves headroom for Base64/JSON expansion before Netlify forwards the request.
