@@ -510,6 +510,36 @@ export class MySqlDatabase {
     return this.data[collection];
   }
 
+  // Authentication must observe session revocations made by another app
+  // instance immediately; the normal collection cache is intentionally
+  // eventually consistent for performance.
+  async findSessionByTokenHash(tokenHash) {
+    await this.writeQueue;
+    const [rows] = await this.pool.query(
+      'SELECT id, user_id AS userId, token_hash AS tokenHash, created_at AS createdAt, expires_at AS expiresAt, user_agent AS userAgent FROM sessions WHERE token_hash = ? AND expires_at > ? LIMIT 1',
+      [tokenHash, Date.now()],
+    );
+    return rows[0] || null;
+  }
+
+  async findLatestSessionByUserId(userId) {
+    await this.writeQueue;
+    const [rows] = await this.pool.query(
+      'SELECT id, user_id AS userId, token_hash AS tokenHash, created_at AS createdAt, expires_at AS expiresAt, user_agent AS userAgent FROM sessions WHERE user_id = ? AND expires_at > ? ORDER BY created_at DESC, id DESC LIMIT 1',
+      [userId, Date.now()],
+    );
+    return rows[0] || null;
+  }
+
+  async findUserById(userId) {
+    await this.writeQueue;
+    const [rows] = await this.pool.query(
+      'SELECT id, username, email, name, password_hash AS passwordHash, role, account_type AS accountType, balance_cents AS balanceCents, created_at AS createdAt FROM users WHERE id = ? LIMIT 1',
+      [userId],
+    );
+    return rows[0] || null;
+  }
+
   async refreshCollections(collections) {
     const names = [...new Set(collections)].filter((name) => TABLES[name]);
     if (!names.length) return;

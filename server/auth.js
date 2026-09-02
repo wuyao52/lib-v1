@@ -215,16 +215,27 @@ export function createAuthService(db, { secureCookies = false, sendEmailCode, ge
   async function authenticate(req, _res, next) {
     const token = req.cookies?.[SESSION_COOKIE];
     if (!token) return next();
-    const now = Date.now();
-    const session = db.read('sessions').find((item) => item.tokenHash === hashToken(token) && item.expiresAt > now);
-    if (!session) return next();
-    const latestSession = db.read('sessions')
-      .filter((item) => item.userId === session.userId && item.expiresAt > now)
-      .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0) || String(b.id).localeCompare(String(a.id)))[0];
-    if (!latestSession || latestSession.id !== session.id) return next();
-    const user = db.read('users').find((item) => item.id === session.userId);
-    if (user) req.user = publicUser(user);
-    return next();
+    try {
+      const now = Date.now();
+      const tokenHash = hashToken(token);
+      const session = typeof db.findSessionByTokenHash === 'function'
+        ? await db.findSessionByTokenHash(tokenHash)
+        : db.read('sessions').find((item) => item.tokenHash === tokenHash && item.expiresAt > now);
+      if (!session || Number(session.expiresAt) <= now) return next();
+      const latestSession = typeof db.findLatestSessionByUserId === 'function'
+        ? await db.findLatestSessionByUserId(session.userId)
+        : db.read('sessions')
+          .filter((item) => item.userId === session.userId && item.expiresAt > now)
+          .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0) || String(b.id).localeCompare(String(a.id)))[0];
+      if (!latestSession || latestSession.id !== session.id) return next();
+      const user = typeof db.findUserById === 'function'
+        ? await db.findUserById(session.userId)
+        : db.read('users').find((item) => item.id === session.userId);
+      if (user) req.user = publicUser(user);
+      return next();
+    } catch (error) {
+      return next(error);
+    }
   }
 
   function requireAuth(req, res, next) {

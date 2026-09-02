@@ -205,10 +205,17 @@ test('security headers, origin protection and session cap are enforced', async (
   const code = await requestCode(context, email, 'register');
   const registered = await fetch(`${context.baseUrl}/api/auth/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'sessions', email, password: 'strong-password', verificationCode: code }) });
   assert.equal(registered.status, 201);
+  let firstCookie = '';
+  let latestCookie = '';
   for (let index = 0; index < 5; index += 1) {
     const captchaId = await requestCaptcha(context);
     const login = await fetch(`${context.baseUrl}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ identifier: email, password: 'strong-password', captchaId, captchaCode: '24682' }) });
     assert.equal(login.status, 200);
+    const cookie = login.headers.get('set-cookie')?.split(';')[0] || '';
+    if (index === 0) firstCookie = cookie;
+    latestCookie = cookie;
   }
   assert.equal(context.db.read('sessions').filter((session) => session.userId === context.db.read('users')[0].id).length, 1);
+  assert.equal((await fetch(`${context.baseUrl}/api/skills`, { headers: { cookie: firstCookie } })).status, 401);
+  assert.equal((await fetch(`${context.baseUrl}/api/skills`, { headers: { cookie: latestCookie } })).status, 200);
 });
