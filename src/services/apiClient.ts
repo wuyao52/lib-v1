@@ -10,6 +10,14 @@ export class ApiError extends Error {
 }
 
 const inFlightAdminBalanceRequests = new Map<string, Promise<unknown>>();
+let sessionExpiredHandler: (() => void) | null = null;
+
+export function setSessionExpiredHandler(handler: (() => void) | null) {
+  sessionExpiredHandler = handler;
+  return () => {
+    if (sessionExpiredHandler === handler) sessionExpiredHandler = null;
+  };
+}
 
 export async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
   const isAdminBalanceAdjustment = options.method === 'POST' && /^\/api\/admin\/users\/[^/]+\/balance$/.test(path);
@@ -37,6 +45,8 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
   const contentType = response.headers.get('content-type') || '';
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
+    const isAuthEndpoint = /^\/api\/auth\/(login|register|captcha|email-code|reset)/.test(path);
+    if (response.status === 401 && !isAuthEndpoint) sessionExpiredHandler?.();
     throw new ApiError(payload.message || `请求失败 (${response.status})`, response.status, payload.error);
   }
   if (!contentType.includes('application/json')) {

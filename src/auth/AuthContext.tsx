@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { apiRequest } from '@/services/apiClient';
+import { apiRequest, setSessionExpiredHandler } from '@/services/apiClient';
 
 export interface AuthUser {
   id: string;
@@ -55,6 +55,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  useEffect(() => setSessionExpiredHandler(() => {
+    // A newer login invalidated this browser's session. Returning to the
+    // auth screen also prevents any further writes with the stale token.
+    setUser(null);
+  }), []);
 
   const login = useCallback(async (credentials: LoginCredentials) => {
     const result = await apiRequest<{ user: AuthUser }>('/api/auth/login', {
