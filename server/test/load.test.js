@@ -82,3 +82,22 @@ test('load scenario: 50 concurrent retries of one id create one job and one char
   assert.equal(db.data.balanceTransactions.length, 1);
   assert.equal(db.data.users[0].balanceCents, 975);
 });
+
+test('commercial profile schedules 150 upstream jobs with per-user and per-api fairness', () => {
+  const jobs = Array.from({ length: 600 }, (_, index) => ({
+    id: `commercial-${index}`,
+    userId: `commercial-user-${index % 30}`,
+    apiId: `commercial-api-${index % 3}`,
+    status: 'queued',
+    nextPollAt: 0,
+    createdAt: new Date(Date.now() + index).toISOString(),
+  }));
+  const selected = selectFairQueuedJobs(jobs, [], {
+    globalConcurrency: 150,
+    userConcurrency: 20,
+    apiConcurrency: 50,
+  }, Date.now() + 10_000);
+  assert.equal(selected.length, 150);
+  assert.equal(new Set(selected.map((job) => job.userId)).size, 30);
+  assert.equal(Math.max(...Array.from(new Set(selected.map((job) => job.apiId))).map((apiId) => selected.filter((job) => job.apiId === apiId).length)), 50);
+});
