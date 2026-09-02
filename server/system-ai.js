@@ -6,7 +6,14 @@ import { isUpstreamBalanceError, upstreamErrorText } from './upstream-errors.js'
 const nowIso = () => new Date().toISOString();
 // Video providers fetch reference assets asynchronously. Keep the temporary
 // read grant long enough for a queued task without exposing a permanent URL.
-const MODEL_REFERENCE_URL_TTL_SECONDS = 40 * 60;
+const MODEL_REFERENCE_URL_TTL_SECONDS = 2 * 60 * 60;
+// The upstream rejects reference assets at 50 MiB. Leave headroom so a request
+// never reaches the provider only to fail while it is downloading the images.
+const MAX_VIDEO_REFERENCE_IMAGE_BYTES = 48 * 1024 * 1024;
+
+function formatMiB(bytes) {
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+}
 
 function isBusinessFailure(body) {
   if (!body || typeof body !== 'object') return false;
@@ -42,7 +49,7 @@ async function normalizeReferenceImages(body, userId, db, assetStorage) {
   if (!Array.isArray(body.images) || !body.images.length) {
     const error = new Error('参考图片不能为空'); error.code = 'INVALID_REFERENCE_IMAGE_URL'; throw error;
   }
-  const normalizeUrl = async (value) => {
+  const resolveUrl = (value) => {
     const assetId = managedAssetId(value);
     if (assetId) {
       const asset = db.read('assets').find((entry) => entry.id === assetId && entry.userId === userId);
@@ -50,22 +57,34 @@ async function normalizeReferenceImages(body, userId, db, assetStorage) {
       if (!asset.objectKey || !assetStorage?.createDownloadUrl) {
         const error = new Error('参考图片尚未迁移到对象存储，请重新上传后再试'); error.code = 'REFERENCE_IMAGE_NOT_ARCHIVED'; throw error;
       }
-      return assetStorage.createDownloadUrl({ key: asset.objectKey, mimeType: asset.mimeType, expiresInSeconds: MODEL_REFERENCE_URL_TTL_SECONDS });
+      return { asset };
     }
     let parsed;
     try { parsed = new URL(String(value || '')); } catch { parsed = null; }
     if (!parsed || parsed.protocol !== 'https:') {
       const error = new Error('视频模型的参考图片必须是可公开读取的 HTTPS 地址'); error.code = 'INVALID_REFERENCE_IMAGE_URL'; throw error;
     }
-    return parsed.toString();
+    return { url: parsed.toString() };
   };
-  const images = await Promise.all(body.images.map(async (image) => {
-    if (typeof image === 'string') return normalizeUrl(image);
+  const references = body.images.map((image) => {
+    if (typeof image === 'string') return { image, field: null, source: resolveUrl(image) };
     if (image && typeof image === 'object') {
       const field = ['url', 'image_url', 'image'].find((key) => typeof image[key] === 'string');
-      if (field) return { ...image, [field]: await normalizeUrl(image[field]) };
+      if (field) return { image, field, source: resolveUrl(image[field]) };
     }
     const error = new Error('参考图片参数格式无效'); error.code = 'INVALID_REFERENCE_IMAGE_URL'; throw error;
+  });
+  const totalBytes = references.reduce((sum, reference) => sum + Math.max(0, Number(reference.source.asset?.byteSize) || 0), 0);
+  if (totalBytes > MAX_VIDEO_REFERENCE_IMAGE_BYTES) {
+    const error = new Error(`参考图片合计 ${formatMiB(totalBytes)}，当前视频服务最多支持 ${formatMiB(MAX_VIDEO_REFERENCE_IMAGE_BYTES)}。请减少参考图片或上传压缩版素材后重试`);
+    error.code = 'REFERENCE_IMAGE_TOTAL_TOO_LARGE';
+    throw error;
+  }
+  const images = await Promise.all(references.map(async ({ image, field, source }) => {
+    const url = source.asset
+      ? await assetStorage.createDownloadUrl({ key: source.asset.objectKey, mimeType: source.asset.mimeType, expiresInSeconds: MODEL_REFERENCE_URL_TTL_SECONDS })
+      : source.url;
+    return field ? { ...image, [field]: url } : url;
   }));
   return { ...body, images };
 }

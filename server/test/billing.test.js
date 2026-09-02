@@ -163,6 +163,7 @@ test('managed video replaces owned asset paths with public OSS URLs before calli
     data.users.find((item) => item.id === normal.user.id).balanceCents = 1000;
     data.assets.push({ id: 'owned-image', userId: normal.user.id, objectKey: 'assets/owned-image.png', mimeType: 'image/png', byteSize: 10, createdAt: new Date().toISOString() });
     data.assets.push({ id: 'owned-image-2', userId: normal.user.id, objectKey: 'assets/owned-image-2.png', mimeType: 'image/png', byteSize: 10, createdAt: new Date().toISOString() });
+    data.assets.push({ id: 'oversized-image', userId: normal.user.id, objectKey: 'assets/oversized-image.png', mimeType: 'image/png', byteSize: 49 * 1024 * 1024, createdAt: new Date().toISOString() });
     data.assets.push({ id: 'other-image', userId: admin.user.id, objectKey: 'assets/other-image.png', mimeType: 'image/png', byteSize: 10, createdAt: new Date().toISOString() });
   });
   const apiResponse = await context.request('/api/admin/system-apis', admin.cookie, { method: 'POST', body: JSON.stringify({ name: 'Managed', provider: 'Compatible', baseUrl: 'https://upstream.example', apiKey: 'secret-system-key' }) });
@@ -172,10 +173,13 @@ test('managed video replaces owned asset paths with public OSS URLs before calli
   assert.equal(generated.status, 200);
   const providerBody = JSON.parse(context.upstreamCalls.find((call) => call.body?.includes('asset-url')).body);
   assert.deepEqual(providerBody.images, ['https://oss.example.test/assets%2Fowned-image.png?signed=1']);
-  assert.deepEqual(signedRequests, [{ key: 'assets/owned-image.png', expiresInSeconds: 40 * 60 }]);
+  assert.deepEqual(signedRequests, [{ key: 'assets/owned-image.png', expiresInSeconds: 2 * 60 * 60 }]);
   const tooManyReferences = await context.request(`/api/system-ai/${api.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'too-many', seconds: 5, images: ['/api/assets/public/owned-image', '/api/assets/public/owned-image-2'] }) });
   assert.equal(tooManyReferences.status, 400);
   assert.equal((await tooManyReferences.json()).error, 'REFERENCE_IMAGE_LIMIT_EXCEEDED');
+  const oversized = await context.request(`/api/system-ai/${api.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'too-large', seconds: 5, images: ['/api/assets/public/oversized-image'] }) });
+  assert.equal(oversized.status, 400);
+  assert.equal((await oversized.json()).error, 'REFERENCE_IMAGE_TOTAL_TOO_LARGE');
   const stolen = await context.request(`/api/system-ai/${api.id}/v1/videos`, normal.cookie, { method: 'POST', body: JSON.stringify({ model: 'video-model', prompt: 'stolen', seconds: 5, images: ['/api/assets/public/other-image'] }) });
   assert.equal(stolen.status, 400);
 

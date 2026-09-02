@@ -1,12 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createVideoQueue, selectFairQueuedJobs, upstreamFailureDiagnostic } from '../video-queue.js';
+import { createVideoQueue, errorOf, selectFairQueuedJobs, upstreamFailureDiagnostic } from '../video-queue.js';
 import { isUpstreamBalanceError, upstreamErrorText } from '../upstream-errors.js';
 
 test('provider object errors are readable and classify insufficient balance', () => {
   const providerError = { error: { code: 'insufficient_balance', detail: 'account has no funds' } };
   assert.match(upstreamErrorText(providerError), /insufficient_balance/);
   assert.equal(isUpstreamBalanceError(providerError), true);
+});
+
+test('video reference asset failures have actionable error codes', () => {
+  assert.deepEqual(
+    errorOf({ error: { message: 'task input assets exceed size limit: 69876614 bytes > 52428800 bytes' } }, 400),
+    { code: 'REFERENCE_IMAGE_TOTAL_TOO_LARGE', message: '参考图片总大小超过视频服务上限。请减少参考图片或上传压缩版素材后重试' },
+  );
+  assert.deepEqual(
+    errorOf({ error: { message: 'download input URLs failed: download asset code:403' } }, 400),
+    { code: 'REFERENCE_IMAGE_FETCH_FORBIDDEN', message: '视频服务无法读取参考图片（403）。请重新上传相关图片后重试；若仍失败，请更换该参考图' },
+  );
 });
 
 test('upstream failure diagnostics retain request metadata while redacting prompt and URLs', () => {

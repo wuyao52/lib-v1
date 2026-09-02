@@ -148,7 +148,7 @@ const completedVideoResponse = (status, result) => Boolean(result.url)
   && !failedVideoStatus(status)
   && (!status || completedVideoStatus(status) || directVideoAssetUrl(result.url));
 
-function errorOf(body, statusCode) {
+export function errorOf(body, statusCode) {
   const payload = payloadOf(body);
   const raw = upstreamErrorText(payload?.error?.detail || payload?.error?.details || payload?.details || payload?.detail
     || body?.error?.detail || body?.error?.details || body?.details || body?.detail
@@ -162,6 +162,12 @@ function errorOf(body, statusCode) {
   }
   if (isUpstreamBalanceError(raw)) {
     return { code: 'UPSTREAM_BALANCE_INSUFFICIENT', message: '错误：99' };
+  }
+  if (/(?:input\s+assets?|reference\s+(?:images?|assets?)).*(?:exceed|too\s+large|size\s+limit)|(?:bytes?\s*>\s*52428800)/i.test(raw)) {
+    return { code: 'REFERENCE_IMAGE_TOTAL_TOO_LARGE', message: '参考图片总大小超过视频服务上限。请减少参考图片或上传压缩版素材后重试' };
+  }
+  if (/(?:download\s+(?:input\s+)?(?:urls?|assets?)\s+failed|download\s+asset).*\b403\b|\b403\b.*(?:download\s+(?:input\s+)?(?:urls?|assets?)|asset)/i.test(raw)) {
+    return { code: 'REFERENCE_IMAGE_FETCH_FORBIDDEN', message: '视频服务无法读取参考图片（403）。请重新上传相关图片后重试；若仍失败，请更换该参考图' };
   }
   return { code: 'UPSTREAM_VIDEO_FAILED', message: raw.slice(0, 500) };
 }
