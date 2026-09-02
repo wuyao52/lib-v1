@@ -108,8 +108,13 @@ function isBusinessFailure(body) {
   return body.code !== undefined && !['0', '200', '20000', 'SUCCESS'].includes(String(body.code).toUpperCase());
 }
 
-function taskIdOf(body) {
+function taskIdOf(body, adapter) {
   const payload = payloadOf(body);
+  // Fanke's status endpoint is keyed by jobId. Its submit response also
+  // includes a provider taskId, so the generic task-first order is invalid.
+  if (adapter?.kind === 'fanke-open-v1') {
+    return String(payload?.jobId || body?.jobId || payload?.job_id || body?.job_id || '').trim();
+  }
   return String(payload?.id || payload?.task_id || payload?.taskId || payload?.job_id || payload?.jobId || body?.id || body?.task_id || body?.taskId || body?.job_id || body?.jobId || '').trim();
 }
 
@@ -369,7 +374,7 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
       const result = videoResultOf(body);
       const current = db.read('generationJobs').find((item) => item.id === job.id);
       if (current?.status === 'cancel_requested') {
-        const providerTaskId = taskIdOf(body);
+        const providerTaskId = taskIdOf(body, adapter);
         if (providerTaskId && await cancelUpstream({ ...current, providerTaskId })) {
           await refundJob(job.id, { code: 'USER_CANCELLED', message: '用户取消生成' }, 'cancelled');
         } else if (providerTaskId) {
@@ -391,7 +396,7 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
       } else if (completedVideoResponse(status, result)) {
         await completeJob(job.id, result);
       } else {
-        const providerTaskId = taskIdOf(body);
+        const providerTaskId = taskIdOf(body, adapter);
         if (!providerTaskId) await refundJob(job.id, { code: 'UPSTREAM_TASK_ID_MISSING', message: '服务商未返回视频任务 ID' });
         else await updateJob(job.id, { status: 'processing', providerTaskId, submittedAt: job.submittedAt || nowIso(), progress: Number(payloadOf(body)?.progress || 0), nextPollAt: Date.now() + 5000, leaseOwner: workerId, leaseUntil: Date.now() + config.leaseDurationMs });
       }
