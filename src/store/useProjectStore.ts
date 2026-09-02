@@ -104,6 +104,7 @@ const generateId = () => `id-${Date.now()}-${Math.random().toString(36).substr(2
 let storageScope = 'unscoped';
 let storageScopeEpoch = 0;
 let saveQueuedWhileBusy = false;
+const lastSavedFingerprints = new Map<string, string>();
 const getProjectListKey = () => `ai-drama-projects:${storageScope}`;
 const getProjectDataKey = (projectId: string) => `ai-drama-project:${storageScope}:${projectId}`;
 
@@ -713,6 +714,12 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     const { project } = get();
     if (!project) return;
 
+    // Generation progress/status messages are transient runtime state. They
+    // must not create a project revision on every polling tick.
+    const transientOnly = Object.keys(data).length > 0
+      && Object.keys(data).every((key) => ['status', 'progress', 'error', 'generationMessage'].includes(key));
+    const persistsProject = !transientOnly;
+
     set({
       project: {
         ...project,
@@ -721,12 +728,11 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
             ? { ...node, data: { ...node.data, ...data } }
             : node
         ),
-        updatedAt: new Date().toISOString(),
+        updatedAt: persistsProject ? new Date().toISOString() : project.updatedAt,
       },
     });
 
-    // 触发自动保存
-    get().triggerAutoSave();
+    if (persistsProject) get().triggerAutoSave();
   },
 
   deleteNode: (nodeId) => {
@@ -1057,6 +1063,13 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     }
 
     saveProjectDataToStorage(projectToSave);
+    const fingerprint = JSON.stringify(createPersistableProject(projectToSave));
+    const fingerprintKey = `${saveScope}:${projectToSave.id}`;
+    if (lastSavedFingerprints.get(fingerprintKey) === fingerprint) {
+      set({ isSaving: false });
+      saveQueuedWhileBusy = false;
+      return;
+    }
     // 本地空间不足时仍继续上传云端，确保大图片素材不会丢失
 
     // 更新项目列表中的信息
@@ -1084,6 +1097,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
         isSaving: false,
       }));
       saveProjectsToStorage(versionedProjects);
+      lastSavedFingerprints.set(fingerprintKey, fingerprint);
       if (saveQueuedWhileBusy || get().project?.updatedAt !== projectToSave.updatedAt) {
         saveQueuedWhileBusy = false;
         queueMicrotask(() => get().saveCurrentProject());
@@ -1212,6 +1226,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
 
     // 设置新的定时器
     const newTimer = setTimeout(() => {
+      set({ autoSaveTimer: null });
       get().saveCurrentProject();
       console.log('自动保存完成');
     }, AUTO_SAVE_DELAY);
