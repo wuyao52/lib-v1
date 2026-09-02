@@ -34,6 +34,11 @@ export function isBoyesirVideoApi(api) {
   } catch { return false; }
 }
 
+export function isFankeVideoApi(api) {
+  try { return new URL(api.baseUrl).hostname.toLowerCase() === 'ai.fanke2026.xyz'; }
+  catch { return false; }
+}
+
 function referenceUrl(value) {
   if (typeof value === 'string') return value;
   if (!value || typeof value !== 'object') return '';
@@ -69,6 +74,21 @@ function openAiCompatibleRequestBody(requestBody) {
     return body;
   }
   return requestBody;
+}
+
+function fankeRequestBody(requestBody) {
+  const urls = (value) => Array.isArray(value) ? value.map(referenceUrl).filter(Boolean) : [];
+  const body = {
+    model: requestBody.model,
+    prompt: String(requestBody.prompt || '').replace(/@\[([^\]]+)\]\([^)]*\)/g, ' $1').replace(/[ \t]{2,}/g, ' ').trim(),
+    ratio: requestBody.ratio ?? requestBody.aspect_ratio ?? '9:16',
+    duration: requestBody.duration ?? requestBody.seconds ?? 15,
+    imageUrls: urls(requestBody.images),
+    videoUrls: urls(requestBody.videos),
+    audioUrls: urls(requestBody.audios),
+  };
+  if (requestBody.resolution) body.resolution = requestBody.resolution;
+  return body;
 }
 
 async function downloadReference(urlValue, index, { fetchImpl, resolveHost, signal }) {
@@ -113,6 +133,31 @@ async function shishikejiForm(requestBody, dependencies) {
 }
 
 export function createVideoProviderAdapter(api, { fetchImpl = fetch, resolveHost = lookup } = {}) {
+  if (isFankeVideoApi(api)) {
+    const headers = () => new Headers({
+      accept: 'application/json', authorization: `Bearer ${api.apiKey}`,
+    });
+    return {
+      kind: 'fanke-open-v1',
+      async submit(requestBody, _idempotencyKey, signal) {
+        const requestHeaders = headers();
+        requestHeaders.set('content-type', 'application/json');
+        return fetchImpl(buildTarget(api, '/api/open/v1/video/generate'), {
+          method: 'POST', redirect: 'manual', headers: requestHeaders,
+          body: JSON.stringify(fankeRequestBody(requestBody)), signal,
+        });
+      },
+      poll(jobId, signal) {
+        const target = buildTarget(api, `/api/open/v1/video/status?jobId=${encodeURIComponent(jobId)}&_=${Date.now()}`);
+        const requestHeaders = headers();
+        requestHeaders.set('cache-control', 'no-cache');
+        return fetchImpl(target, { method: 'GET', cache: 'no-store', redirect: 'manual', headers: requestHeaders, signal });
+      },
+      cancel() { return null; },
+      resultHeaders() { return headers(); },
+      refreshResult: null,
+    };
+  }
   if (isBoyesirVideoApi(api)) {
     const headers = () => new Headers({
       accept: 'application/json', authorization: `Bearer ${api.apiKey}`,
