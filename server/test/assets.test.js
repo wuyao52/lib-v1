@@ -213,7 +213,11 @@ test('video assets use a short-lived direct upload and are verified before persi
     method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ token: imageUpload.token }),
   });
   assert.equal(imageCompleted.status, 201);
-  assert.equal((await imageCompleted.json()).asset.mimeType, 'image/png');
+  const imageAsset = (await imageCompleted.json()).asset;
+  assert.equal(imageAsset.mimeType, 'image/png');
+  const imagePlayback = await fetch(`${baseUrl}/api/assets/${imageAsset.id}/playback-url`, { headers: { cookie } });
+  assert.equal(imagePlayback.status, 200);
+  assert.match((await imagePlayback.json()).url, /^https:\/\/oss\.example\/play\//);
   assert.equal(db.read('assets').length, 2);
 
   const maxSizeImageRequest = await fetch(`${baseUrl}/api/assets/direct-upload`, {
