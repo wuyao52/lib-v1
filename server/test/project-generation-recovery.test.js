@@ -58,7 +58,21 @@ test('project loading hydrates a completed durable video from the queue row', ()
 });
 
 test('project loading hydrates a pending video task so the browser can resume polling', () => {
-  const project = hydrateProjectGenerations(baseProject, 'user-1', {
+  const project = hydrateProjectGenerations({
+    ...baseProject,
+    nodes: baseProject.nodes.map((node) => ({
+      ...node,
+      data: {
+        ...node.data,
+        generatedContent: '/api/generated-media/old-media',
+        generationMeta: {
+          ...node.data.generationMeta,
+          taskId: 'old-task',
+          completedAt: '2026-09-12T10:05:00.000Z',
+        },
+      },
+    })),
+  }, 'user-1', {
     read(collection) {
       return collection === 'generationJobs' ? [{
         id: 'queued-video-job',
@@ -83,6 +97,52 @@ test('project loading hydrates a pending video task so the browser can resume po
   assert.equal(node.data.generationMeta.taskId, 'queued-video-job');
   assert.equal(node.data.generationMeta.apiId, 'api-1');
   assert.equal(node.data.generationMeta.modelId, 'video-model');
+  assert.equal(node.data.generationMeta.completedAt, undefined);
   // The provider URL remains server-side while the archive is pending.
-  assert.equal(node.data.generatedContent, undefined);
+  assert.equal(node.data.generatedContent, '/api/generated-media/old-media');
+});
+
+test('project loading hydrates a completed Fanke result URL before archival', () => {
+  const providerVideoUrl = 'https://pub-046c861518f442f69b2c6ab1c59ab96a.r2.dev/runtime-assets/generated-videos/847b9cd8-6ba8-4673-8ac6-6b0943259201/0.mp4';
+  const project = {
+    ...baseProject,
+    nodes: baseProject.nodes.map((node) => ({
+      ...node,
+      data: {
+        ...node.data,
+        status: 'generating',
+        progress: 30,
+        generationMeta: {
+          ...node.data.generationMeta,
+          // Legacy browser snapshots could save the provider task ID instead
+          // of the local queue ID and omit projectId/nodeId on the queue row.
+          taskId: 'task_1789222246467_q86bfy33_video_generation',
+        },
+      },
+    })),
+  };
+  const hydrated = hydrateProjectGenerations(project, 'user-1', {
+    read(collection) {
+      return collection === 'generationJobs' ? [{
+        id: 'idem-fanke-recovery-job',
+        userId: 'user-1',
+        apiId: 'api-fanke',
+        modelId: 'MINIMAX-H3-768p',
+        providerTaskId: 'task_1789222246467_q86bfy33_video_generation',
+        status: 'completed',
+        progress: 100,
+        resultUrl: providerVideoUrl,
+        completedAt: '2026-09-12T12:05:53.000Z',
+        updatedAt: '2026-09-12T12:05:53.000Z',
+      }] : [];
+    },
+  });
+
+  const node = hydrated.nodes[0];
+  assert.equal(node.data.status, 'completed');
+  assert.equal(node.data.progress, 100);
+  assert.equal(node.data.generatedContent, providerVideoUrl);
+  assert.equal(node.data.generationMeta.taskId, 'idem-fanke-recovery-job');
+  assert.equal(node.data.generationMeta.providerTaskId, 'task_1789222246467_q86bfy33_video_generation');
+  assert.equal(node.data.generationMeta.completedAt, '2026-09-12T12:05:53.000Z');
 });
