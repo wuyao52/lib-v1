@@ -45,15 +45,19 @@ test('system API discovery reads fixed and selectable image resolutions from com
       { id: 'fixed-image', name: 'Fixed Image', type: 'image_generation', resolution: '1K' },
       { id: 'flex-image', name: 'Flex Image', type: 'image', supported_resolutions: ['720p', '1080p', '2K'] },
       { id: 'sized-image', name: 'Sized Image', type: 'image', capabilities: { resolutions: '1024x1024,1536x1024' } },
+      { id: 'quality-image', name: 'Quality Image', type: 'image', qualities: ['standard', 'high'], default_quality: 'high', quality_required: true },
     ] }), { status: 200, headers: { 'content-type': 'application/json' } }),
     resolveHost: async () => [{ address: '203.0.113.23', family: 4 }],
   });
-  assert.deepEqual(result.models.map(({ id, supportedResolutions }) => ({ id, supportedResolutions })), [
+  assert.deepEqual(result.models.filter(({ id }) => ['fixed-image', 'flex-image', 'sized-image'].includes(id)).map(({ id, supportedResolutions }) => ({ id, supportedResolutions })), [
     { id: 'fixed-image', supportedResolutions: ['1080p'] },
     { id: 'flex-image', supportedResolutions: ['720p', '1080p', '2k'] },
     { id: 'sized-image', supportedResolutions: ['1024x1024', '1536x1024'] },
   ]);
   assert.ok(result.models.every(({ type }) => type === 'image'));
+  assert.deepEqual(result.models.find(({ id }) => id === 'quality-image'), {
+    id: 'quality-image', name: 'Quality Image', type: 'image', allowedQualities: ['standard', 'high'], defaultQuality: 'high', qualityRequired: true,
+  });
 });
 
 test('system API discovery exposes BYS video paths and model-specific duration rules', async () => {
