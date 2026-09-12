@@ -303,15 +303,16 @@ test('schema migration backfills account_type on legacy databases that recorded 
   const pool = { getConnection: async () => connection };
 
   const first = await runSchemaMigrations(pool);
-  assert.equal(first.currentVersion, 14);
+  assert.equal(first.currentVersion, 15);
   assert.equal(statements.filter(({ sql }) => /ALTER TABLE `users` ADD COLUMN `account_type`/i.test(sql)).length, 1);
   assert.match(statements.find(({ sql }) => /ALTER TABLE `users` ADD COLUMN `account_type`/i.test(sql)).sql, /VARCHAR\(16\) NOT NULL DEFAULT 'special'/i);
   assert.equal(applied.has(13), true);
   assert.equal(applied.has(14), true);
+  assert.equal(applied.has(15), true);
 
   statements.length = 0;
   const second = await runSchemaMigrations(pool);
-  assert.equal(second.currentVersion, 14);
+  assert.equal(second.currentVersion, 15);
   assert.equal(statements.some(({ sql }) => /^ALTER TABLE/i.test(sql)), false);
 });
 
@@ -332,9 +333,10 @@ test('schema migration repairs generation job IDs when the earlier length migrat
 
   const result = await runSchemaMigrations({ getConnection: async () => connection });
   assert.equal(result.ready, true);
-  assert.equal(result.currentVersion, 14);
+  assert.equal(result.currentVersion, 15);
   assert.equal(statements.filter(({ sql }) => /ALTER TABLE `generation_jobs` MODIFY COLUMN `id` VARCHAR\(191\) NOT NULL/i.test(sql)).length, 1);
   assert.equal(applied.has(14), true);
+  assert.equal(applied.has(15), true);
 });
 
 test('project revision startup ranking excludes large JSON payloads from the window sort', () => {
