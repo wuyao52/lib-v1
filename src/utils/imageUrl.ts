@@ -22,6 +22,17 @@ export function normalizeImageSource(value: unknown): string {
       }
     }
   }
+  if (source.startsWith('<') && source.endsWith('>')) {
+    source = source.slice(1, -1).trim();
+  }
+
+  // A provider may add a short label around the URL instead of using valid
+  // Markdown. Extract only an HTTPS/HTTP URL in that case; validation is still
+  // performed by the caller/backend.
+  if (!/^https?:\/\//i.test(source) && !/^data:image\//i.test(source) && !/^\/api\/assets\/public\//i.test(source)) {
+    const embedded = source.match(/https?:\/\/[^\s<>"\]]+/i)?.[0];
+    if (embedded) source = embedded;
+  }
 
   // A few gateways append prose punctuation after the URL. Do not strip
   // ordinary URL characters such as ')' because they may be part of a path.
