@@ -9,6 +9,7 @@ const retentionMs = () => {
 };
 const DEFAULT_MAX_VIDEO_BYTES = 1024 * 1024 * 1024;
 const DEFAULT_NON_STREAM_MAX_BYTES = 32 * 1024 * 1024;
+const DEFAULT_ARCHIVE_TIMEOUT_MS = 15 * 60 * 1000;
 const MAX_PROXY_RANGE_BYTES = 1024 * 1024;
 
 const maxVideoBytes = () => {
@@ -19,6 +20,38 @@ const maxNonStreamBytes = () => {
   const configured = Number(process.env.GENERATED_VIDEO_NON_STREAM_MAX_BYTES);
   return Number.isSafeInteger(configured) && configured > 0 ? Math.min(configured, maxVideoBytes()) : Math.min(DEFAULT_NON_STREAM_MAX_BYTES, maxVideoBytes());
 };
+const archiveTimeoutMs = () => {
+  const configured = Number(process.env.GENERATED_VIDEO_ARCHIVE_TIMEOUT_MS);
+  return Number.isSafeInteger(configured) && configured >= 30_000 && configured <= 60 * 60 * 1000 ? configured : DEFAULT_ARCHIVE_TIMEOUT_MS;
+};
+
+function archiveTimeoutError() {
+  return Object.assign(new Error('生成视频保存播放文件超时，请稍后继续自动重试'), { code: 'GENERATED_VIDEO_ARCHIVE_TIMEOUT' });
+}
+
+async function withArchiveDeadline(promise, controller, deadline) {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) {
+    controller.abort();
+    throw archiveTimeoutError();
+  }
+  let timer;
+  const operation = Promise.resolve(promise);
+  operation.catch(() => undefined);
+  try {
+    return await Promise.race([
+      operation,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(archiveTimeoutError());
+        }, remainingMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function limitedStream(body, maximumBytes, onProgress) {
   let total = 0;
@@ -48,18 +81,23 @@ export function createGeneratedMediaService({ db, storage, fetchImpl = fetch, re
     if (!storage || !result?.url) return result;
     const existing = db.read('generatedMedia').find((item) => item.jobId === job.id);
     if (existing) return { ...result, url: `/api/generated-media/${existing.id}` };
+    if (/^\/api\/generated-media\//i.test(result.url)) return result;
     const target = new URL(result.url);
     if (target.protocol !== 'https:') throw new Error('生成视频归档只允许 HTTPS 来源');
     // A provider result URL is still untrusted input. Resolve it immediately
     // before downloading so an external API cannot turn archiving into SSRF.
     await assertPublicHost(target.hostname, resolveHost);
+    const deadline = Date.now() + archiveTimeoutMs();
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120000);
-    try {
-      const headers = options?.headers instanceof Headers
-        ? options.headers
-        : options?.headers && typeof options.headers === 'object' ? new Headers(options.headers) : undefined;
-      const response = await fetchImpl(target, { method: 'GET', redirect: 'follow', headers, signal: controller.signal });
+    const headers = options?.headers instanceof Headers
+      ? options.headers
+      : options?.headers && typeof options.headers === 'object' ? new Headers(options.headers) : undefined;
+    const fetchVideo = async () => {
+      const response = await withArchiveDeadline(
+        fetchImpl(target, { method: 'GET', redirect: 'follow', headers, signal: controller.signal }),
+        controller,
+        deadline,
+      );
       // Providers commonly return a short-lived 3xx URL before the actual video.
       // Validate the final URL as well so following redirects cannot become SSRF.
       if (response.url) {
@@ -72,23 +110,44 @@ export function createGeneratedMediaService({ db, storage, fetchImpl = fetch, re
       if (contentLength > maxVideoBytes()) throw new Error('生成视频超过平台归档大小限制');
       const mimeType = String(response.headers.get('content-type') || 'video/mp4').split(';')[0];
       if (!/^video\//i.test(mimeType) && mimeType !== 'application/octet-stream') throw new Error('生成结果不是可归档的视频');
-      const id = randomUUID();
+      return { response, contentLength, mimeType };
+    };
+    const id = randomUUID();
+    let objectKey = null;
+    let persisted = false;
+    try {
+      let { response, contentLength, mimeType } = await fetchVideo();
       const extension = mimeType.includes('webm') ? 'webm' : 'mp4';
-      const objectKey = `generated-videos/${job.userId}/${job.id}/${id}.${extension}`;
+      objectKey = `generated-videos/${job.userId}/${job.id}/${id}.${extension}`;
       let byteSize = contentLength;
       if (storage.putStream) {
         try {
           const body = limitedStream(response.body, maxVideoBytes(), (total) => { byteSize = total; });
-          await storage.putStream({ key: objectKey, body, mimeType, contentLength: contentLength || undefined });
+          await withArchiveDeadline(
+            storage.putStream({ key: objectKey, body, mimeType, contentLength: contentLength || undefined, signal: controller.signal }),
+            controller,
+            deadline,
+          );
+        } catch (error) {
+          await storage.delete?.(objectKey).catch(() => undefined);
+          if (error?.code === 'GENERATED_VIDEO_ARCHIVE_TIMEOUT' || error?.code === 'GENERATED_VIDEO_TOO_LARGE' || !storage.put) throw error;
+          if (contentLength > maxNonStreamBytes()) throw error;
+          ({ response, contentLength, mimeType } = await fetchVideo());
+          if (contentLength > maxNonStreamBytes()) throw error;
+          const bytes = await withArchiveDeadline(readLimitedBody(response, maxNonStreamBytes()), controller, deadline);
+          byteSize = bytes.length;
+          await withArchiveDeadline(storage.put({ key: objectKey, bytes, mimeType, signal: controller.signal }), controller, deadline);
+        }
+      } else {
+        if (!contentLength || contentLength > maxNonStreamBytes()) throw new Error('当前存储不支持流式归档，视频过大或未声明大小，已拒绝以保护服务器内存');
+        const bytes = await withArchiveDeadline(readLimitedBody(response, maxNonStreamBytes()), controller, deadline);
+        byteSize = bytes.length;
+        try {
+          await withArchiveDeadline(storage.put({ key: objectKey, bytes, mimeType, signal: controller.signal }), controller, deadline);
         } catch (error) {
           await storage.delete?.(objectKey).catch(() => undefined);
           throw error;
         }
-      } else {
-        if (!contentLength || contentLength > maxNonStreamBytes()) throw new Error('当前存储不支持流式归档，视频过大或未声明大小，已拒绝以保护服务器内存');
-        const bytes = await readLimitedBody(response, maxNonStreamBytes());
-        byteSize = bytes.length;
-        await storage.put({ key: objectKey, bytes, mimeType });
       }
       const createdAt = new Date().toISOString();
       const record = {
@@ -96,9 +155,15 @@ export function createGeneratedMediaService({ db, storage, fetchImpl = fetch, re
         sourceUrl: result.url, createdAt, expiresAt: new Date(Date.parse(createdAt) + retentionMs()).toISOString(),
       };
       await mutateMedia((data) => data.generatedMedia.push(record));
+      persisted = true;
+      const stored = db.read('generatedMedia').find((item) => item.jobId === job.id);
+      if (stored && stored.id !== id) {
+        await storage.delete?.(objectKey).catch(() => undefined);
+        return { ...result, url: `/api/generated-media/${stored.id}` };
+      }
       return { ...result, url: `/api/generated-media/${id}` };
     } finally {
-      clearTimeout(timeout);
+      if (controller.signal.aborted && objectKey && !persisted) await storage.delete?.(objectKey).catch(() => undefined);
     }
   };
 
