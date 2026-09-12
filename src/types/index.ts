@@ -24,6 +24,9 @@ export interface AIModelConfig {
   maxDurationSec?: number | null;
   allowedDurationsSec?: number[];
   allowedResolutions?: string[];
+  allowedQualities?: string[];
+  defaultQuality?: string;
+  qualityRequired?: boolean;
   maxReferenceImages?: number;
   maxReferenceAudios?: number;
   maxReferenceVideos?: number;
