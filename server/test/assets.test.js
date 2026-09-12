@@ -279,6 +279,13 @@ test('generated image URLs are archived as durable owned assets and deduplicated
   assert.equal(objects.size, 1);
   assert.equal(db.read('assets').length, 1);
   assert.equal(downloads, 1);
+
+  // Some image providers wrap the same URL in a Markdown link. The import
+  // endpoint should canonicalize it before deduplication and downloading.
+  const markdown = await archive('[https://provider.example/generated/result.png](https://provider.example/generated/result.png)');
+  assert.equal(markdown.status, 200);
+  assert.equal((await markdown.json()).asset.id, asset.id);
+  assert.equal(downloads, 1);
 });
 
 test('generated image import detects real bytes, follows safe redirects, and rejects disguised responses', async (t) => {
