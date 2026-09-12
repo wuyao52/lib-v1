@@ -267,7 +267,7 @@ test('schema migrations execute once and skip all ALTER statements on later star
   const pool = { getConnection: async () => connection };
   await runSchemaMigrations(pool);
   const firstAlterCount = statements.filter((sql) => /^ALTER TABLE/i.test(sql)).length;
-  assert.equal(firstAlterCount, 4);
+  assert.equal(firstAlterCount, 5);
   assert.deepEqual([...applied], schemaMigrationVersions.map((item) => item.version));
   statements.length = 0;
   await runSchemaMigrations(pool);
@@ -303,16 +303,17 @@ test('schema migration backfills account_type on legacy databases that recorded 
   const pool = { getConnection: async () => connection };
 
   const first = await runSchemaMigrations(pool);
-  assert.equal(first.currentVersion, 15);
+  assert.equal(first.currentVersion, 16);
   assert.equal(statements.filter(({ sql }) => /ALTER TABLE `users` ADD COLUMN `account_type`/i.test(sql)).length, 1);
   assert.match(statements.find(({ sql }) => /ALTER TABLE `users` ADD COLUMN `account_type`/i.test(sql)).sql, /VARCHAR\(16\) NOT NULL DEFAULT 'special'/i);
   assert.equal(applied.has(13), true);
   assert.equal(applied.has(14), true);
   assert.equal(applied.has(15), true);
+  assert.equal(applied.has(16), true);
 
   statements.length = 0;
   const second = await runSchemaMigrations(pool);
-  assert.equal(second.currentVersion, 15);
+  assert.equal(second.currentVersion, 16);
   assert.equal(statements.some(({ sql }) => /^ALTER TABLE/i.test(sql)), false);
 });
 
@@ -333,10 +334,35 @@ test('schema migration repairs generation job IDs when the earlier length migrat
 
   const result = await runSchemaMigrations({ getConnection: async () => connection });
   assert.equal(result.ready, true);
-  assert.equal(result.currentVersion, 15);
+  assert.equal(result.currentVersion, 16);
   assert.equal(statements.filter(({ sql }) => /ALTER TABLE `generation_jobs` MODIFY COLUMN `id` VARCHAR\(191\) NOT NULL/i.test(sql)).length, 1);
   assert.equal(applied.has(14), true);
   assert.equal(applied.has(15), true);
+  assert.equal(applied.has(16), true);
+});
+
+test('schema migration widens generated media job IDs for managed idempotency keys', async () => {
+  const applied = new Set(Array.from({ length: 15 }, (_, index) => index + 1));
+  const statements = [];
+  const connection = {
+    release() {},
+    async query(sql, params) {
+      statements.push({ sql, params });
+      if (/GET_LOCK/i.test(sql)) return [[{ acquired: 1 }]];
+      if (/RELEASE_LOCK/i.test(sql)) return [[{ released: 1 }]];
+      if (/SELECT version FROM schema_migrations/i.test(sql)) return [[...applied].map((version) => ({ version }))];
+      if (/INSERT INTO schema_migrations/i.test(sql)) { applied.add(Number(params[0])); return [{ affectedRows: 1 }]; }
+      return [{ affectedRows: 0 }];
+    },
+  };
+
+  const result = await runSchemaMigrations({ getConnection: async () => connection });
+  assert.equal(result.currentVersion, 16);
+  assert.equal(
+    statements.filter(({ sql }) => /ALTER TABLE `generated_media` MODIFY COLUMN `job_id` VARCHAR\(191\) NOT NULL/i.test(sql)).length,
+    1,
+  );
+  assert.equal(applied.has(16), true);
 });
 
 test('project revision startup ranking excludes large JSON payloads from the window sort', () => {
