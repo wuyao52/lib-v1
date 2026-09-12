@@ -64,13 +64,25 @@ test('managed image models are cataloged, billed, refunded on failure, and isola
   await context.request('/api/admin/pricing', admin.cookie, {
     method: 'POST', body: JSON.stringify({ apiId: api.id, modelId: 'image-model-a', displayName: '写实生图', category: 'image', billingUnit: 'image', unitPriceCents: 25, allowedResolutions: ['1080p', '2K'] }),
   });
+  const qualityPricing = await context.request('/api/admin/pricing', admin.cookie, {
+    method: 'POST', body: JSON.stringify({ apiId: api.id, modelId: 'image-model-quality', displayName: '质量生图', category: 'image', billingUnit: 'image', unitPriceCents: 10, allowedResolutions: ['1080p'], allowedQualities: ['standard', 'high'], defaultQuality: 'standard', qualityRequired: true }),
+  });
+  assert.equal(qualityPricing.status, 201);
+  const unconfiguredQualityPricing = await context.request('/api/admin/pricing', admin.cookie, {
+    method: 'POST', body: JSON.stringify({ apiId: api.id, modelId: 'image-model-quality-unconfigured', displayName: '未配置质量生图', category: 'image', billingUnit: 'image', unitPriceCents: 10, allowedResolutions: ['1080p'], qualityRequired: true }),
+  });
+  assert.equal(unconfiguredQualityPricing.status, 201);
   await context.request('/api/admin/pricing', admin.cookie, {
     method: 'POST', body: JSON.stringify({ apiId: api.id, modelId: 'video-model-a', displayName: '视频模型', category: 'video', billingUnit: 'second', unitPriceCents: 10, allowedDurationsSec: [5] }),
   });
 
   const catalog = await (await context.request('/api/catalog/models', normal.cookie)).json();
-  assert.deepEqual(catalog.models.filter((item) => item.category === 'image').map((item) => item.name), ['写实生图']);
-  assert.deepEqual(catalog.models.find((item) => item.category === 'image').allowedResolutions, ['1080p', '2k']);
+  assert.deepEqual(catalog.models.filter((item) => item.category === 'image').map((item) => item.name).sort(), ['写实生图', '质量生图', '未配置质量生图'].sort());
+  assert.deepEqual(catalog.models.find((item) => item.modelId === 'image-model-a').allowedResolutions, ['1080p', '2k']);
+  const qualityCatalog = catalog.models.find((item) => item.modelId === 'image-model-quality');
+  assert.deepEqual(qualityCatalog.allowedQualities, ['standard', 'high']);
+  assert.equal(qualityCatalog.defaultQuality, 'standard');
+  assert.equal(qualityCatalog.qualityRequired, true);
 
   const generated = await context.request(`/api/system-ai/${api.id}/v1/images`, normal.cookie, {
     method: 'POST', body: JSON.stringify({ model: 'image-model-a', prompt: 'image-ok', aspect_ratio: '1:1', resolution: '1080p' }),
@@ -81,6 +93,35 @@ test('managed image models are cataloged, billed, refunded on failure, and isola
   let billing = await (await context.request('/api/billing/me', normal.cookie)).json();
   assert.equal(billing.balanceCents, 75);
   assert.equal(billing.transactions.some((item) => item.type === 'model_usage' && item.amountCents === -25), true);
+
+  const qualityDefault = await context.request(`/api/system-ai/${api.id}/v1/images`, normal.cookie, {
+    method: 'POST', body: JSON.stringify({ model: 'image-model-quality', prompt: 'image-ok', resolution: '1080p' }),
+  });
+  assert.equal(qualityDefault.status, 200);
+  assert.equal(JSON.parse(context.upstreamCalls.at(-1).body).quality, 'standard');
+  billing = await (await context.request('/api/billing/me', normal.cookie)).json();
+  assert.equal(billing.balanceCents, 65);
+
+  const qualityExplicit = await context.request(`/api/system-ai/${api.id}/v1/images`, normal.cookie, {
+    method: 'POST', body: JSON.stringify({ model: 'image-model-quality', prompt: 'image-ok', quality: 'high', resolution: '1080p' }),
+  });
+  assert.equal(qualityExplicit.status, 200);
+  assert.equal(JSON.parse(context.upstreamCalls.at(-1).body).quality, 'high');
+  billing = await (await context.request('/api/billing/me', normal.cookie)).json();
+  assert.equal(billing.balanceCents, 55);
+
+  const qualityInvalid = await context.request(`/api/system-ai/${api.id}/v1/images`, normal.cookie, {
+    method: 'POST', body: JSON.stringify({ model: 'image-model-quality', prompt: 'image-ok', quality: 'auto', resolution: '1080p' }),
+  });
+  assert.equal(qualityInvalid.status, 400);
+  assert.equal((await qualityInvalid.json()).error, 'INVALID_IMAGE_QUALITY');
+  const qualityUnconfigured = await context.request(`/api/system-ai/${api.id}/v1/images`, normal.cookie, {
+    method: 'POST', body: JSON.stringify({ model: 'image-model-quality-unconfigured', prompt: 'image-ok', resolution: '1080p' }),
+  });
+  assert.equal(qualityUnconfigured.status, 400);
+  assert.equal((await qualityUnconfigured.json()).error, 'IMAGE_QUALITY_NOT_CONFIGURED');
+  billing = await (await context.request('/api/billing/me', normal.cookie)).json();
+  assert.equal(billing.balanceCents, 55);
 
   const unsupportedResolution = await context.request(`/api/system-ai/${api.id}/v1/images`, normal.cookie, {
     method: 'POST', body: JSON.stringify({ model: 'image-model-a', prompt: 'image-ok', aspect_ratio: '1:1', resolution: '720p' }),
@@ -93,7 +134,7 @@ test('managed image models are cataloged, billed, refunded on failure, and isola
   });
   assert.equal(failed.status, 500);
   billing = await (await context.request('/api/billing/me', normal.cookie)).json();
-  assert.equal(billing.balanceCents, 75);
+  assert.equal(billing.balanceCents, 55);
   assert.equal(billing.transactions.some((item) => item.type === 'model_refund' && item.amountCents === 25), true);
 
   const wrongCategory = await context.request(`/api/system-ai/${api.id}/v1/images`, normal.cookie, {
@@ -101,7 +142,7 @@ test('managed image models are cataloged, billed, refunded on failure, and isola
   });
   assert.equal(wrongCategory.status, 400);
   assert.equal((await wrongCategory.json()).error, 'MODEL_CATEGORY_MISMATCH');
-  assert.equal((await (await context.request('/api/billing/me', normal.cookie)).json()).balanceCents, 75);
+  assert.equal((await (await context.request('/api/billing/me', normal.cookie)).json()).balanceCents, 55);
 });
 
 test('system model reference limits allow 30 images and 10 audio/video files', async (t) => {
