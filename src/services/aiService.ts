@@ -332,6 +332,10 @@ export class AIService {
     throw new Error('当前模型服务不支持恢复视频任务');
   }
 
+  async resumeImage(_taskId: string, _signal?: AbortSignal): Promise<GenerationResponse> {
+    throw new Error('当前模型服务不支持恢复图片任务');
+  }
+
   async generate(request: GenerationRequest): Promise<GenerationResponse> {
     const { type, prompt, settings } = request;
     switch (type) {
@@ -784,6 +788,8 @@ export class SeedanceService extends AIService {
         const taskId = imageTaskId(data);
         const taskStatus = imageTaskStatus(data);
         const initialImageUrl = extractImageResult(data);
+        const onTaskId = typeof settings._onTaskId === 'function' ? settings._onTaskId as (id: string) => void : null;
+        if (taskId) onTaskId?.(taskId);
         if (taskId && !initialImageUrl && !imageTaskCompleted(taskStatus) && !imageTaskFailed(taskStatus)) {
           console.log('任务已创建，taskId:', taskId);
           return await this.pollImageResult(taskId, signal);
@@ -816,6 +822,15 @@ export class SeedanceService extends AIService {
       console.error('图片生成失败:', error);
       return { success: false, error: error.message || '图片生成失败' };
     }
+  }
+
+  // Resume an asynchronous image task after the image modal or project has
+  // been unmounted. The provider task remains authoritative; callers can
+  // archive the returned image and write the history record afterwards.
+  async resumeImage(taskId: string, signal?: AbortSignal): Promise<GenerationResponse> {
+    const normalizedTaskId = String(taskId || '').trim();
+    if (!normalizedTaskId) return { success: false, error: '图片任务 ID 无效' };
+    return this.pollImageResult(normalizedTaskId, signal);
   }
 
   // 轮询图片任务
