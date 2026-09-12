@@ -148,6 +148,15 @@ const migrations = [
       await query('ALTER TABLE `generation_jobs` MODIFY COLUMN `id` VARCHAR(191) NOT NULL');
     },
   },
+  {
+    version: 15,
+    name: 'model_pricing_image_quality',
+    async up({ ensureColumn }) {
+      await ensureColumn('model_pricing', 'allowed_qualities', 'JSON NULL');
+      await ensureColumn('model_pricing', 'default_quality', 'VARCHAR(32) NULL');
+      await ensureColumn('model_pricing', 'quality_required', 'TINYINT(1) NOT NULL DEFAULT 0');
+    },
+  },
 ];
 
 export async function runSchemaMigrations(pool) {
