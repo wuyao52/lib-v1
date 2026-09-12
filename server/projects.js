@@ -10,24 +10,42 @@ function isDurableGeneratedVideoUrl(value) {
     || /^\/api\/assets\/public\/[^/?#]+$/i.test(String(value || '').trim());
 }
 
+function isUsableGeneratedVideoUrl(value) {
+  const source = String(value || '').trim();
+  // Prefer the same-origin archived URL, but keep a completed provider URL
+  // usable when a legacy job finished before object-storage archiving was
+  // available. The URL came from an authenticated, user-owned queue row.
+  return isDurableGeneratedVideoUrl(source) || /^https:\/\//i.test(source);
+}
+
 /**
  * A project save and a provider completion are intentionally independent.
  * When the browser is closed during that gap, rebuild the node's visible
  * generation state from the durable queue row on the next project load.
  */
 export function hydrateProjectGenerations(project, userId, db) {
-  const jobs = (db.read('generationJobs') || [])
-    .filter((job) => job.userId === userId && job.projectId === project.id && job.nodeId)
+  const userJobs = (db.read('generationJobs') || [])
+    .filter((job) => job.userId === userId)
     .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
-  if (!jobs.length || !Array.isArray(project.nodes)) return project;
+  if (!userJobs.length || !Array.isArray(project.nodes)) return project;
 
+  // Newer queue rows carry projectId/nodeId. Older rows and older browser
+  // snapshots may not, so build a second index from the task ID persisted in
+  // the node. Both the internal queue ID and the provider ID are accepted.
+  const jobs = userJobs.filter((job) => job.projectId === project.id && job.nodeId);
   const latestByNode = new Map();
   jobs.forEach((job) => {
     if (!latestByNode.has(job.nodeId)) latestByNode.set(job.nodeId, job);
   });
+  const jobsByTask = new Map();
+  userJobs.forEach((job) => {
+    if (job.id) jobsByTask.set(String(job.id), job);
+    if (job.providerTaskId) jobsByTask.set(String(job.providerTaskId), job);
+  });
   let changed = false;
   const nodes = project.nodes.map((node) => {
-    const job = latestByNode.get(node.id);
+    const savedTaskId = String(node.data?.generationMeta?.taskId || '').trim();
+    const job = latestByNode.get(node.id) || jobsByTask.get(savedTaskId);
     if (!job) return node;
     const currentData = node.data || {};
     const currentMeta = currentData.generationMeta || {};
@@ -36,10 +54,11 @@ export function hydrateProjectGenerations(project, userId, db) {
       taskId: String(job.id || currentMeta.taskId || ''),
       apiId: job.apiId || currentMeta.apiId,
       modelId: job.modelId || currentMeta.modelId,
+      ...(job.providerTaskId ? { providerTaskId: job.providerTaskId } : {}),
     };
     let nextData = currentData;
 
-    if (job.status === 'completed' && isDurableGeneratedVideoUrl(job.resultUrl)) {
+    if (job.status === 'completed' && isUsableGeneratedVideoUrl(job.resultUrl)) {
       nextData = {
         ...currentData,
         status: 'completed',
@@ -60,7 +79,10 @@ export function hydrateProjectGenerations(project, userId, db) {
         progress: Number(job.progress || 0),
         error: undefined,
         generationMessage: job.errorMessage || (Number(job.progress || 0) >= 100 ? '视频已生成，正在保存播放文件' : '正在恢复视频生成状态...'),
-        generationMeta: taskMeta,
+        // The node may still contain the previous completed video's metadata
+        // when this is an in-place regeneration. Do not let client-side
+        // normalization treat that stale completion marker as the new run.
+        generationMeta: { ...taskMeta, completedAt: undefined },
       };
     } else if (TERMINAL_GENERATION_STATUSES.has(job.status) && currentData.status === 'generating') {
       nextData = {
