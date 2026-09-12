@@ -1,5 +1,6 @@
 import { ApiError, apiRequest } from './apiClient';
 import { compressImageDataUrl } from '@/utils/imageCompression';
+import { normalizeImageSource } from '@/utils/imageUrl';
 
 type AssetUploadResponse = {
   asset: {
@@ -167,9 +168,11 @@ export async function uploadAssetFile(file: File, signal?: AbortSignal): Promise
 export const uploadVideoAsset = uploadAssetFile;
 
 export async function archiveGeneratedImage(source: string, signal?: AbortSignal): Promise<string> {
-  if (/^\/api\/assets\/public\//i.test(source)) return source;
+  const normalizedSource = normalizeImageSource(source);
+  if (/^\/api\/assets\/public\//i.test(normalizedSource)) return normalizedSource;
+  if (!normalizedSource) throw new Error('图片结果地址无效');
   const response = await apiRequest<AssetImportResponse>('/api/assets/import-image', {
-    method: 'POST', body: JSON.stringify({ source }), signal,
+    method: 'POST', body: JSON.stringify({ source: normalizedSource }), signal,
   });
   if (response.asset?.url) return response.asset.url;
   if (!response.importJob?.id) throw new Error('图片归档任务创建失败');
