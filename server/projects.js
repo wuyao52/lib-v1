@@ -2,6 +2,85 @@ import { randomUUID } from 'node:crypto';
 
 const MAX_PROJECT_BYTES = 20 * 1024 * 1024;
 const MAX_PROJECT_REVISIONS = 30;
+const ACTIVE_GENERATION_STATUSES = new Set(['queued', 'submitting', 'processing', 'cancel_requested']);
+const TERMINAL_GENERATION_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+
+function isDurableGeneratedVideoUrl(value) {
+  return /^\/api\/generated-media\/[^/?#]+$/i.test(String(value || '').trim())
+    || /^\/api\/assets\/public\/[^/?#]+$/i.test(String(value || '').trim());
+}
+
+/**
+ * A project save and a provider completion are intentionally independent.
+ * When the browser is closed during that gap, rebuild the node's visible
+ * generation state from the durable queue row on the next project load.
+ */
+export function hydrateProjectGenerations(project, userId, db) {
+  const jobs = (db.read('generationJobs') || [])
+    .filter((job) => job.userId === userId && job.projectId === project.id && job.nodeId)
+    .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+  if (!jobs.length || !Array.isArray(project.nodes)) return project;
+
+  const latestByNode = new Map();
+  jobs.forEach((job) => {
+    if (!latestByNode.has(job.nodeId)) latestByNode.set(job.nodeId, job);
+  });
+  let changed = false;
+  const nodes = project.nodes.map((node) => {
+    const job = latestByNode.get(node.id);
+    if (!job) return node;
+    const currentData = node.data || {};
+    const currentMeta = currentData.generationMeta || {};
+    const taskMeta = {
+      ...currentMeta,
+      taskId: String(job.id || currentMeta.taskId || ''),
+      apiId: job.apiId || currentMeta.apiId,
+      modelId: job.modelId || currentMeta.modelId,
+    };
+    let nextData = currentData;
+
+    if (job.status === 'completed' && isDurableGeneratedVideoUrl(job.resultUrl)) {
+      nextData = {
+        ...currentData,
+        status: 'completed',
+        progress: 100,
+        generatedContent: job.resultUrl,
+        error: undefined,
+        generationMessage: undefined,
+        mediaSource: currentData.mediaSource || 'generated',
+        generationMeta: {
+          ...taskMeta,
+          completedAt: job.completedAt || job.updatedAt || currentMeta.completedAt,
+        },
+      };
+    } else if (ACTIVE_GENERATION_STATUSES.has(job.status)) {
+      nextData = {
+        ...currentData,
+        status: 'generating',
+        progress: Number(job.progress || 0),
+        error: undefined,
+        generationMessage: job.errorMessage || (Number(job.progress || 0) >= 100 ? '视频已生成，正在保存播放文件' : '正在恢复视频生成状态...'),
+        generationMeta: taskMeta,
+      };
+    } else if (TERMINAL_GENERATION_STATUSES.has(job.status) && currentData.status === 'generating') {
+      nextData = {
+        ...currentData,
+        status: job.status === 'cancelled' ? 'error' : 'error',
+        progress: 0,
+        error: job.errorMessage || (job.status === 'cancelled' ? '视频生成已取消' : '视频生成失败'),
+        generationMessage: undefined,
+        generationMeta: taskMeta,
+      };
+    }
+
+    if (nextData !== currentData) {
+      changed = true;
+      return { ...node, data: nextData };
+    }
+    return node;
+  });
+  return changed ? { ...project, nodes } : project;
+}
 
 function trimProjectRevisions(data, projectId) {
   const revisions = (data.projectRevisions || []).filter((item) => item.projectId === projectId);
@@ -77,7 +156,8 @@ export function registerProjectRoutes(router, { db, requireAuth }) {
   router.get('/:id', (req, res) => {
     const record = db.read('projects').find((item) => item.id === req.params.id && item.userId === req.user.id);
     if (!record) return res.status(404).json({ error: 'PROJECT_NOT_FOUND', message: '项目不存在' });
-    return res.json({ project: { ...record.projectData, version: Number(record.version || 1) } });
+    const project = hydrateProjectGenerations(record.projectData, req.user.id, db);
+    return res.json({ project: { ...project, version: Number(record.version || 1) } });
   });
 
   router.get('/:id/revisions', (req, res) => {
