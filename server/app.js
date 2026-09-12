@@ -73,7 +73,7 @@ function collectionsForRequest(pathname) {
     if (adminByRoute[route]) return [...common, ...adminByRoute[route]];
   }
   const byScope = {
-    auth: ['emailVerifications', 'imageCaptchas'], health: ['generationJobs', 'auditLogs'], director: [], skills: ['skills'], projects: ['projects'],
+    auth: ['emailVerifications', 'imageCaptchas'], health: ['generationJobs', 'auditLogs'], director: [], skills: ['skills'], projects: ['projects', 'generationJobs'],
     assets: ['assets', 'projects'], 'generated-media': ['generatedMedia'], 'generation-history': ['generationHistory', 'generationJobs'],
     billing: ['balanceTransactions', 'rechargeRequests'], catalog: ['systemApis', 'modelPricing', 'userModelAccess'],
     admin: ['systemApis', 'modelPricing', 'userModelAccess', 'balanceTransactions', 'rechargeRequests', 'generationJobs', 'generatedMedia', 'storageQuarantine', 'auditLogs', 'paymentOrders', 'paymentEvents'],
