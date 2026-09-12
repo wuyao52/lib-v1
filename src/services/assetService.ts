@@ -14,6 +14,12 @@ type AssetImportResponse = {
   importJob?: { id: string; status: 'processing' | 'completed' | 'failed' };
 };
 
+const IMAGE_IMPORT_POLL_INTERVAL_MS = 1000;
+const IMAGE_IMPORT_POLL_MAX_ATTEMPTS = 360;
+const IMAGE_IMPORT_REATTACH_LIMIT = 3;
+const IMAGE_IMPORT_RETRYABLE_STATUSES = new Set([404, 502, 503, 504]);
+const IMAGE_ARCHIVE_ATTEMPT_TIMEOUT_MS = 30_000;
+
 function waitForImportPoll(signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     let timeout = 0;
@@ -27,7 +33,7 @@ function waitForImportPoll(signal?: AbortSignal): Promise<void> {
     };
     if (signal?.aborted) return abort();
     signal?.addEventListener('abort', abort, { once: true });
-    timeout = window.setTimeout(() => { cleanup(); resolve(); }, 1000);
+    timeout = window.setTimeout(() => { cleanup(); resolve(); }, IMAGE_IMPORT_POLL_INTERVAL_MS);
   });
 }
 
@@ -177,10 +183,78 @@ export async function archiveGeneratedImage(source: string, signal?: AbortSignal
   if (response.asset?.url) return response.asset.url;
   if (!response.importJob?.id) throw new Error('图片归档任务创建失败');
 
-  for (let attempt = 0; attempt < 130; attempt += 1) {
+  let importJobId = response.importJob.id;
+  let reattachCount = 0;
+  for (let attempt = 0; attempt < IMAGE_IMPORT_POLL_MAX_ATTEMPTS; attempt += 1) {
     await waitForImportPoll(signal);
-    const status = await apiRequest<AssetImportResponse>(`/api/assets/import-image/${encodeURIComponent(response.importJob.id)}`, { signal });
-    if (status.asset?.url) return status.asset.url;
+    try {
+      const status = await apiRequest<AssetImportResponse>(`/api/assets/import-image/${encodeURIComponent(importJobId)}`, { signal });
+      if (status.asset?.url) return status.asset.url;
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      const retryable = error instanceof ApiError && IMAGE_IMPORT_RETRYABLE_STATUSES.has(error.status);
+      if (!retryable || reattachCount >= IMAGE_IMPORT_REATTACH_LIMIT) throw error;
+
+      // Import jobs are intentionally asynchronous. A restart or a load
+      // balancer can make the in-memory job ID briefly unavailable even while
+      // the provider image is already complete. Re-submit the same source to
+      // attach to a new archive job; this never calls the image provider again.
+      reattachCount += 1;
+      const replacement = await apiRequest<AssetImportResponse>('/api/assets/import-image', {
+        method: 'POST', body: JSON.stringify({ source: normalizedSource }), signal,
+      });
+      if (replacement.asset?.url) return replacement.asset.url;
+      if (!replacement.importJob?.id) throw error;
+      importJobId = replacement.importJob.id;
+    }
   }
   throw new Error('图片已生成，但归档处理超时，请稍后在生成记录中刷新');
+}
+
+export type ImageArchiveResult = {
+  url: string;
+  archived: boolean;
+  error?: unknown;
+};
+
+function isTransientImageArchiveError(error: unknown): boolean {
+  if (error instanceof ApiError) return [404, 408, 429, 500, 502, 503, 504].includes(error.status);
+  const name = String((error as { name?: unknown })?.name || '');
+  const message = String((error as { message?: unknown })?.message || error || '');
+  return name === 'AbortError'
+    || name === 'TimeoutError'
+    || /超时|暂时不可用|归档处理超时|归档任务不存在|failed to fetch|networkerror|网络/i.test(message);
+}
+
+/**
+ * Provider generation and durable asset archiving are separate operations.
+ * A slow object-storage upload must not turn a successful generation into a
+ * failed result for the user.
+ */
+export async function archiveGeneratedImageBestEffort(
+  source: string,
+  parentSignal?: AbortSignal,
+  timeoutMs = IMAGE_ARCHIVE_ATTEMPT_TIMEOUT_MS,
+): Promise<ImageArchiveResult> {
+  const normalizedSource = normalizeImageSource(source);
+  if (!normalizedSource) throw new Error('图片结果地址无效');
+
+  const controller = new AbortController();
+  const abortFromParent = () => controller.abort(parentSignal?.reason || new DOMException('图片归档已取消', 'AbortError'));
+  const timeout = window.setTimeout(
+    () => controller.abort(new DOMException('图片归档暂时不可用', 'TimeoutError')),
+    Math.max(1, timeoutMs),
+  );
+  parentSignal?.addEventListener('abort', abortFromParent, { once: true });
+  try {
+    const url = await archiveGeneratedImage(normalizedSource, controller.signal);
+    return { url, archived: true };
+  } catch (error) {
+    if (parentSignal?.aborted) throw error;
+    if (!isTransientImageArchiveError(error)) throw error;
+    return { url: normalizedSource, archived: false, error };
+  } finally {
+    window.clearTimeout(timeout);
+    parentSignal?.removeEventListener('abort', abortFromParent);
+  }
 }
