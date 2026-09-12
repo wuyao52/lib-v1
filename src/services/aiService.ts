@@ -198,11 +198,17 @@ export function extractImageResult(response: any): string {
     response?.result?.url, response?.result?.image_url, response?.result?.imageUrl,
     response?.result?.images?.[0]?.url, response?.result?.images?.[0],
     response?.result?.data?.[0]?.url, response?.result?.data?.[0]?.image_url,
+    response?.result?.data?.[0]?.imageUrl,
     response?.output?.url, response?.output?.image_url, response?.output?.imageUrl,
     response?.output?.images?.[0]?.url, response?.output?.images?.[0],
     response?.output?.outputUrls?.[0], response?.outputs?.[0], response?.resultUrls?.[0],
     response?.data?.result?.url, response?.data?.result?.image_url,
-    response?.data?.result?.images?.[0]?.url, response?.data?.result?.images?.[0],
+    response?.data?.result?.imageUrl,
+    response?.data?.result?.images?.[0]?.url,
+    response?.data?.result?.images?.[0]?.image_url,
+    response?.data?.result?.images?.[0]?.imageUrl,
+    response?.data?.result?.images?.[0]?.src,
+    response?.data?.result?.images?.[0],
     response?.data?.result?.resultUrls?.[0], response?.data?.result?.outputUrls?.[0],
   ];
   const url = values
@@ -226,7 +232,13 @@ function imageTaskId(response: any): string {
 
 function imageTaskStatus(response: any): string {
   const payload = imageTaskPayload(response);
-  return String(payload?.status || payload?.state || response?.status || response?.state || '').trim().toLowerCase();
+  return String(
+    payload?.status || payload?.state
+    || payload?.result?.status || payload?.result?.state
+    || response?.status || response?.state
+    || response?.result?.status || response?.result?.state
+    || '',
+  ).trim().toLowerCase();
 }
 
 const imageTaskCompleted = (status: string) => ['completed', 'complete', 'success', 'succeeded', 'done', 'finished'].includes(status);
@@ -811,7 +823,7 @@ export class SeedanceService extends AIService {
       if (signal?.aborted) throw new DOMException('用户取消生成', 'AbortError');
       await new Promise(resolve => setTimeout(resolve, pollInterval));
 
-      const url = `${baseUrl}/v1/images/${taskId}`;
+      const url = `${baseUrl}/v1/images/${encodeURIComponent(taskId)}?_=${Date.now()}`;
       console.log(`轮询图片任务 (${attempt + 1}/${maxAttempts}):`, url);
 
       try {
@@ -820,7 +832,10 @@ export class SeedanceService extends AIService {
           headers: {
             'Authorization': `Bearer ${this.config.apiKey}`,
             'X-API-Key': this.config.apiKey,
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache',
           },
+          cache: 'no-store',
           signal,
         });
 
