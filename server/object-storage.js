@@ -133,17 +133,17 @@ export function createObjectStorageFromEnv(env = process.env, { clientFactory = 
         mimeType: String(response.ContentType || '').split(';')[0].toLowerCase(),
       };
     },
-    async putStream({ key, body, mimeType, contentLength }) {
+    async putStream({ key, body, mimeType, contentLength, signal }) {
       const stream = body && typeof body.getReader === 'function' && typeof Readable.fromWeb === 'function' ? Readable.fromWeb(body) : body;
       // Aborting the source fetch can emit an asynchronous stream error after
       // the SDK request rejects. Always attach a listener so it cannot crash
       // the Node process as an unhandled `error` event.
       if (stream && typeof stream.on === 'function') stream.on('error', () => undefined);
       if (contentLength) {
-        await client.send(new PutObjectCommand({ Bucket: config.bucket, Key: key, Body: stream, ContentType: mimeType, ContentLength: contentLength }));
+        await client.send(new PutObjectCommand({ Bucket: config.bucket, Key: key, Body: stream, ContentType: mimeType, ContentLength: contentLength }), { abortSignal: signal });
         return;
       }
-      const created = await client.send(new CreateMultipartUploadCommand({ Bucket: config.bucket, Key: key, ContentType: mimeType }));
+      const created = await client.send(new CreateMultipartUploadCommand({ Bucket: config.bucket, Key: key, ContentType: mimeType }), { abortSignal: signal });
       const uploadId = created.UploadId;
       if (!uploadId) throw new Error('对象存储未返回分片上传 ID');
       const parts = [];
@@ -152,7 +152,7 @@ export function createObjectStorageFromEnv(env = process.env, { clientFactory = 
       try {
         const uploadPart = async (bytes) => {
           const PartNumber = parts.length + 1;
-          const result = await client.send(new UploadPartCommand({ Bucket: config.bucket, Key: key, UploadId: uploadId, PartNumber, Body: bytes, ContentLength: bytes.length }));
+          const result = await client.send(new UploadPartCommand({ Bucket: config.bucket, Key: key, UploadId: uploadId, PartNumber, Body: bytes, ContentLength: bytes.length }), { abortSignal: signal });
           if (!result.ETag) throw new Error('对象存储未返回分片校验值');
           parts.push({ ETag: result.ETag, PartNumber });
         };
@@ -164,7 +164,7 @@ export function createObjectStorageFromEnv(env = process.env, { clientFactory = 
           }
         }
         if (buffered.length || !parts.length) await uploadPart(buffered);
-        await client.send(new CompleteMultipartUploadCommand({ Bucket: config.bucket, Key: key, UploadId: uploadId, MultipartUpload: { Parts: parts } }));
+        await client.send(new CompleteMultipartUploadCommand({ Bucket: config.bucket, Key: key, UploadId: uploadId, MultipartUpload: { Parts: parts } }), { abortSignal: signal });
       } catch (error) {
         await client.send(new AbortMultipartUploadCommand({ Bucket: config.bucket, Key: key, UploadId: uploadId })).catch(() => undefined);
         throw error;
