@@ -819,7 +819,21 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     const generateInPlace = generationTarget.inPlace;
     const newNodeId = generationTarget.targetNodeId;
     if (generateInPlace) {
-      get().updateNodeData(nodeId, { status: 'generating', error: undefined, progress: 0 });
+      // A video node keeps its previous result visible while a replacement is
+      // being generated. Clear only the old terminal markers so project
+      // normalization cannot mistake this new run for the previous completion
+      // after the project is reopened.
+      get().updateNodeData(nodeId, {
+        status: 'generating',
+        error: undefined,
+        progress: 0,
+        generationMessage: undefined,
+        generationMeta: {
+          ...node.data.generationMeta,
+          taskId: undefined,
+          completedAt: undefined,
+        },
+      });
     } else if (node.data.status === 'error') {
       get().updateNodeData(nodeId, {
         status: node.data.generatedContent ? 'completed' : 'idle',
