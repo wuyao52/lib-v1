@@ -18,8 +18,29 @@ const MAX_PROXY_RANGE_BYTES = 1024 * 1024;
 const DEFAULT_DIRECT_UPLOAD_LIMIT = 300;
 const DIRECT_UPLOAD_WINDOW_MS = 60 * 60 * 1000;
 const MAX_IMAGE_IMPORT_REDIRECTS = 3;
-const IMAGE_IMPORT_TIMEOUT_MS = 120_000;
+const DEFAULT_IMAGE_IMPORT_TIMEOUT_MS = 300_000;
 const IMAGE_IMPORT_JOB_TTL_MS = 10 * 60 * 1000;
+
+function imageImportTimeoutMs(value = process.env.IMAGE_IMPORT_TIMEOUT_MS) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 1 && parsed <= 10 * 60 * 1_000
+    ? parsed
+    : DEFAULT_IMAGE_IMPORT_TIMEOUT_MS;
+}
+
+function abortable(promise, signal) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason || new DOMException('图片归档已取消', 'AbortError'));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      cleanup();
+      reject(signal.reason || new DOMException('图片归档已取消', 'AbortError'));
+    };
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    signal.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve(promise).then((value) => { cleanup(); resolve(value); }, (error) => { cleanup(); reject(error); });
+  });
+}
 
 function normalizeImageSource(value) {
   if (typeof value !== 'string') return '';
@@ -280,7 +301,7 @@ export async function migrateLegacyAssets({ db, assetStorage, onError = console.
   return { migrated, failed };
 }
 
-export function registerAssetRoutes(router, { db, requireAuth, assetStorage = null, assetSigningKey, fetchImpl = fetch, resolveHost = lookup, imageImportTimeoutMs = IMAGE_IMPORT_TIMEOUT_MS }) {
+export function registerAssetRoutes(router, { db, requireAuth, assetStorage = null, assetSigningKey, fetchImpl = fetch, resolveHost = lookup, imageImportTimeoutMs: configuredImageImportTimeoutMs }) {
   const signingKey = String(assetSigningKey || '');
   const mutateAssets = (mutator) => db.mutateCollections ? db.mutateCollections(['assets'], mutator) : db.mutate(mutator);
   const imageImportJobs = new Map();
@@ -463,9 +484,14 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
   });
 
   const storeImportedImage = async (userId, source, signal) => {
+    const throwIfAborted = () => {
+      if (signal?.aborted) throw signal.reason || new DOMException('图片归档已取消', 'AbortError');
+    };
+    throwIfAborted();
     let parsed;
     if (source.startsWith('data:')) parsed = parseImageDataUrl(source);
     else parsed = await downloadImportedImage(source, { fetchImpl, resolveHost, signal });
+    throwIfAborted();
     if (parsed?.error) throw Object.assign(new Error(parsed.message), { code: parsed.error, status: parsed.error === 'ASSET_TOO_LARGE' ? 413 : 400 });
     const sha256 = createHash('sha256').update(parsed.bytes).digest('hex');
     const existing = db.read('assets').find((asset) => asset.userId === userId && asset.sha256 === sha256);
@@ -474,18 +500,29 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
     const quotaBytes = Number(process.env.ASSET_USER_QUOTA_BYTES) || DEFAULT_USER_QUOTA_BYTES;
     const objectKey = assetStorage ? objectKeyFor(userId, sha256, parsed.mimeType) : null;
     if (assetStorage) {
-      try { await assetStorage.put({ key: objectKey, bytes: parsed.bytes, mimeType: parsed.mimeType }); }
-      catch { throw Object.assign(new Error('云端素材存储暂时不可用，请稍后重试'), { code: 'ASSET_STORAGE_UNAVAILABLE', status: 502 }); }
+      try {
+        // The import timeout must also be able to cancel a slow object-storage
+        // write. Without forwarding the signal, a stalled SDK upload leaves the
+        // in-memory import job in `processing` indefinitely.
+        await abortable(assetStorage.put({ key: objectKey, bytes: parsed.bytes, mimeType: parsed.mimeType, signal }), signal);
+        throwIfAborted();
+      }
+      catch (error) {
+        if (signal?.aborted) throw signal.reason || new DOMException('图片归档已取消', 'AbortError');
+        if (error?.name === 'AbortError') throw error;
+        throw Object.assign(new Error('云端素材存储暂时不可用，请稍后重试'), { code: 'ASSET_STORAGE_UNAVAILABLE', status: 502 });
+      }
     }
+    throwIfAborted();
     let record; let duplicate = false; let quotaExceeded = false;
-    await mutateAssets((data) => {
+    await abortable(mutateAssets((data) => {
       record = data.assets.find((asset) => asset.userId === userId && asset.sha256 === sha256 && !asset.deletedAt);
       if (record) { duplicate = true; return; }
       const usedBytes = data.assets.filter((asset) => asset.userId === userId && !asset.deletedAt).reduce((sum, asset) => sum + Number(asset.byteSize || 0), 0);
       if (usedBytes + parsed.bytes.length > quotaBytes) { quotaExceeded = true; return; }
       record = { id: randomUUID(), userId, sha256, mimeType: parsed.mimeType, dataBase64: assetStorage ? null : parsed.bytes.toString('base64'), objectKey, storageProvider: assetStorage?.provider || 'database', byteSize: parsed.bytes.length, createdAt: new Date().toISOString() };
       data.assets.push(record);
-    });
+    }), signal);
     if (quotaExceeded) {
       if (assetStorage) await assetStorage.delete?.(objectKey).catch(() => undefined);
       throw Object.assign(new Error('云端素材容量已满'), { code: 'ASSET_QUOTA_EXCEEDED', status: 413 });
@@ -507,14 +544,14 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
     } catch (error) {
       return res.status(400).json({ error: 'IMAGE_IMPORT_FAILED', message: error.message });
     }
-    const existingJob = [...imageImportJobs.values()].find((job) => job.userId === req.user.id && job.source === source && job.expiresAt > Date.now());
+    const existingJob = [...imageImportJobs.values()].find((job) => job.userId === req.user.id && job.source === source && job.status !== 'failed' && job.expiresAt > Date.now());
     if (existingJob) return res.status(existingJob.status === 'completed' ? 200 : 202).json({ importJob: { id: existingJob.id, status: existingJob.status }, ...(existingJob.asset ? { asset: existingJob.asset } : {}) });
 
     const id = randomUUID();
     const job = { id, userId: req.user.id, source, status: 'processing', asset: null, error: null, statusCode: 400, expiresAt: Date.now() + IMAGE_IMPORT_JOB_TTL_MS };
     imageImportJobs.set(id, job);
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), Math.max(1, Number(imageImportTimeoutMs) || IMAGE_IMPORT_TIMEOUT_MS));
+    const timeout = setTimeout(() => controller.abort(), imageImportTimeoutMs(configuredImageImportTimeoutMs));
     timeout.unref?.();
     void storeImportedImage(job.userId, source, controller.signal)
       .then((asset) => { job.status = 'completed'; job.asset = asset; })
