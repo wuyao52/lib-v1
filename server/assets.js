@@ -21,6 +21,22 @@ const MAX_IMAGE_IMPORT_REDIRECTS = 3;
 const IMAGE_IMPORT_TIMEOUT_MS = 120_000;
 const IMAGE_IMPORT_JOB_TTL_MS = 10 * 60 * 1000;
 
+function normalizeImageSource(value) {
+  if (typeof value !== 'string') return '';
+
+  let source = value.trim();
+  const linkStart = source.indexOf('](');
+  if (linkStart > 0 && source.endsWith(')')) {
+    const labelStart = source[0] === '!' && source[1] === '[' ? 2 : source[0] === '[' ? 1 : -1;
+    if (labelStart >= 0 && source.lastIndexOf('](', linkStart) === linkStart) {
+      source = source.slice(linkStart + 2, -1).trim();
+      if (source.startsWith('<') && source.endsWith('>')) source = source.slice(1, -1).trim();
+    }
+  }
+
+  return source.replace(/[。！？，、；：]+$/u, '').trim();
+}
+
 export function getDirectUploadLimit(env = process.env) {
   const configured = Number(env.ASSET_DIRECT_UPLOAD_LIMIT);
   return Number.isSafeInteger(configured) && configured >= 60 && configured <= 10_000
@@ -132,7 +148,7 @@ function detectImageMimeType(bytes) {
 }
 
 async function downloadImportedImage(source, { fetchImpl, resolveHost, signal }) {
-  let target = new URL(source);
+  let target = new URL(normalizeImageSource(source));
   for (let redirects = 0; redirects <= MAX_IMAGE_IMPORT_REDIRECTS; redirects += 1) {
     if (target.protocol !== 'https:') throw new Error(redirects ? '生成图片跳转地址必须使用 HTTPS' : '生成图片归档只允许 HTTPS 来源');
     await assertPublicHost(target.hostname, resolveHost);
@@ -478,7 +494,8 @@ export function registerAssetRoutes(router, { db, requireAuth, assetStorage = nu
   };
 
   router.post('/import-image', requireAuth, async (req, res) => {
-    const source = String(req.body?.source || '').trim();
+    const source = normalizeImageSource(req.body?.source);
+    if (!source) return res.status(400).json({ error: 'IMAGE_IMPORT_FAILED', message: '生成图片地址不能为空' });
     if (source.startsWith('data:')) {
       try { return res.status(201).json({ asset: await storeImportedImage(req.user.id, source) }); }
       catch (error) { return res.status(error.status || 400).json({ error: error.code || 'IMAGE_IMPORT_FAILED', message: error.message }); }
