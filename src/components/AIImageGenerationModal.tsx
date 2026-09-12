@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { AlertCircle, Clock3, Download, Eye, ImagePlus, Loader2, RefreshCw, Sparkles, Square, X } from 'lucide-react';
-import type { AIModelConfig } from '@/types';
+import type { AIModelConfig, GenerationResponse } from '@/types';
+import { useAuth } from '@/auth/AuthContext';
 import { apiRequest } from '@/services/apiClient';
 import { createAIService } from '@/services/aiService';
 import { archiveGeneratedImage, getPlayableMediaUrl } from '@/services/assetService';
@@ -18,6 +19,7 @@ type ImageGenerationTask = {
   resolution: string;
   createdAt: string;
   expiresAt?: string;
+  taskId?: string;
   url?: string;
   error?: string;
   model?: ImageCatalogModel;
@@ -36,9 +38,52 @@ const billingUnitLabel = (unit?: AIModelConfig['billingUnit']) => unit === 'seco
 const localTaskId = () => typeof crypto !== 'undefined' && crypto.randomUUID
   ? crypto.randomUUID()
   : `image-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const IMAGE_TASK_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
+const IMAGE_TASK_STALE_MS = 2 * 60 * 60 * 1000;
+const imageTaskStorageKey = (userId: string, projectId: string) => `ai-image-generation-tasks:${userId}:${projectId}`;
+
+function readPersistedImageTasks(key: string): ImageGenerationTask[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(key) || '[]');
+    if (!Array.isArray(parsed)) return [];
+    const now = Date.now();
+    return parsed
+      .filter((task): task is ImageGenerationTask => (
+        task && typeof task === 'object'
+        && typeof task.id === 'string'
+        && ['generating', 'completed', 'error', 'cancelled'].includes(task.status)
+        && typeof task.prompt === 'string'
+        && typeof task.createdAt === 'string'
+      ))
+      .map((task) => {
+        const createdAt = Date.parse(task.createdAt);
+        if (task.status === 'generating' && Number.isFinite(createdAt) && now - createdAt > IMAGE_TASK_STALE_MS) {
+          return { ...task, status: 'error', error: '生成任务已超时，请重新生成' };
+        }
+        return task;
+      })
+      .filter((task) => !task.expiresAt || Date.parse(task.expiresAt) > now)
+      .slice(0, 100);
+  } catch {
+    return [];
+  }
+}
+
+function writePersistedImageTasks(key: string, tasks: ImageGenerationTask[]) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(key, JSON.stringify(tasks.slice(0, 100)));
+  } catch {
+    // A full or disabled browser storage must not prevent image generation.
+  }
+}
 
 export default function AIImageGenerationModal({ isOpen, projectId, onClose, onAddToCanvas }: AIImageGenerationModalProps) {
+  const { user } = useAuth();
   const controllersRef = useRef(new Map<string, AbortController>());
+  const resumedTaskIdsRef = useRef(new Set<string>());
+  const skipPersistRef = useRef(false);
   const [models, setModels] = useState<ImageCatalogModel[]>([]);
   const [selectedModelId, setSelectedModelId] = useState('');
   const [prompt, setPrompt] = useState('');
@@ -52,6 +97,10 @@ export default function AIImageGenerationModal({ isOpen, projectId, onClose, onA
   const [tasks, setTasks] = useState<ImageGenerationTask[]>([]);
   const [previewTaskId, setPreviewTaskId] = useState('');
   const [addedTaskIds, setAddedTaskIds] = useState<Set<string>>(() => new Set());
+  const taskStorageKey = useMemo(
+    () => imageTaskStorageKey(user?.id || 'anonymous', projectId),
+    [projectId, user?.id],
+  );
 
   const selectedModel = models.find((model) => model.id === selectedModelId) || null;
   const previewTask = tasks.find((task) => task.id === previewTaskId && task.status === 'completed' && task.url) || null;
@@ -65,7 +114,26 @@ export default function AIImageGenerationModal({ isOpen, projectId, onClose, onA
 
   const updateTask = (id: string, updates: Partial<ImageGenerationTask>) => {
     setTasks((current) => current.map((task) => task.id === id ? { ...task, ...updates } : task));
+    const persisted = readPersistedImageTasks(taskStorageKey);
+    if (persisted.some((task) => task.id === id)) {
+      writePersistedImageTasks(taskStorageKey, persisted.map((task) => task.id === id ? { ...task, ...updates } : task));
+    }
   };
+
+  useEffect(() => {
+    skipPersistRef.current = true;
+    setTasks(readPersistedImageTasks(taskStorageKey));
+    setAddedTaskIds(new Set());
+    resumedTaskIdsRef.current.clear();
+  }, [taskStorageKey]);
+
+  useEffect(() => {
+    if (skipPersistRef.current) {
+      skipPersistRef.current = false;
+      return;
+    }
+    writePersistedImageTasks(taskStorageKey, tasks);
+  }, [taskStorageKey, tasks]);
 
   const loadModels = async () => {
     setLoadingModels(true);
@@ -119,10 +187,54 @@ export default function AIImageGenerationModal({ isOpen, projectId, onClose, onA
     void Promise.all([loadModels(), loadHistory()]);
   }, [isOpen]);
 
-  useEffect(() => () => {
-    controllersRef.current.forEach((controller) => controller.abort());
-    controllersRef.current.clear();
-  }, []);
+  const completeTask = async (
+    task: ImageGenerationTask,
+    response: GenerationResponse,
+    controller: AbortController,
+  ) => {
+    if (!response.success || !response.data?.url) throw new Error(response.error || '图片模型未返回可用图片');
+    const durableUrl = await archiveGeneratedImage(response.data.url, controller.signal);
+    let expiresAt = new Date(Date.now() + IMAGE_TASK_RETENTION_MS).toISOString();
+    try {
+      const history = await apiRequest<{ item: ImageHistoryItem }>('/api/generation-history', {
+        method: 'POST',
+        body: JSON.stringify({ projectId, type: 'image', prompt: task.prompt, url: durableUrl, thumbnail: durableUrl }),
+        signal: controller.signal,
+      });
+      expiresAt = history.item?.expiresAt || expiresAt;
+    } catch (historySaveError) {
+      console.warn('保存图片生成历史失败:', historySaveError);
+      setHistoryError('图片已生成，但历史记录暂时保存失败；请先下载或添加到画布');
+    }
+    updateTask(task.id, { status: 'completed', url: durableUrl, expiresAt });
+  };
+
+  const resumeTask = async (task: ImageGenerationTask) => {
+    if (!task.taskId || !task.model || controllersRef.current.has(task.id) || resumedTaskIdsRef.current.has(task.id)) return;
+    resumedTaskIdsRef.current.add(task.id);
+    const controller = new AbortController();
+    controllersRef.current.set(task.id, controller);
+    try {
+      const effectiveModel = await refreshManagedModel(task.model);
+      const response = await createAIService(effectiveModel).resumeImage(task.taskId, controller.signal);
+      await completeTask(task, response, controller);
+    } catch (generationError) {
+      updateTask(task.id, controller.signal.aborted
+        ? { status: 'cancelled', error: '已取消生成' }
+        : { status: 'error', error: generationError instanceof Error ? generationError.message : 'AI 生图失败' });
+    } finally {
+      controllersRef.current.delete(task.id);
+      resumedTaskIdsRef.current.delete(task.id);
+      window.dispatchEvent(new Event('billing:changed'));
+    }
+  };
+
+  useEffect(() => {
+    if (!isOpen) return;
+    tasks.filter((task) => task.status === 'generating' && task.taskId).forEach((task) => {
+      void resumeTask(task);
+    });
+  }, [isOpen, tasks]);
 
   useEffect(() => {
     if (!resolutions.includes(resolution)) setResolution(resolutions.includes('720p') ? '720p' : (resolutions[0] || ''));
@@ -152,6 +264,8 @@ export default function AIImageGenerationModal({ isOpen, projectId, onClose, onA
     const controller = new AbortController();
     controllersRef.current.set(id, controller);
     setTasks((current) => [task, ...current]);
+    const persisted = readPersistedImageTasks(taskStorageKey).filter((item) => item.id !== id);
+    writePersistedImageTasks(taskStorageKey, [task, ...persisted]);
     setError('');
 
     try {
@@ -161,22 +275,9 @@ export default function AIImageGenerationModal({ isOpen, projectId, onClose, onA
         resolution: task.resolution,
         ...(quality ? { quality } : {}),
         _client: { projectId },
+        _onTaskId: (taskId: string) => updateTask(id, { taskId }),
       }, controller.signal);
-      if (!response.success || !response.data?.url) throw new Error(response.error || '图片模型未返回可用图片');
-      const durableUrl = await archiveGeneratedImage(response.data.url, controller.signal);
-      let expiresAt = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
-      try {
-        const history = await apiRequest<{ item: ImageHistoryItem }>('/api/generation-history', {
-          method: 'POST',
-          body: JSON.stringify({ projectId, type: 'image', prompt: cleanPrompt, url: durableUrl, thumbnail: durableUrl }),
-          signal: controller.signal,
-        });
-        expiresAt = history.item?.expiresAt || expiresAt;
-      } catch (historySaveError) {
-        console.warn('保存图片生成历史失败:', historySaveError);
-        setHistoryError('图片已生成，但历史记录暂时保存失败；请先下载或添加到画布');
-      }
-      updateTask(id, { status: 'completed', url: durableUrl, expiresAt });
+      await completeTask(task, response, controller);
     } catch (generationError) {
       updateTask(id, controller.signal.aborted
         ? { status: 'cancelled', error: '已取消生成' }
@@ -187,9 +288,14 @@ export default function AIImageGenerationModal({ isOpen, projectId, onClose, onA
     }
   };
 
-  const cancelTask = (id: string) => controllersRef.current.get(id)?.abort();
+  const cancelTask = (id: string) => {
+    const controller = controllersRef.current.get(id);
+    if (controller) controller.abort();
+    else updateTask(id, { status: 'cancelled', error: '已取消生成' });
+  };
   const removeTask = (id: string) => {
     setTasks((current) => current.filter((task) => task.id !== id));
+    writePersistedImageTasks(taskStorageKey, readPersistedImageTasks(taskStorageKey).filter((task) => task.id !== id));
     if (previewTaskId === id) setPreviewTaskId('');
   };
   const addToCanvas = (task: ImageGenerationTask) => {
