@@ -20,7 +20,7 @@ import {
 } from '@/types';
 import { createAIService, prepareReferenceImages, SeedanceService } from '@/services/aiService';
 import { ApiError, apiRequest } from '@/services/apiClient';
-import { archiveGeneratedImage, getSignedAssetUrl, materializeReferenceImages } from '@/services/assetService';
+import { archiveGeneratedImageBestEffort, getSignedAssetUrl, materializeReferenceImages } from '@/services/assetService';
 import { planGenerationTarget } from './generationPolicy';
 import { normalizeModelDuration, videoDurationRules } from '@/services/modelDuration';
 import { refreshManagedModel } from '@/services/managedModelCatalog';
@@ -1350,7 +1350,13 @@ function launchGenerationTask(
         markGenerationFailed(execution.sourceNodeId, execution.targetNodeId, result.error || 'AI 生成失败', get, set);
         return;
       }
-      const durableImageUrl = isImage ? await archiveGeneratedImage(result.data.url, controller.signal) : result.data.url;
+      const archiveResult = isImage
+        ? await archiveGeneratedImageBestEffort(result.data.url, controller.signal)
+        : { url: result.data.url, archived: true, error: undefined };
+      const durableImageUrl = archiveResult.url;
+      if (isImage && !archiveResult.archived) {
+        console.warn('图片已生成，但云端归档暂时不可用，先使用上游结果:', archiveResult.error);
+      }
       get().updateNodeData(execution.targetNodeId, {
         status: 'completed', progress: 100, error: undefined, generationMessage: undefined,
         generatedContent: durableImageUrl,
