@@ -90,6 +90,22 @@ function normalizePricingInput(input, existing) {
   };
   const rawResolutions = input.allowedResolutions ?? existing?.allowedResolutions ?? [];
   const allowedResolutions = [...new Set((Array.isArray(rawResolutions) ? rawResolutions : String(rawResolutions).split(',')).map(normalizeResolution).filter(Boolean))];
+  const normalizeQuality = (value) => {
+    const normalized = String(value || '').trim().toLowerCase();
+    return normalized && normalized.length <= 32 && /^[a-z0-9_.:-]+$/.test(normalized) ? normalized : null;
+  };
+  const normalizeBoolean = (value) => typeof value === 'string'
+    ? ['1', 'true', 'yes', 'y', 'required'].includes(value.trim().toLowerCase())
+    : Boolean(value);
+  const rawQualities = input.allowedQualities ?? existing?.allowedQualities ?? [];
+  const qualityValues = Array.isArray(rawQualities) ? rawQualities : String(rawQualities).split(',');
+  const allowedQualities = [...new Set(qualityValues.map(normalizeQuality).filter(Boolean))];
+  const rawDefaultQuality = input.defaultQuality ?? existing?.defaultQuality ?? '';
+  const defaultQuality = rawDefaultQuality === '' || rawDefaultQuality === null || rawDefaultQuality === undefined
+    ? '' : normalizeQuality(rawDefaultQuality);
+  const qualityRequired = input.qualityRequired === undefined
+    ? Boolean(existing?.qualityRequired)
+    : normalizeBoolean(input.qualityRequired);
   const rawMaxReferenceImages = input.maxReferenceImages ?? existing?.maxReferenceImages;
   const maxReferenceImages = rawMaxReferenceImages === undefined || rawMaxReferenceImages === null || rawMaxReferenceImages === ''
     ? 4 : integer(rawMaxReferenceImages);
@@ -103,6 +119,9 @@ function normalizePricingInput(input, existing) {
   if ([minDurationSec, maxDurationSec, ...allowedDurationsSec].some((v) => Number.isNaN(v))) throw new Error('视频时长规则无效');
   if (category === 'video' && rawResolutions && allowedResolutions.length !== (Array.isArray(rawResolutions) ? rawResolutions.length : String(rawResolutions).split(',').map((value) => value.trim()).filter(Boolean).length)) throw new Error('视频分辨率仅支持 480p、720p、1080p、2K 或 4K');
   if (category === 'image' && rawResolutions && allowedResolutions.length !== (Array.isArray(rawResolutions) ? rawResolutions.length : String(rawResolutions).split(',').map((value) => value.trim()).filter(Boolean).length)) throw new Error('图片分辨率格式无效');
+  if (category === 'image' && rawQualities && allowedQualities.length !== qualityValues.map((value) => String(value).trim()).filter(Boolean).length) throw new Error('图片质量格式无效');
+  if (category === 'image' && rawDefaultQuality && !defaultQuality) throw new Error('图片默认质量格式无效');
+  if (category === 'image' && defaultQuality && !allowedQualities.includes(defaultQuality)) throw new Error('图片默认质量必须属于支持质量列表');
   if (!Number.isInteger(maxReferenceImages) || maxReferenceImages < 0 || maxReferenceImages > 30) throw new Error('最大参考图数量必须是 0-30 的整数');
   if (!Number.isInteger(maxReferenceAudios) || maxReferenceAudios < 0 || maxReferenceAudios > 10) throw new Error('最大参考音频数量必须是 0-10 的整数');
   if (!Number.isInteger(maxReferenceVideos) || maxReferenceVideos < 0 || maxReferenceVideos > 10) throw new Error('最大参考视频数量必须是 0-10 的整数');
@@ -110,7 +129,7 @@ function normalizePricingInput(input, existing) {
   if (category === 'video' && !allowedDurationsSec.length && (!minDurationSec || !maxDurationSec)) {
     throw new Error('视频模型必须填写固定时长，或同时填写最短和最长时长');
   }
-  return { apiId, modelId, displayName, category, billingUnit, unitPriceCents, minDurationSec, maxDurationSec, allowedDurationsSec, allowedResolutions, maxReferenceImages, maxReferenceAudios, maxReferenceVideos, enabled: input.enabled === undefined ? (existing?.enabled ?? true) : Boolean(input.enabled) };
+  return { apiId, modelId, displayName, category, billingUnit, unitPriceCents, minDurationSec, maxDurationSec, allowedDurationsSec, allowedResolutions, allowedQualities: category === 'image' ? allowedQualities : [], defaultQuality: category === 'image' ? (defaultQuality || '') : '', qualityRequired: category === 'image' ? qualityRequired : false, maxReferenceImages, maxReferenceAudios, maxReferenceVideos, enabled: input.enabled === undefined ? (existing?.enabled ?? true) : Boolean(input.enabled) };
 }
 
 export function registerCatalogRoutes(router, { db, requireAuth }) {
@@ -130,6 +149,9 @@ export function registerCatalogRoutes(router, { db, requireAuth }) {
         textProtocol: api.textProtocol || 'auto',
         minDurationSec: price.minDurationSec, maxDurationSec: price.maxDurationSec, allowedDurationsSec: price.allowedDurationsSec,
         allowedResolutions: (price.allowedResolutions?.length ? price.allowedResolutions : knownVideoResolutions(api.provider, price.modelId)),
+        allowedQualities: price.allowedQualities || [],
+        defaultQuality: price.defaultQuality || '',
+        qualityRequired: Boolean(price.qualityRequired),
         maxReferenceImages: Number.isInteger(Number(price.maxReferenceImages)) ? Number(price.maxReferenceImages) : 4,
         maxReferenceAudios: Number.isInteger(Number(price.maxReferenceAudios)) ? Number(price.maxReferenceAudios) : 0,
         maxReferenceVideos: Number.isInteger(Number(price.maxReferenceVideos)) ? Number(price.maxReferenceVideos) : 0,
