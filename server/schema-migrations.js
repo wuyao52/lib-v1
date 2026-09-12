@@ -157,6 +157,15 @@ const migrations = [
       await ensureColumn('model_pricing', 'quality_required', 'TINYINT(1) NOT NULL DEFAULT 0');
     },
   },
+  {
+    version: 16,
+    name: 'generated_media_job_id_length',
+    async up({ query }) {
+      // Managed video idempotency keys use `idem-` plus a 48-character hash.
+      // Keep the archive foreign-key-like value wide enough for those jobs.
+      await query('ALTER TABLE `generated_media` MODIFY COLUMN `job_id` VARCHAR(191) NOT NULL');
+    },
+  },
 ];
 
 export async function runSchemaMigrations(pool) {
