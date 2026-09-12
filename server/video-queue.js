@@ -35,6 +35,18 @@ function payloadOf(body) {
   return body?.data && typeof body.data === 'object' ? body.data : body;
 }
 
+function normalizeVideoSource(value) {
+  if (typeof value !== 'string') return '';
+  let source = value.trim();
+  const markdown = source.match(/^\[[^\]]*\]\(\s*<?(https?:\/\/[^)>]+)>?\s*\)$/i);
+  if (markdown) source = markdown[1].trim();
+  if (!/^https?:\/\//i.test(source) && !/^\/api\/(?:generated-media|assets)\//i.test(source)) {
+    const embedded = source.match(/https?:\/\/[^\s<>"\]]+/i)?.[0];
+    if (embedded) source = embedded;
+  }
+  return source.replace(/[。！？，、；：]+$/u, '').trim();
+}
+
 function nestedVideoUrl(root) {
   const pending = [{ value: root, depth: 0 }];
   const seen = new WeakSet();
@@ -43,7 +55,7 @@ function nestedVideoUrl(root) {
     const { value, depth } = pending.shift();
     inspected += 1;
     if (typeof value === 'string') {
-      const text = value.trim();
+      const text = normalizeVideoSource(value);
       if (/^https?:\/\//i.test(text) && /\.(?:mp4|webm|mov|m4v)(?:$|[?#])/i.test(text)) return text;
       if (depth < 8 && text.length <= 1024 * 1024 && /^[\[{]/.test(text)) {
         try { pending.push({ value: JSON.parse(text), depth: depth + 1 }); } catch { /* Not encoded JSON. */ }
@@ -133,13 +145,16 @@ function videoResultOf(body) {
     body?.data?.result?.video_url, body?.data?.result?.videoUrl, body?.data?.result?.url,
     body?.data?.result?.result_url, body?.data?.result?.content,
     body?.data?.result?.data?.[0]?.url, body?.data?.output?.video_url, body?.data?.output?.url,
+    payload?.result?.output?.outputUrls?.[0], payload?.result?.outputs?.[0],
+    payload?.result?.videoUrl, payload?.result?.videoUrls?.[0], payload?.result?.video_url,
+    payload?.result?.resultUrls?.[0],
     body?.videos?.[0]?.url, body?.videos?.[0], body?.data?.videos?.[0]?.url, body?.data?.videos?.[0],
     body?.result?.videos?.[0]?.url, body?.result?.videos?.[0], body?.data?.result?.videos?.[0]?.url, body?.data?.result?.videos?.[0],
   ];
   const thumbnails = [payload?.thumbnail_url, payload?.thumbnailUrl, body?.thumbnail_url, body?.thumbnailUrl, body?.result?.thumbnail_url, body?.result?.thumbnailUrl, body?.output?.thumbnail_url, body?.output?.thumbnailUrl];
   return {
-    url: urls.find((value) => typeof value === 'string' && /^https?:\/\//i.test(value.trim()))?.trim() || nestedVideoUrl(body),
-    thumbnail: thumbnails.find((value) => typeof value === 'string' && /^https?:\/\//i.test(value.trim()))?.trim() || '',
+    url: urls.map(normalizeVideoSource).find((value) => /^https?:\/\//i.test(value) || /^\/api\/(?:generated-media|assets)\//i.test(value)) || nestedVideoUrl(body),
+    thumbnail: thumbnails.map(normalizeVideoSource).find((value) => /^https?:\/\//i.test(value)) || '',
   };
 }
 
