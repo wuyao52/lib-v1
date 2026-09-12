@@ -50,6 +50,25 @@ function isPrivateIp(address) {
   return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || a >= 224;
 }
 
+function qualityCandidates(value) {
+  if (Array.isArray(value)) return value.flatMap((item) => qualityCandidates(item));
+  if (value && typeof value === 'object') {
+    return qualityCandidates(value.options ?? value.values ?? value.allowed ?? value.choices ?? value.value);
+  }
+  if (typeof value !== 'string') return [];
+  return value.split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+function normalizeQuality(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized && normalized.length <= 32 && /^[a-z0-9_.:-]+$/.test(normalized) ? normalized : '';
+}
+
+function normalizeBoolean(value) {
+  if (typeof value === 'string') return ['1', 'true', 'yes', 'y', 'required'].includes(value.trim().toLowerCase());
+  return Boolean(value);
+}
+
 export async function assertPublicHost(hostname, resolveHost = lookup) {
   if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) throw new Error('不允许访问本地或内网地址');
   const addresses = isIP(hostname) ? [{ address: hostname }] : await resolveHost(hostname, { all: true, verbatim: true });
@@ -78,6 +97,18 @@ function modelsFromPayload(payload) {
       .map((value) => String(value).trim().toLowerCase())
       .filter((value) => value && value.length <= 32 && /^[a-z0-9_.:-]+$/.test(value))
       .map((value) => value === '1k' ? '1080p' : value))];
+    const qualityValue = model?.qualities ?? model?.supported_qualities ?? model?.supportedQualities
+      ?? model?.quality_options ?? model?.qualityOptions ?? model?.capabilities?.image?.qualities
+      ?? model?.capabilities?.image?.quality ?? model?.capabilities?.qualities ?? model?.capabilities?.quality;
+    const allowedQualities = [...new Set(qualityCandidates(qualityValue).map(normalizeQuality).filter(Boolean))];
+    const defaultQuality = normalizeQuality(
+      model?.default_quality ?? model?.defaultQuality ?? model?.capabilities?.image?.default_quality
+      ?? model?.capabilities?.image?.defaultQuality ?? model?.capabilities?.default_quality
+      ?? model?.capabilities?.defaultQuality,
+    );
+    const qualityRequiredValue = model?.quality_required ?? model?.qualityRequired
+      ?? model?.capabilities?.image?.quality_required ?? model?.capabilities?.image?.qualityRequired
+      ?? model?.capabilities?.quality_required ?? model?.capabilities?.qualityRequired;
     const rawType = String(model?.type ?? model?.category ?? model?.task ?? '').trim().slice(0, 80);
     const type = /image|绘图|生图/i.test(rawType) ? 'image'
       : /video|视频/i.test(rawType) ? 'video'
@@ -91,6 +122,9 @@ function modelsFromPayload(payload) {
       ...(Array.isArray(durations) ? { allowedDurationsSec: durations.map(Number).filter(Number.isFinite) } : {}),
       ...(Array.isArray(ratios) ? { supportedRatios: ratios.map((value) => String(value).trim()).filter(Boolean) } : {}),
       ...(supportedResolutions.length ? { supportedResolutions } : {}),
+      ...(allowedQualities.length ? { allowedQualities } : {}),
+      ...(defaultQuality ? { defaultQuality } : {}),
+      ...(qualityRequiredValue !== undefined ? { qualityRequired: normalizeBoolean(qualityRequiredValue) } : {}),
       ...(Number.isFinite(Number(maxImages)) ? { maxReferenceImages: Number(maxImages) } : {}),
       ...(Number.isFinite(Number(maxVideos)) ? { maxReferenceVideos: Number(maxVideos) } : {}),
       ...(Number.isFinite(Number(maxAudios)) ? { maxReferenceAudios: Number(maxAudios) } : {}),
