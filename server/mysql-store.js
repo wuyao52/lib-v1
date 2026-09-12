@@ -374,7 +374,7 @@ const TABLES = {
     create: `CREATE TABLE IF NOT EXISTS generated_media (
       id CHAR(36) PRIMARY KEY,
       user_id CHAR(36) NOT NULL,
-      job_id CHAR(36) NOT NULL,
+      job_id VARCHAR(191) NOT NULL,
       object_key VARCHAR(1024) NOT NULL,
       mime_type VARCHAR(100) NOT NULL,
       byte_size BIGINT NOT NULL,
