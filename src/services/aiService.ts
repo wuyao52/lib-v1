@@ -1,5 +1,6 @@
 import { AIModelConfig, GenerationRequest, GenerationResponse } from '@/types';
 import { compressImageDataUrl, dataUrlByteLength } from '@/utils/imageCompression';
+import { normalizeImageSource } from '@/utils/imageUrl';
 
 const browserConsole = globalThis.console;
 // Provider payloads can contain credentials, API responses or Base64 images.
@@ -204,10 +205,12 @@ export function extractImageResult(response: any): string {
     response?.data?.result?.images?.[0]?.url, response?.data?.result?.images?.[0],
     response?.data?.result?.resultUrls?.[0], response?.data?.result?.outputUrls?.[0],
   ];
-  const url = values.find((value) => typeof value === 'string' && (
-    /^https?:\/\//i.test(value.trim()) || /^\/api\/assets\/public\//i.test(value.trim()) || /^data:image\//i.test(value.trim())
-  ));
-  if (url) return url.trim();
+  const url = values
+    .map((value) => normalizeImageSource(value))
+    .find((value) => (
+      /^https?:\/\//i.test(value) || /^\/api\/assets\/public\//i.test(value) || /^data:image\//i.test(value)
+    ));
+  if (url) return url;
   const base64 = response?.data?.[0]?.b64_json || response?.result?.data?.[0]?.b64_json || response?.b64_json;
   return typeof base64 === 'string' && base64.trim() ? `data:image/png;base64,${base64.trim()}` : '';
 }
