@@ -259,6 +259,9 @@ export function extractVideoResult(response: any): { url: string; thumbnail?: st
     response?.output?.data?.[0]?.video_url, response?.output?.data?.[0]?.videoUrl, response?.output?.data?.[0]?.url,
     response?.data?.result?.video_url, response?.data?.result?.videoUrl, response?.data?.result?.url,
     response?.data?.result?.data?.[0]?.url, response?.data?.output?.video_url, response?.data?.output?.url,
+    payload?.result?.output?.outputUrls?.[0], payload?.result?.outputs?.[0],
+    payload?.result?.videoUrl, payload?.result?.videoUrls?.[0], payload?.result?.video_url,
+    payload?.result?.resultUrls?.[0],
     response?.videos?.[0]?.url, response?.videos?.[0], response?.data?.videos?.[0]?.url, response?.data?.videos?.[0],
     response?.result?.videos?.[0]?.url, response?.result?.videos?.[0], response?.data?.result?.videos?.[0]?.url, response?.data?.result?.videos?.[0],
   ];
@@ -269,8 +272,10 @@ export function extractVideoResult(response: any): { url: string; thumbnail?: st
   // media sources.
   const isMediaUrl = (value: unknown): value is string => typeof value === 'string'
     && (/^https?:\/\//i.test(value.trim()) || /^\/api\/(?:generated-media|assets)\//i.test(value.trim()));
-  const url = urls.find(isMediaUrl)?.trim() || '';
-  const thumbnail = thumbnails.find(isMediaUrl)?.trim();
+  const normalizedUrls = urls.map((value) => normalizeImageSource(value));
+  const normalizedThumbnails = thumbnails.map((value) => normalizeImageSource(value));
+  const url = normalizedUrls.find(isMediaUrl) || '';
+  const thumbnail = normalizedThumbnails.find(isMediaUrl);
   return { url, ...(thumbnail ? { thumbnail } : {}) };
 }
 
