@@ -181,6 +181,63 @@ test('video queue extracts nested completed MINIMAX markdown video results', asy
   assert.equal(db.data.generationHistory[0]?.url, videoUrl);
 });
 
+test('video queue finalizes the Fanke completed envelope and writes history', async () => {
+  const db = fakeDb({
+    users: [{ id: 'user-a', balanceCents: 0 }],
+    systemApis: [{ id: 'api-fanke', enabled: true, baseUrl: 'https://ai.fanke2026.xyz', encryptedApiKey: 'fanke-secret' }],
+  });
+  const providerVideoUrl = 'https://pub.example/runtime-assets/generated-videos/fanke-job/0.mp4';
+  const fetchImpl = async (url, options) => {
+    if (options.method === 'POST') {
+      assert.equal(String(url), 'https://ai.fanke2026.xyz/api/open/v1/video/generate');
+      return new Response(JSON.stringify({ success: true, jobId: 'fanke-job-1', taskId: 'provider-task-1', status: 'submitted' }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    }
+    const target = new URL(String(url));
+    assert.equal(target.pathname, '/api/open/v1/video/status');
+    assert.equal(target.searchParams.get('jobId'), 'fanke-job-1');
+    return new Response(JSON.stringify({
+      code: 200,
+      message: '查询成功',
+      data: {
+        task_id: 'provider-task-1',
+        status: 'completed',
+        progress: 100,
+        model: 'MINIMAX-H3-768p',
+        result: {
+          output: { outputUrls: [providerVideoUrl] },
+          outputs: [providerVideoUrl],
+          videoUrl: providerVideoUrl,
+          videoUrls: [providerVideoUrl],
+          resultUrls: [providerVideoUrl],
+        },
+      },
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  const generatedMedia = {
+    archive: async (_job, result) => ({ ...result, url: '/api/generated-media/fanke-media-1' }),
+    cleanup: async () => ({ deleted: 0 }),
+  };
+  const queue = await createVideoQueue({ db, vault: { decrypt: (value) => value }, fetchImpl, generatedMedia, autoStart: false });
+
+  await queue.enqueue({
+    id: 'idem-fanke-job-012345678901234567890123456789012345678901234567',
+    userId: 'user-a',
+    apiId: 'api-fanke',
+    modelId: 'MINIMAX-H3-768p',
+    requestBody: { model: 'MINIMAX-H3-768p', prompt: 'F 端完成响应' },
+  });
+  await waitFor(() => db.data.generationJobs[0]?.status === 'processing');
+  db.data.generationJobs[0].nextPollAt = 0;
+  await queue.tick();
+  await waitFor(() => db.data.generationJobs[0]?.status === 'completed');
+
+  assert.equal(db.data.generationJobs[0].providerTaskId, 'fanke-job-1');
+  assert.equal(db.data.generationJobs[0].resultUrl, '/api/generated-media/fanke-media-1');
+  assert.equal(db.data.generationHistory[0]?.url, '/api/generated-media/fanke-media-1');
+});
+
 test('video queue retains an upstream-completed paid video for archival retry instead of refunding', async () => {
   const db = fakeDb({
     users: [{ id: 'user-a', balanceCents: 75 }],
@@ -230,6 +287,66 @@ test('video queue retains an upstream-completed paid video for archival retry in
   assert.equal(db.data.generationHistory[0]?.url, '/api/generated-media/durable-video');
   assert.equal(db.data.users[0].balanceCents, 0);
   assert.equal(db.data.balanceTransactions.filter((item) => item.type === 'model_refund').length, 0);
+});
+
+test('video queue repairs an older 100 percent job that has no archive error code', async () => {
+  const completedAt = new Date(Date.now() - 60_000).toISOString();
+  const db = fakeDb({
+    users: [{ id: 'user-a', balanceCents: 75 }],
+    systemApis: [{ id: 'api-1', enabled: true, baseUrl: 'https://upstream.example', encryptedApiKey: 'secret' }],
+    generationJobs: [{
+      id: 'legacy-100-job', userId: 'user-a', apiId: 'api-1', modelId: 'video',
+      requestBody: { prompt: 'legacy completed result' }, status: 'processing',
+      providerTaskId: 'provider-task-no-longer-queryable', progress: 100,
+      resultUrl: 'https://provider.example/legacy.mp4', thumbnail: null,
+      errorCode: null, errorMessage: null, chargeCents: 75, billingReference: 'legacy-100-job',
+      projectId: 'project-1', nodeId: 'node-1', prompt: 'legacy completed result',
+      attemptCount: 0, nextPollAt: 0, createdAt: completedAt, submittedAt: completedAt,
+      updatedAt: completedAt, completedAt: null, leaseOwner: null, leaseUntil: 0,
+    }],
+  });
+  const generatedMedia = {
+    archive: async (_job, result) => ({ ...result, url: '/api/generated-media/legacy-media' }),
+    cleanup: async () => ({ deleted: 0 }),
+  };
+  const queue = await createVideoQueue({ db, vault: { decrypt: (value) => value }, generatedMedia, autoStart: false });
+
+  await queue.tick();
+  await waitFor(() => db.data.generationJobs[0]?.status === 'completed');
+  assert.equal(db.data.generationJobs[0].resultUrl, '/api/generated-media/legacy-media');
+  assert.equal(db.data.generationHistory[0]?.url, '/api/generated-media/legacy-media');
+  assert.equal(db.data.users[0].balanceCents, 75);
+  assert.equal(db.data.balanceTransactions.filter((item) => item.type === 'model_refund').length, 0);
+});
+
+test('video queue restores a completed job and history from an archive written before finalization failed', async () => {
+  const now = new Date().toISOString();
+  const db = fakeDb({
+    generationJobs: [{
+      id: 'reconcile-job', userId: 'user-a', apiId: 'api-1', modelId: 'video', requestBody: { prompt: 'reconcile' },
+      status: 'processing', providerTaskId: 'provider-reconcile', progress: 100,
+      resultUrl: 'https://provider.example/reconcile.mp4', thumbnail: null,
+      errorCode: 'VIDEO_FINALIZE_PENDING', errorMessage: '视频已生成，正在写入历史记录',
+      chargeCents: 25, billingReference: 'reconcile-job', projectId: 'project-1', nodeId: 'node-1',
+      prompt: 'reconcile', attemptCount: 0, nextPollAt: 0, createdAt: now, submittedAt: now, updatedAt: now,
+      completedAt: null, leaseOwner: null, leaseUntil: 0,
+    }],
+    generatedMedia: [{
+      id: 'media-reconcile', userId: 'user-a', jobId: 'reconcile-job',
+      objectKey: 'generated-videos/user-a/reconcile-job/media.mp4', mimeType: 'video/mp4', byteSize: 12,
+      sourceUrl: 'https://provider.example/reconcile.mp4', createdAt: now,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    }],
+  });
+  const queue = await createVideoQueue({ db, vault: { decrypt: (value) => value }, autoStart: false });
+  const job = db.data.generationJobs[0];
+  assert.equal(job.status, 'completed');
+  assert.equal(job.progress, 100);
+  assert.equal(job.resultUrl, '/api/generated-media/media-reconcile');
+  assert.equal(job.errorCode, null);
+  assert.equal(db.data.generationHistory.length, 1);
+  assert.equal(db.data.generationHistory[0].url, '/api/generated-media/media-reconcile');
+  await queue.stop();
 });
 
 test('video queue accepts OneAPI result.videos as string URLs', async () => {
