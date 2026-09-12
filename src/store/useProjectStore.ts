@@ -103,6 +103,10 @@ const generateId = () => `id-${Date.now()}-${Math.random().toString(36).substr(2
 
 let storageScope = 'unscoped';
 let storageScopeEpoch = 0;
+// A project can be closed while a browser-side provider poll is still running.
+// Keep that poll detached from the next project session so it cannot overwrite
+// a newly opened project or block its recovery poll.
+let projectSessionEpoch = 0;
 let saveQueuedWhileBusy = false;
 const lastSavedFingerprints = new Map<string, string>();
 const getProjectListKey = () => `ai-drama-projects:${storageScope}`;
@@ -527,11 +531,19 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
         history: [{ nodes: projectData.nodes, edges: projectData.edges }],
         historyIndex: 0,
       });
-      queueMicrotask(() => resumeInterruptedVideoGenerations(projectData!, get, set));
+      const openSessionEpoch = projectSessionEpoch;
+      queueMicrotask(() => {
+        if (openSessionEpoch === projectSessionEpoch && get().project?.id === projectData?.id) {
+          resumeInterruptedVideoGenerations(projectData!, get, set);
+        }
+      });
     }
   },
 
   closeProject: async () => {
+    // Closing a project must not cancel the provider task, but the old browser
+    // poll must no longer participate in the next project session.
+    projectSessionEpoch += 1;
     const pendingTimer = get().autoSaveTimer;
     if (pendingTimer) clearTimeout(pendingTimer);
     set({ autoSaveTimer: null });
@@ -550,6 +562,8 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
       currentView: 'home',
       selectedNode: null,
       generationProgress: new Map(),
+      activeGenerations: new Map(),
+      isGenerating: false,
       history: [],
       historyIndex: -1,
       autoSaveTimer: null,
@@ -582,6 +596,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
   setUserScope: async (userId) => {
     const nextScope = userId.replace(/[^a-zA-Z0-9-]/g, '');
     if (!nextScope || nextScope === storageScope) return;
+    projectSessionEpoch += 1;
     const previousTimer = get().autoSaveTimer;
     if (previousTimer) clearTimeout(previousTimer);
     const scopeEpoch = ++storageScopeEpoch;
@@ -595,6 +610,8 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
       project: null,
       currentView: 'home',
       selectedNode: null,
+      activeGenerations: new Map(),
+      isGenerating: false,
       history: [],
       historyIndex: -1,
       autoSaveTimer: null,
@@ -638,7 +655,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
 
     const newEdges = applyEdgeChanges(changes, project.edges);
 
-    const persistsProject = changes.some((change) => change.type !== 'select' && change.type !== 'dimensions');
+    const persistsProject = changes.some((change) => change.type !== 'select');
     set({
       project: {
         ...project,
@@ -717,7 +734,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     // Generation progress/status messages are transient runtime state. They
     // must not create a project revision on every polling tick.
     const transientOnly = Object.keys(data).length > 0
-      && Object.keys(data).every((key) => ['status', 'progress', 'error', 'generationMessage'].includes(key));
+      && Object.keys(data).every((key) => ['status', 'progress', 'error', 'generationMessage', 'generationMeta'].includes(key));
     const persistsProject = !transientOnly;
 
     set({
@@ -845,6 +862,10 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
     if (!generateInPlace) set({ project: { ...get().project!, edges: [...get().project!.edges, newEdge] }, isGenerating: true });
     else set({ isGenerating: true });
 
+    // Keep the newly created result node recoverable even if the provider takes
+    // a long time to return its task ID and the user closes the project first.
+    if (get().project) saveProjectDataToStorage(get().project!);
+
     launchGenerationTask({
       sourceNodeId: nodeId, targetNodeId: newNodeId, sourceNode: node,
       requestType,
@@ -962,6 +983,8 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
       isGenerating: true,
     });
 
+    if (get().project) saveProjectDataToStorage(get().project!);
+
     launchGenerationTask({
       sourceNodeId: nodeId, targetNodeId: newNodeId, sourceNode: node,
       requestType: type,
@@ -1024,6 +1047,10 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
   saveCurrentProject: async () => {
     const { project } = get();
     if (!project) return;
+    // A synchronous local checkpoint must happen before any potentially slow
+    // image migration or cloud request. This is especially important for a
+    // newly created generation node that has just received a task ID.
+    saveProjectDataToStorage(project);
     if (get().isSaving) { saveQueuedWhileBusy = true; return; }
 
     const saveScope = storageScope;
@@ -1260,6 +1287,9 @@ function launchGenerationTask(
 ) {
   const project = get().project;
   if (!project) return;
+  const projectId = project.id;
+  const sessionEpoch = projectSessionEpoch;
+  const isCurrentSession = () => projectSessionEpoch === sessionEpoch && get().project?.id === projectId;
   let multiModel = project.settings.multiModel;
   if (!multiModel) {
     multiModel = { textModel: unconfiguredModel(), videoModel: unconfiguredModel(), imageModel: unconfiguredModel() };
@@ -1276,6 +1306,7 @@ function launchGenerationTask(
   const activeGenerations = new Map(get().activeGenerations);
   activeGenerations.set(execution.targetNodeId, controller);
   set({ activeGenerations });
+  let checkpointedTaskId = '';
 
   void (async () => {
     try {
@@ -1301,10 +1332,11 @@ function launchGenerationTask(
           url: execution.sourceNode.data.generatedContent, thumbnail: execution.sourceNode.data.thumbnail,
         }) }).catch((error) => console.warn('保存生成历史失败:', error));
       }
+      if (!isCurrentSession()) return;
       get().updateNodeData(execution.targetNodeId, { progress: 10, ...(execution.generateInPlace ? {} : { content: '正在调用 AI API...' }) });
 
       const requestDuration = normalizeModelDuration(Number(execution.duration) || 5, videoDurationRules(effectiveModel), 1, 15);
-      if (!isImage && requestDuration !== execution.duration) get().updateNodeData(execution.targetNodeId, { duration: requestDuration });
+      if (!isImage && requestDuration !== execution.duration && isCurrentSession()) get().updateNodeData(execution.targetNodeId, { duration: requestDuration });
       const generationSettings: any = {
         style: execution.style || latestProject.settings.defaultStyle,
         resolution: isImage ? undefined : effectiveModel.parameters?.resolution,
@@ -1314,27 +1346,41 @@ function launchGenerationTask(
         duration: requestDuration,
         seconds: requestDuration,
         _client: { projectId: latestProject.id, nodeId: execution.targetNodeId },
-        _onProgress: ({ taskId, status, progress, queuePosition }: { taskId: string; status: string; progress: number; queuePosition: number | null }) => get().updateNodeData(execution.targetNodeId, {
-          progress: progress > 0 ? progress : status === 'queued' ? 10 : 30,
-          generationMeta: {
-            ...get().project?.nodes.find((item) => item.id === execution.targetNodeId)?.data.generationMeta,
-            taskId, configId: effectiveModel.id, apiId: effectiveModel.apiId, modelId: effectiveModel.modelId, modelName: effectiveModel.name, provider: effectiveModel.provider,
-          },
-          generationMessage: status === 'queued'
-            ? `视频任务排队中${queuePosition ? `，当前第 ${queuePosition} 位` : ''}`
-            : status === 'submitting' ? '正在提交到视频服务...' : progress > 0 ? `视频生成中 ${progress}%` : '视频正在生成中...',
-        }),
+        _onProgress: ({ taskId, status, progress, queuePosition }: { taskId: string; status: string; progress: number; queuePosition: number | null }) => {
+          if (!isCurrentSession()) return;
+          const normalizedTaskId = String(taskId || '').trim();
+          const currentNode = get().project?.nodes.find((item) => item.id === execution.targetNodeId);
+          const previousTaskId = String(currentNode?.data.generationMeta?.taskId || '').trim();
+          get().updateNodeData(execution.targetNodeId, {
+            progress: progress > 0 ? progress : status === 'queued' ? 10 : 30,
+            generationMeta: {
+              ...currentNode?.data.generationMeta,
+              taskId: normalizedTaskId, configId: effectiveModel.id, apiId: effectiveModel.apiId, modelId: effectiveModel.modelId, modelName: effectiveModel.name, provider: effectiveModel.provider,
+            },
+            generationMessage: status === 'queued'
+              ? `视频任务排队中${queuePosition ? `，当前第 ${queuePosition} 位` : ''}`
+              : status === 'submitting' ? '正在提交到视频服务...' : progress > 0 ? `视频生成中 ${progress}%` : '视频正在生成中...',
+          });
+          // Save the first task ID immediately, but never save every poll tick.
+          if (normalizedTaskId && normalizedTaskId !== checkpointedTaskId && normalizedTaskId !== previousTaskId) {
+            checkpointedTaskId = normalizedTaskId;
+            void get().saveCurrentProject();
+          }
+        },
       };
       const images = await materializeReferenceImages(
         await prepareReferenceImages(collectReferenceImages(latestProject, execution.sourceNode, execution.prompt, execution.referenceNodeIds, execution.targetNodeId, maxReferenceImages(effectiveModel))),
         controller.signal,
       );
       if (images.length) generationSettings.images = images;
+      if (!isCurrentSession()) return;
       get().updateNodeData(execution.targetNodeId, { progress: 30, ...(execution.generateInPlace ? {} : { content: '正在生成内容...' }) });
 
       let result;
       if (execution.requestType === 'video') {
-        result = await generateVideoWithFallback(aiService, multiModel.imageModel, execution.prompt, generationSettings, controller.signal, () => get().updateNodeData(execution.targetNodeId, { progress: 35, ...(execution.generateInPlace ? {} : { content: '视频模型需要参考图，正在自动生成首帧...' }) }));
+        result = await generateVideoWithFallback(aiService, multiModel.imageModel, execution.prompt, generationSettings, controller.signal, () => {
+          if (isCurrentSession()) get().updateNodeData(execution.targetNodeId, { progress: 35, ...(execution.generateInPlace ? {} : { content: '视频模型需要参考图，正在自动生成首帧...' }) });
+        });
       } else if (execution.requestType === 'img2img') {
         result = await aiService.generateImage(execution.prompt, {
           ...generationSettings,
@@ -1345,9 +1391,10 @@ function launchGenerationTask(
       } else {
         result = await aiService.generateImage(execution.prompt, generationSettings, controller.signal);
       }
+      if (!isCurrentSession()) return;
       get().updateNodeData(execution.targetNodeId, { progress: 80, ...(execution.generateInPlace ? {} : { content: '正在处理生成结果...' }) });
       if (!result.success || !result.data) {
-        markGenerationFailed(execution.sourceNodeId, execution.targetNodeId, result.error || 'AI 生成失败', get, set);
+        if (isCurrentSession()) markGenerationFailed(execution.sourceNodeId, execution.targetNodeId, result.error || 'AI 生成失败', get, set);
         return;
       }
       const archiveResult = isImage
@@ -1357,6 +1404,7 @@ function launchGenerationTask(
       if (isImage && !archiveResult.archived) {
         console.warn('图片已生成，但云端归档暂时不可用，先使用上游结果:', archiveResult.error);
       }
+      if (!isCurrentSession()) return;
       get().updateNodeData(execution.targetNodeId, {
         status: 'completed', progress: 100, error: undefined, generationMessage: undefined,
         generatedContent: durableImageUrl,
@@ -1380,11 +1428,14 @@ function launchGenerationTask(
         type: execution.requestType, prompt: execution.prompt,
         url: durableImageUrl, thumbnail: isImage ? durableImageUrl : result.data.thumbnail,
       }) }).catch((error) => console.warn('保存生成历史失败:', error));
+      // Completion is a critical project change; write it immediately instead
+      // of waiting for the normal debounce window.
+      if (isCurrentSession()) void get().saveCurrentProject();
     } catch (error: any) {
       const message = controller.signal.aborted ? '用户取消生成' : error.message || 'AI 生成失败';
-      markGenerationFailed(execution.sourceNodeId, execution.targetNodeId, message, get, set);
+      if (isCurrentSession()) markGenerationFailed(execution.sourceNodeId, execution.targetNodeId, message, get, set);
     } finally {
-      finishGenerationTask(execution.targetNodeId, get, set);
+      finishGenerationTask(execution.targetNodeId, get, set, controller);
       notifyBillingChanged();
     }
   })();
@@ -1418,9 +1469,13 @@ function hasActiveGenerationFromSource(
 function finishGenerationTask(
   nodeId: string,
   get: () => ProjectStore,
-  set: (partial: Partial<ProjectStore>) => void
+  set: (partial: Partial<ProjectStore>) => void,
+  controller?: AbortController,
 ) {
   const activeGenerations = new Map(get().activeGenerations);
+  // A closed project clears its active map. Do not let an old async task
+  // delete a same-named task that belongs to a newly opened project.
+  if (controller && activeGenerations.get(nodeId) !== controller) return;
   activeGenerations.delete(nodeId);
   set({ activeGenerations, isGenerating: activeGenerations.size > 0 });
 }
@@ -1430,6 +1485,8 @@ function resumeInterruptedVideoGenerations(
   get: () => ProjectStore,
   set: (partial: Partial<ProjectStore>) => void,
 ) {
+  const sessionEpoch = projectSessionEpoch;
+  const isCurrentSession = () => projectSessionEpoch === sessionEpoch && get().project?.id === project.id;
   const interrupted = project.nodes.filter((node) => (
     node.data.type === 'video'
     && node.data.status === 'generating'
@@ -1453,6 +1510,7 @@ function resumeInterruptedVideoGenerations(
       activeGenerations.set(node.id, controller);
       set({ activeGenerations, isGenerating: true });
       void createAIService(model).resumeVideo(taskId, controller.signal, ({ status, progress, queuePosition }) => {
+        if (!isCurrentSession()) return;
         get().updateNodeData(node.id, {
           progress: progress > 0 ? progress : status === 'queued' ? 10 : 30,
           generationMessage: status === 'queued'
@@ -1461,17 +1519,34 @@ function resumeInterruptedVideoGenerations(
         });
       }).then((result) => {
         if (!result.success || !result.data?.url) throw new Error(result.error || '恢复视频任务失败');
+        if (!isCurrentSession()) return;
         get().updateNodeData(node.id, {
           status: 'completed', progress: 100, generatedContent: result.data.url, thumbnail: result.data.thumbnail,
           error: undefined, generationMessage: undefined,
           generationMeta: { ...node.data.generationMeta, taskId, completedAt: new Date().toISOString() },
         });
+        const currentProject = get().project;
+        const currentNode = currentProject?.nodes.find((item) => item.id === node.id);
+        if (currentProject && currentNode) {
+          void apiRequest('/api/generation-history', {
+            method: 'POST',
+            body: JSON.stringify({
+              projectId: currentProject.id,
+              nodeId: node.id,
+              type: 'video',
+              prompt: currentNode.data.prompt || currentNode.data.content || '',
+              url: result.data.url,
+              thumbnail: result.data.thumbnail,
+            }),
+          }).catch((error) => console.warn('恢复视频历史保存失败:', error));
+          void get().saveCurrentProject();
+        }
       }).catch((error) => {
-        if (!controller.signal.aborted) get().updateNodeData(node.id, { status: 'error', progress: 0, error: error instanceof Error ? error.message : '恢复视频任务失败', generationMessage: undefined });
-      }).finally(() => finishGenerationTask(node.id, get, set));
+        if (!controller.signal.aborted && isCurrentSession()) get().updateNodeData(node.id, { status: 'error', progress: 0, error: error instanceof Error ? error.message : '恢复视频任务失败', generationMessage: undefined });
+      }).finally(() => finishGenerationTask(node.id, get, set, controller));
     }
   }).catch(() => {
-    interrupted.forEach((node) => get().updateNodeData(node.id, { status: 'error', progress: 0, error: '无法读取系统模型目录，请联网后重新打开项目恢复任务' }));
+    if (isCurrentSession()) interrupted.forEach((node) => get().updateNodeData(node.id, { status: 'error', progress: 0, error: '无法读取系统模型目录，请联网后重新打开项目恢复任务' }));
   });
 }
 
