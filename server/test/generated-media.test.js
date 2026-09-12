@@ -106,6 +106,41 @@ test('generated-media archive accepts provider redirects to the final video file
   assert.match(archived.url, /^\/api\/generated-media\//);
 });
 
+test('generated-media archive falls back to bounded buffering when stream upload fails', async () => {
+  const data = { generatedMedia: [] };
+  const bytes = Buffer.from('fallback-video');
+  let fetchCount = 0;
+  let streamAttempts = 0;
+  let fallbackBytes = null;
+  let deletedKey = null;
+  const service = createGeneratedMediaService({
+    db: { read: (collection) => data[collection], mutate: async (mutator) => mutator(data) },
+    storage: {
+      async putStream({ body }) {
+        streamAttempts += 1;
+        const reader = body.getReader();
+        while (!(await reader.read()).done) { /* consume the failed stream */ }
+        throw new Error('对象存储流式上传失败');
+      },
+      async put({ bytes: value }) { fallbackBytes = Buffer.from(value); },
+      async delete(key) { deletedKey = key; },
+    },
+    fetchImpl: async () => {
+      fetchCount += 1;
+      return new Response(bytes, { status: 200, headers: { 'content-type': 'video/mp4', 'content-length': String(bytes.length) } });
+    },
+    resolveHost: async () => [{ address: '203.0.113.10', family: 4 }],
+  });
+
+  const archived = await service.archive({ id: 'stream-fallback-job', userId: 'user-1' }, { url: 'https://provider.example/fallback.mp4' });
+  assert.match(archived.url, /^\/api\/generated-media\//);
+  assert.equal(fetchCount, 2);
+  assert.equal(streamAttempts, 1);
+  assert.deepEqual(fallbackBytes, bytes);
+  assert.match(deletedKey, /^generated-videos\/user-1\/stream-fallback-job\//);
+  assert.equal(data.generatedMedia.length, 1);
+});
+
 test('non-streaming storage rejects a declared large video before buffering it', async () => {
   let stored = false;
   const storage = {
