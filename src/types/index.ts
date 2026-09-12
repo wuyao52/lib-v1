@@ -68,6 +68,7 @@ export interface SceneNodeData {
     modelName?: string;
     provider?: string;
     taskId?: string;
+    providerTaskId?: string;
     completedAt?: string;
   };
   progress?: any;  // 简化类型，支持数字或对象
