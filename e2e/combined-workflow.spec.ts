@@ -201,10 +201,12 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   });
   await page.route('**/api/system-ai/*/v1/images/*', async (route) => {
     const taskId = route.request().url().split('/').at(-1);
+    const resultUrl = `/api/assets/public/refresh-image?task=${taskId}`;
+    const markdownUrl = `[${resultUrl}](${resultUrl})`;
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ code: 200, message: '查询成功', data: { task_id: taskId, status: 'completed', progress: 100, result: { images: [`/api/assets/public/refresh-image?task=${taskId}`], image_url: `/api/assets/public/refresh-image?task=${taskId}`, resultUrls: [`/api/assets/public/refresh-image?task=${taskId}`] } } }),
+      body: JSON.stringify({ code: 200, message: '查询成功', data: { task_id: taskId, status: 'completed', progress: 100, result: { images: [markdownUrl], image_url: markdownUrl, resultUrls: [markdownUrl] } } }),
     });
   });
   await page.getByTestId('open-ai-image-generation').click();
@@ -228,6 +230,10 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   await expect(imageModal).toContainText('2 个生成中');
   await imageModal.getByTitle('关闭').click();
   await expect(imageModal).toBeHidden();
+  await page.getByTestId('close-project').click();
+  await expect(page.getByTestId('project-browser-project')).toBeVisible();
+  await page.getByTestId('project-browser-project').click();
+  await expect(page.getByTestId('open-ai-image-generation')).toBeVisible();
   await page.getByTestId('open-ai-image-generation').click();
   await expect(imageModal).toContainText('2 个生成中');
   await expect(imageModal.getByAltText('AI 生成结果')).toHaveCount(2, { timeout: 15_000 });
