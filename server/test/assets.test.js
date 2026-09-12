@@ -376,6 +376,41 @@ test('slow generated image import runs outside the request and reports its own t
   assert.equal(result.payload.message, '生成图片归档超时');
 });
 
+test('image import timeout also cancels a stalled object-storage write', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'ads-generated-image-storage-timeout-'));
+  const sentCodes = [];
+  let storageAborted = false;
+  const { app } = await createApp({
+    databasePath: join(directory, 'database.json'), secureCookies: false, imageImportTimeoutMs: 20,
+    sendEmailCode: async (message) => sentCodes.push(message),
+    resolveHost: async () => [{ address: '93.184.216.34', family: 4 }],
+    fetchImpl: async () => new Response(PNG_BYTES, { status: 200, headers: { 'content-type': 'image/png' } }),
+    assetStorage: {
+      provider: 'test-oss',
+      async put({ signal }) {
+        await new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => { storageAborted = true; reject(new DOMException('aborted', 'AbortError')); }, { once: true });
+        });
+      },
+      async delete() {},
+    },
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  t.after(() => server.close());
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const cookie = await register(baseUrl, 'image-storage-timeout', sentCodes);
+  const submitted = await fetch(`${baseUrl}/api/assets/import-image`, {
+    method: 'POST', headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ source: 'https://slow-storage.example/result.png' }),
+  });
+  assert.equal(submitted.status, 202);
+  const result = await waitForImageImport(baseUrl, cookie, submitted);
+  assert.equal(result.status, 504);
+  assert.equal(result.payload.message, '生成图片归档超时');
+  assert.equal(storageAborted, true);
+});
+
 test('R2 asset storage keeps bytes out of the database and migrates legacy assets', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'ads-r2-assets-'));
   const sentCodes = [];
