@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { MouseEvent } from 'react';
 import { X, History, ExternalLink, Film, ChevronDown } from 'lucide-react';
 import { apiRequest } from '@/services/apiClient';
 import useProjectStore from '@/store/useProjectStore';
@@ -39,6 +40,7 @@ export default function GenerationHistoryPanel({ onClose }: { onClose: () => voi
   const [items, setItems] = useState<HistoryItem[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [openingId, setOpeningId] = useState('');
   const [loadError, setLoadError] = useState('');
   const refresh = useCallback(() => {
     void apiRequest<{ history: HistoryItem[]; nextCursor: string | null }>('/api/generation-history?limit=50')
@@ -72,6 +74,27 @@ export default function GenerationHistoryPanel({ onClose }: { onClose: () => voi
     };
   }, [refresh]);
   const mentionNodes = useMemo(() => (project?.nodes || []).map((node) => ({ id: node.id, label: node.data.label, type: node.data.type, imageUrl: node.data.type === 'image' ? node.data.generatedContent : undefined })), [project?.nodes]);
+  const openHistoryItem = useCallback(async (event: MouseEvent<HTMLAnchorElement>, item: HistoryItem) => {
+    if (!needsResolvedMediaUrl(item.url)) return;
+    event.preventDefault();
+
+    // Open synchronously while still inside the click handler. This avoids
+    // popup blockers while the signed playback URL is fetched.
+    const popup = window.open('about:blank', '_blank');
+    if (popup) popup.opener = null;
+    setOpeningId(item.id);
+    setLoadError('');
+    try {
+      const playableUrl = await getPlayableMediaUrl(item.url);
+      if (popup && !popup.closed) popup.location.replace(playableUrl);
+      else window.location.assign(playableUrl);
+    } catch (error) {
+      popup?.close();
+      setLoadError(error instanceof Error ? error.message : '媒体地址获取失败，请重试');
+    } finally {
+      setOpeningId('');
+    }
+  }, []);
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
       <button className="absolute inset-0 bg-black/70" onClick={onClose} aria-label="关闭" />
@@ -91,6 +114,9 @@ export default function GenerationHistoryPanel({ onClose }: { onClose: () => voi
                   href={item.url}
                   target="_blank"
                   rel="noreferrer"
+                  onClick={(event) => void openHistoryItem(event, item)}
+                  aria-busy={openingId === item.id}
+                  title={openingId === item.id ? '正在获取播放地址…' : undefined}
                   className="grid min-h-20 grid-cols-[72px_92px_minmax(0,1fr)_28px] items-center gap-2 overflow-hidden rounded-lg border border-dark-600 bg-dark-900 p-2 transition-colors hover:border-primary-500 sm:grid-cols-[104px_140px_minmax(0,1fr)_36px] sm:gap-3"
                 >
                   <span className="block h-16 w-[72px] shrink-0 overflow-hidden rounded-md bg-black sm:h-20 sm:w-[104px]">
