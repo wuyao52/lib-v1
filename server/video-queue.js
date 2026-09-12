@@ -4,6 +4,7 @@ import { isUpstreamBalanceError, upstreamErrorText } from './upstream-errors.js'
 
 const ACTIVE_STATUSES = new Set(['submitting', 'processing', 'cancel_requested']);
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+const ARCHIVE_PENDING_CODES = new Set(['VIDEO_ARCHIVE_PENDING', 'VIDEO_FINALIZE_PENDING']);
 const CONFIRMED_POLL_BALANCE_FAILURES = 3;
 const historyRetentionMs = () => intFromEnv('GENERATION_HISTORY_RETENTION_DAYS', 90, 3, 3650) * 24 * 60 * 60 * 1000;
 
@@ -266,8 +267,46 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
   const pollBalanceFailureStreaks = new Map();
   let ticking = false;
   let lastCleanupAt = 0;
+  let lastArchiveReconcileAt = 0;
   let accepting = true;
   let timer = null;
+
+  const reconcileArchivedJobs = async () => {
+    const mediaRows = Array.isArray(db.read('generatedMedia')) ? db.read('generatedMedia') : [];
+    if (!mediaRows.length) return;
+    const now = Date.now();
+    const mediaByJobId = new Map(mediaRows
+      .filter((item) => item.jobId && Date.parse(item.expiresAt) > now)
+      .map((item) => [item.jobId, item]));
+    if (!mediaByJobId.size) return;
+    const needsReconcile = db.read('generationJobs').some((job) => !TERMINAL_STATUSES.has(job.status) && mediaByJobId.has(job.id));
+    if (!needsReconcile) return;
+    const mutate = db.mutateCollections ? db.mutateCollections.bind(db, ['generationJobs', 'generationHistory']) : db.mutate.bind(db);
+    await mutate((data) => {
+      const known = new Set(data.generationHistory.map((item) => `${item.userId}:${item.url}`));
+      data.generationJobs.forEach((job) => {
+        if (TERMINAL_STATUSES.has(job.status)) return;
+        const media = mediaByJobId.get(job.id);
+        if (!media) return;
+        const completedAt = job.completedAt || media.createdAt || nowIso();
+        const resultUrl = `/api/generated-media/${media.id}`;
+        Object.assign(job, {
+          status: 'completed', progress: 100, resultUrl,
+          errorCode: null, errorMessage: null, completedAt,
+          updatedAt: completedAt, nextPollAt: 0, leaseOwner: null, leaseUntil: 0,
+        });
+        const historyKey = `${job.userId}:${resultUrl}`;
+        if (!known.has(historyKey)) {
+          data.generationHistory.push({
+            id: randomUUID(), userId: job.userId, projectId: job.projectId || '', nodeId: job.nodeId || null,
+            type: 'video', prompt: job.prompt || '', url: resultUrl, thumbnail: job.thumbnail || null,
+            createdAt: completedAt, expiresAt: new Date(Date.parse(completedAt) + historyRetentionMs()).toISOString(),
+          });
+          known.add(historyKey);
+        }
+      });
+    });
+  };
 
   const updateJob = async (jobId, patch) => {
     const job = db.read('generationJobs').find((item) => item.id === jobId);
@@ -329,12 +368,19 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
         // The provider has already completed and may have charged for the video. Keep
         // retrying server-side archiving instead of refunding or exposing its transient URL.
         console.error(`视频 ${job.id} 归档失败:`, error);
-        return updateJob(job.id, {
-          status: 'processing', progress: 100, resultUrl: result.url, thumbnail: result.thumbnail || null,
-          errorCode: 'VIDEO_ARCHIVE_PENDING',
-          errorMessage: '视频已生成，正在保存播放文件',
-          nextPollAt: Date.now() + 5000, leaseOwner: null, leaseUntil: 0,
-        });
+        try {
+          return await updateJob(job.id, {
+            status: 'processing', progress: 100, resultUrl: result.url, thumbnail: result.thumbnail || null,
+            errorCode: 'VIDEO_ARCHIVE_PENDING',
+            errorMessage: '视频已生成，正在保存播放文件',
+            nextPollAt: Date.now() + 5000, leaseOwner: null, leaseUntil: 0,
+          });
+        } catch (persistError) {
+          // Never re-submit a provider task just because the local status write
+          // failed after the provider already reported completion.
+          console.error(`视频 ${job.id} 归档等待状态保存失败:`, persistError);
+          return null;
+        }
       }
     }
     const completedAt = nowIso();
@@ -348,14 +394,32 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
         type: 'video', prompt: job.prompt || '', url: durableResult.url, thumbnail: durableResult.thumbnail || null,
         createdAt: completedAt, expiresAt: new Date(Date.parse(completedAt) + historyRetentionMs()).toISOString(),
       } : null;
-    if (db.finalizeGenerationJob) return db.finalizeGenerationJob(jobId, patch, historyRecord);
-    return db.mutate((data) => {
-      const stored = data.generationJobs.find((item) => item.id === jobId);
-      if (!stored || TERMINAL_STATUSES.has(stored.status)) return null;
-      Object.assign(stored, patch);
-      if (historyRecord && !data.generationHistory.some((item) => item.userId === job.userId && item.url === durableResult.url)) data.generationHistory.push(historyRecord);
-      return { ...stored };
-    });
+    try {
+      if (db.finalizeGenerationJob) return await db.finalizeGenerationJob(jobId, patch, historyRecord);
+      return await db.mutate((data) => {
+        const stored = data.generationJobs.find((item) => item.id === jobId);
+        if (!stored || TERMINAL_STATUSES.has(stored.status)) return null;
+        Object.assign(stored, patch);
+        if (historyRecord && !data.generationHistory.some((item) => item.userId === job.userId && item.url === durableResult.url)) data.generationHistory.push(historyRecord);
+        return { ...stored };
+      });
+    } catch (error) {
+      // Archiving may have succeeded before the database transaction failed.
+      // Keep the paid provider task active and let the next queue tick retry
+      // finalization; do not submit the upstream task a second time.
+      console.error(`视频 ${job.id} 完成状态保存失败:`, error);
+      try {
+        await updateJob(job.id, {
+          status: 'processing', progress: 100, resultUrl: durableResult.url, thumbnail: durableResult.thumbnail || null,
+          errorCode: 'VIDEO_FINALIZE_PENDING',
+          errorMessage: '视频已生成，正在写入历史记录',
+          nextPollAt: Date.now() + 5000, leaseOwner: null, leaseUntil: 0,
+        });
+      } catch (persistError) {
+        console.error(`视频 ${job.id} 完成等待状态保存失败:`, persistError);
+      }
+      return null;
+    }
   };
 
   const apiForJob = (job) => {
@@ -433,7 +497,12 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
     try {
       const api = apiForJob(job);
       const adapter = createVideoProviderAdapter(api, { fetchImpl, resolveHost });
-      if (job.errorCode === 'VIDEO_ARCHIVE_PENDING' && job.resultUrl) {
+      // Older workers could persist progress=100 and the provider result URL
+      // before they had a dedicated archive/finalize error code. Treat that
+      // shape as an already-completed provider task and retry local completion
+      // instead of polling a task that may no longer be queryable upstream.
+      const hasCompletedResult = Boolean(job.resultUrl && Number(job.progress || 0) >= 100);
+      if ((ARCHIVE_PENDING_CODES.has(job.errorCode) || hasCompletedResult) && job.resultUrl) {
         // Signed provider URLs can expire after an archive failure. Refresh the
         // provider result before retrying so we do not loop forever on a dead URL.
         let archiveResult = { url: job.resultUrl, thumbnail: job.thumbnail || '' };
@@ -448,7 +517,7 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
         await completeJob(job.id, archiveResult);
         return;
       }
-      if (job.errorCode !== 'VIDEO_ARCHIVE_PENDING' && Date.now() - Date.parse(job.createdAt) > config.taskTimeoutMs) {
+      if (!ARCHIVE_PENDING_CODES.has(job.errorCode) && Date.now() - Date.parse(job.createdAt) > config.taskTimeoutMs) {
         await refundJob(job.id, { code: 'VIDEO_JOB_TIMEOUT', message: '视频任务处理超时，已自动退款' });
         return;
       }
@@ -535,6 +604,10 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
         });
         if (generatedMedia) await generatedMedia.cleanup();
         lastCleanupAt = Date.now();
+      }
+      if (Date.now() - lastArchiveReconcileAt >= 5000) {
+        await reconcileArchivedJobs();
+        lastArchiveReconcileAt = Date.now();
       }
       const jobs = db.read('generationJobs');
       const active = jobs.filter((job) => ACTIVE_STATUSES.has(job.status));
@@ -684,6 +757,7 @@ export async function createVideoQueue({ db, vault, fetchImpl = fetch, autoStart
   };
 
   if (db.recoverExpiredGenerationJobs) await db.recoverExpiredGenerationJobs();
+  await reconcileArchivedJobs();
   await db.mutate((data) => {
     const historyCutoff = Date.now() - historyRetentionMs();
     data.generationJobs.forEach((job) => {
