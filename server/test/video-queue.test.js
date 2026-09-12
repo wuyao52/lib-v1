@@ -133,6 +133,54 @@ test('video queue accepts a completed ToAPIs-style result.data video response wi
   assert.equal(db.data.generationHistory[0]?.url, 'https://files.toapis.example/videos/finished.mp4');
 });
 
+test('video queue extracts nested completed MINIMAX markdown video results', async () => {
+  const db = fakeDb({
+    users: [{ id: 'user-a', balanceCents: 0 }],
+    systemApis: [{ id: 'api-1', enabled: true, baseUrl: 'https://upstream.example', encryptedApiKey: 'secret' }],
+  });
+  const videoUrl = 'https://pub.example/runtime-assets/generated-videos/job-minimax/0.mp4';
+  const markdownUrl = `[${videoUrl}](${videoUrl})`;
+  const fetchImpl = async (_url, options) => {
+    if (options.method === 'POST') {
+      return new Response(JSON.stringify({ task_id: 'provider-minimax-task', status: 'submitted' }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify({
+      code: 200,
+      message: '查询成功',
+      data: {
+        task_id: 'provider-minimax-task',
+        status: 'completed',
+        progress: 100,
+        model: 'MINIMAX-H3-768p',
+        result: {
+          output: { outputUrls: [markdownUrl] },
+          outputs: [markdownUrl],
+          videoUrl: markdownUrl,
+          videoUrls: [markdownUrl],
+          video_url: markdownUrl,
+          resultUrls: [markdownUrl],
+        },
+      },
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  const queue = await createVideoQueue({ db, vault: { decrypt: (value) => value }, fetchImpl, autoStart: false });
+  await queue.enqueue({
+    id: 'minimax-nested-result-job',
+    userId: 'user-a',
+    apiId: 'api-1',
+    modelId: 'MINIMAX-H3-768p',
+    requestBody: { prompt: '一只红色陶瓷杯放在白色桌面上' },
+  });
+  await waitFor(() => db.data.generationJobs[0]?.status === 'processing');
+  db.data.generationJobs[0].nextPollAt = 0;
+  await queue.tick();
+  await waitFor(() => db.data.generationJobs[0]?.status === 'completed');
+  assert.equal(db.data.generationJobs[0].resultUrl, videoUrl);
+  assert.equal(db.data.generationHistory[0]?.url, videoUrl);
+});
+
 test('video queue retains an upstream-completed paid video for archival retry instead of refunding', async () => {
   const db = fakeDb({
     users: [{ id: 'user-a', balanceCents: 75 }],
