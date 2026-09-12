@@ -110,6 +110,7 @@ ASSET_RETENTION_DAYS=30
 ASSET_DIRECT_UPLOAD_LIMIT=300
 IMAGE_IMPORT_TIMEOUT_MS=300000
 GENERATED_VIDEO_MAX_BYTES=1073741824
+GENERATED_VIDEO_ARCHIVE_TIMEOUT_MS=900000
 VIDEO_QUEUE_GLOBAL_CONCURRENCY=150
 VIDEO_QUEUE_USER_CONCURRENCY=20
 VIDEO_QUEUE_API_CONCURRENCY=50
@@ -140,6 +141,8 @@ ASSET_RETENTION_DAYS=30
 四个 `R2_*` 变量必须同时配置。重新部署 Railway 后，新图片写入 R2，MySQL 的 `assets` 表只保存对象 Key、哈希、类型、大小和用户归属；旧 Base64 素材仍可读取，并在再次上传相同素材时迁移到 R2。未配置 R2 时保留数据库存储兼容模式。`ASSET_USER_QUOTA_BYTES` 可选，默认每个用户 2 GiB。`ASSET_RETENTION_DAYS` 默认是 30，仅自动删除超过保留期且未被项目或有效生成历史引用的素材；服务端每 6 小时检查一次，打开云端素材管理时也会立即检查。`ASSET_DIRECT_UPLOAD_LIMIT` 默认每个用户每小时 300 次（可配置范围 60-10000），只限制直传申请次数。
 
 `IMAGE_IMPORT_TIMEOUT_MS` 控制生成图片复制到对象存储的最长时间，默认 300000 毫秒（5 分钟）。图片生成成功后，前端会先显示上游结果，归档超时不会再把生成任务标记为失败；对象存储恢复后可在结果卡片上重试归档。
+
+`GENERATED_VIDEO_ARCHIVE_TIMEOUT_MS` 控制已完成视频下载并写入对象存储的最长时间，默认 900000 毫秒（15 分钟）。视频上游已经成功但跨区域对象存储上传较慢时，任务会保持可恢复状态，不会重复提交或重复扣费；流式写入失败且视频不超过 `GENERATED_VIDEO_NON_STREAM_MAX_BYTES` 时会自动回退到一次受限缓冲上传。
 
 ### 阿里云 OSS 素材存储（国内支付推荐）
 
