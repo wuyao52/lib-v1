@@ -160,10 +160,43 @@ function normalizeManagedResolution(pricing, api, body) {
 
 function normalizeImageQuality(pricing, body) {
   if (pricing.category !== 'image' || !body || typeof body !== 'object') return body;
-  // Quality is model-specific; the catalog has no quality capability yet.
-  // Never forward a stale client default such as `auto` to providers that reject it.
   const normalized = { ...body };
-  delete normalized.quality;
+  const allowed = [...new Set((Array.isArray(pricing.allowedQualities) ? pricing.allowedQualities : [])
+    .map((value) => String(value || '').trim().toLowerCase()).filter(Boolean))];
+  const supplied = String(body.quality ?? '').trim().toLowerCase();
+  if (!allowed.length) {
+    delete normalized.quality;
+    if (pricing.qualityRequired) {
+      const error = new Error('该图片模型尚未配置质量参数，请系统用户在模型设置中补充支持质量或默认质量');
+      error.code = 'IMAGE_QUALITY_NOT_CONFIGURED';
+      throw error;
+    }
+    return normalized;
+  }
+  if (supplied) {
+    if (!allowed.includes(supplied)) {
+      const error = new Error(`该图片模型仅支持 ${allowed.join('、')} 质量，本次收到 ${body.quality}`);
+      error.code = 'INVALID_IMAGE_QUALITY';
+      throw error;
+    }
+    normalized.quality = supplied;
+    return normalized;
+  }
+  const defaultQuality = String(pricing.defaultQuality || '').trim().toLowerCase();
+  if (defaultQuality) {
+    if (!allowed.includes(defaultQuality)) {
+      const error = new Error('该图片模型的默认质量不在支持质量列表中，请系统用户修正模型配置');
+      error.code = 'IMAGE_QUALITY_CONFIG_INVALID';
+      throw error;
+    }
+    normalized.quality = defaultQuality;
+  } else if (pricing.qualityRequired) {
+    const error = new Error('该图片模型要求质量参数，请系统用户配置默认质量');
+    error.code = 'IMAGE_QUALITY_REQUIRED';
+    throw error;
+  } else {
+    delete normalized.quality;
+  }
   return normalized;
 }
 
@@ -288,6 +321,9 @@ export function registerSystemAiRoutes(router, { db, requireAuth, vault, fetchIm
           id: item.modelId, object: 'model', name: item.displayName, category: item.category,
           billingUnit: item.billingUnit, unitPriceCents: item.unitPriceCents,
           allowedResolutions: item.allowedResolutions || [],
+          allowedQualities: item.allowedQualities || [],
+          defaultQuality: item.defaultQuality || '',
+          qualityRequired: Boolean(item.qualityRequired),
           maxReferenceImages: Number.isInteger(Number(item.maxReferenceImages)) ? Number(item.maxReferenceImages) : 4,
           maxReferenceAudios: Number.isInteger(Number(item.maxReferenceAudios)) ? Number(item.maxReferenceAudios) : 0,
           maxReferenceVideos: Number.isInteger(Number(item.maxReferenceVideos)) ? Number(item.maxReferenceVideos) : 0,
