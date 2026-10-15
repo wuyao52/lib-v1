@@ -13,7 +13,7 @@ const TEXT_PROTOCOLS = new Set(['auto', 'openai-chat', 'openai-responses', 'anth
 const nowIso = () => new Date().toISOString();
 const integer = (value) => Number.isSafeInteger(Number(value)) ? Number(value) : NaN;
 const isHighestSystemUser = (user) => {
-  const username = String(user?.username || '').trim().toLowerCase();
+  const username = String(user?.username || user?.name || '').trim().toLowerCase();
   return username === 'zhaoyan';
 };
 
@@ -24,7 +24,7 @@ function canModifyUser(actor, target) {
 function safeUser(user) {
   return {
     id: user.id,
-    username: user.username,
+    username: user.username || user.name,
     email: user.email,
     name: user.name,
     role: user.role || 'user',
