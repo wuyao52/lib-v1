@@ -16,6 +16,7 @@ const MAX_SESSIONS_PER_USER = 1;
 
 const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
 const normalizeUsername = (value) => String(value || '').trim();
+const storedUsername = (user) => normalizeUsername(user?.username || user?.name);
 const hashToken = (token) => createHash('sha256').update(token).digest('hex');
 const hashVerificationCode = (code, salt) => createHash('sha256').update(`${salt}:${code}`).digest('hex');
 
@@ -48,7 +49,7 @@ export async function verifyPassword(password, storedHash) {
 function publicUser(user) {
   return {
     id: user.id,
-    username: user.username,
+    username: storedUsername(user),
     email: user.email,
     name: user.name,
     role: user.role || 'user',
@@ -297,7 +298,7 @@ export function createAuthService(db, { secureCookies = false, sendEmailCode, ge
         if (db.read('users').some((user) => user.email === email)) {
           return res.status(409).json({ error: 'EMAIL_EXISTS', message: '该邮箱已注册' });
         }
-        if (db.read('users').some((user) => user.username.toLowerCase() === username.toLowerCase())) {
+        if (db.read('users').some((user) => storedUsername(user).toLowerCase() === username.toLowerCase())) {
           return res.status(409).json({ error: 'USERNAME_EXISTS', message: '该用户名已被使用' });
         }
         if (!(await consumeEmailCode(email, 'register', req.body.verificationCode))) {
@@ -316,7 +317,7 @@ export function createAuthService(db, { secureCookies = false, sendEmailCode, ge
         };
         const created = db.createUser ? await db.createUser(user) : await db.mutate((data) => {
           if (data.users.some((item) => item.email === email)) return { created: false, error: 'EMAIL_EXISTS' };
-          if (data.users.some((item) => item.username.toLowerCase() === username.toLowerCase())) return { created: false, error: 'USERNAME_EXISTS' };
+          if (data.users.some((item) => storedUsername(item).toLowerCase() === username.toLowerCase())) return { created: false, error: 'USERNAME_EXISTS' };
           data.users.push(user); return { created: true, error: null };
         });
         if (!created.created) {
@@ -339,7 +340,7 @@ export function createAuthService(db, { secureCookies = false, sendEmailCode, ge
         }
         const identifier = String(req.body.identifier || req.body.email || '').trim().toLowerCase();
         if (!identifier) return res.status(400).json({ error: 'VALIDATION_ERROR', message: '请输入用户名或邮箱' });
-        const user = db.read('users').find((item) => item.email === identifier || item.username.toLowerCase() === identifier);
+        const user = db.read('users').find((item) => item.email === identifier || storedUsername(item).toLowerCase() === identifier);
         if (!user || !(await verifyPassword(req.body.password, user.passwordHash))) {
           await recordSecurityEvent(req, 'login_failed', { identifierType: identifier.includes('@') ? 'email' : 'username' });
           return res.status(401).json({ error: 'INVALID_CREDENTIALS', message: '邮箱或密码错误' });
