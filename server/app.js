@@ -138,7 +138,7 @@ export async function createApp(options = {}) {
     .split(',').map((value) => value.trim().toLowerCase()).filter(Boolean));
   await db.mutate((data) => {
     data.users.forEach((user) => {
-      if (String(user.username || '').trim().toLowerCase() === 'zhaoyan') {
+      if (String(user.username || user.name || '').trim().toLowerCase() === 'zhaoyan') {
         user.role = 'system';
         user.accountType = 'system';
       }
