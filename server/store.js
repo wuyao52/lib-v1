@@ -53,7 +53,7 @@ export class JsonDatabase {
   async createUser(user) {
     return this.mutate((data) => {
       if (data.users.some((item) => item.email === user.email)) return { created: false, error: 'EMAIL_EXISTS' };
-      if (data.users.some((item) => item.username.toLowerCase() === user.username.toLowerCase())) return { created: false, error: 'USERNAME_EXISTS' };
+      if (data.users.some((item) => String(item.username || item.name || '').trim().toLowerCase() === String(user.username || user.name || '').trim().toLowerCase())) return { created: false, error: 'USERNAME_EXISTS' };
       data.users.push(user);
       return { created: true, error: null };
     });
