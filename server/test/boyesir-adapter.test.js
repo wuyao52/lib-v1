@@ -37,3 +37,49 @@ test('BYS adapter accepts a base URL that already ends in /v1 without duplicatin
     'https://www.boyesir.icu/v1/tasks/task-1',
   ]);
 });
+
+test('Q port boyesir.com uses BYS video routes with or without a /v1 base path', async () => {
+  for (const baseUrl of ['https://boyesir.com', 'https://boyesir.com/v1/']) {
+    const calls = [];
+    const adapter = createVideoProviderAdapter({ baseUrl, apiKey: 'q-test-key' }, {
+      fetchImpl: async (url, options) => {
+        calls.push({ url: String(url), options });
+        if (String(url) === 'https://boyesir.com/v1/videos') {
+          return new Response('<h1>301 Moved Permanently</h1>', {
+            status: 301, headers: { location: 'https://boyesir.com/v1/videos/' },
+          });
+        }
+        return new Response(JSON.stringify({ task_id: 'q-task-1', status: 'queued' }), { status: 202 });
+      },
+    });
+    const response = await adapter.submit({
+      model: 'nd-seedance-2.0-720p', prompt: 'Q port route proof', seconds: '10',
+      aspect_ratio: '16:9', images: [{ url: 'https://assets.example/reference.png' }],
+    }, 'idem-q-port-proof', new AbortController().signal);
+    assert.equal(response.status, 202);
+    assert.equal(adapter.kind, 'boyesir');
+    await adapter.poll('q-task-1', new AbortController().signal);
+    assert.deepEqual(calls.map(({ url }) => url), [
+      'https://boyesir.com/v1/videos/generations',
+      'https://boyesir.com/v1/tasks/q-task-1',
+    ]);
+    assert.deepEqual(JSON.parse(calls[0].options.body), {
+      model: 'nd-seedance-2.0-720p', prompt: 'Q port route proof', duration: 10,
+      ratio: '16:9', images: ['https://assets.example/reference.png'],
+    });
+    assert.equal(calls[0].options.headers.get('idempotency-key'), 'idem-q-port-proof');
+    assert.ok(calls.every(({ options }) => options.headers.get('authorization') === 'Bearer q-test-key'));
+    assert.ok(calls.every(({ options }) => options.redirect === 'manual'));
+  }
+});
+
+test('BYS domain matching leaves other providers and lookalike domains unchanged', () => {
+  for (const hostname of ['boyesir.icu', 'www.boyesir.icu', 'boyesir.com', 'www.boyesir.com']) {
+    assert.equal(isBoyesirVideoApi({ baseUrl: `https://${hostname}` }), true);
+  }
+  for (const hostname of ['ai.fanke2026.xyz', 'upstream.example', 'boyesir.com.example', 'otherboyesir.com']) {
+    const api = { baseUrl: `https://${hostname}` };
+    assert.equal(isBoyesirVideoApi(api), false);
+    assert.equal(createVideoProviderAdapter(api).kind, hostname === 'ai.fanke2026.xyz' ? 'fanke-open-v1' : 'openai-compatible');
+  }
+});
