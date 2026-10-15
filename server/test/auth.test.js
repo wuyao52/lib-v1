@@ -178,6 +178,34 @@ test('registration needs no nickname and usernames are unique case-insensitively
   assert.equal(context.db.read('users').filter((user) => user.username.toLowerCase() === 'uniqueuser').length, 1);
 });
 
+test('legacy users without username can still log in through their name', async (t) => {
+  const context = await startServer();
+  t.after(() => context.server.close());
+  const email = 'legacy-name@example.com';
+  const code = await requestCode(context, email, 'register');
+  const registration = await fetch(`${context.baseUrl}/api/auth/register`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'legacy-login', email, password: 'legacy-password', verificationCode: code }),
+  });
+  assert.equal(registration.status, 201);
+
+  await context.db.mutate((data) => {
+    const user = data.users.find((item) => item.email === email);
+    user.name = 'legacy-name';
+    delete user.username;
+  });
+
+  const captchaId = await requestCaptcha(context);
+  const login = await fetch(`${context.baseUrl}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ identifier: 'legacy-name', password: 'legacy-password', captchaId, captchaCode: '24682' }),
+  });
+  assert.equal(login.status, 200);
+  assert.equal((await login.json()).user.username, 'legacy-name');
+});
+
 test('email-code endpoint limits rotating email addresses from one IP', async (t) => {
   const context = await startServer();
   t.after(() => context.server.close());
