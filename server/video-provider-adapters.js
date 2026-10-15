@@ -30,7 +30,7 @@ export function isShishikejiVideoApi(api) {
 export function isBoyesirVideoApi(api) {
   try {
     const hostname = new URL(api.baseUrl).hostname.toLowerCase();
-    return hostname === 'boyesir.icu' || hostname === 'www.boyesir.icu';
+    return ['boyesir.icu', 'www.boyesir.icu', 'boyesir.com', 'www.boyesir.com'].includes(hostname);
   } catch { return false; }
 }
 
