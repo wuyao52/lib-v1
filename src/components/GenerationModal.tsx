@@ -9,10 +9,13 @@ import {
   Camera,
   Film,
   Palette,
+  Upload,
+  XCircle,
 } from 'lucide-react';
 import PromptMentionEditor, { type PromptMentionNode } from './PromptMentionEditor';
 import VideoDurationControl from './VideoDurationControl';
 import { normalizeModelDuration, type DurationRules } from '@/services/modelDuration';
+import { uploadVideoAsset } from '@/services/assetService';
 
 interface GenerationModalProps {
   isOpen: boolean;
@@ -21,9 +24,10 @@ interface GenerationModalProps {
   sourceImageUrl?: string;
   sourceNodeType?: string;
   mentionableNodes?: PromptMentionNode[];
-  initialReferences?: Array<{ id: string; label: string; type: string; imageUrl?: string }>;
+  initialReferences?: Array<{ id: string; label: string; type: string; imageUrl?: string; videoUrl?: string }>;
   durationRules?: DurationRules;
   maxReferenceImages?: number;
+  maxReferenceVideos?: number;
 }
 
 export interface GenerationSettings {
@@ -34,6 +38,7 @@ export interface GenerationSettings {
   strength?: number; // 用于图生图的相似度
   negativePrompt?: string;
   referenceNodeIds?: string[];
+  videos?: string[];
 }
 
 const styles = [
@@ -57,6 +62,7 @@ export default function GenerationModal({
   initialReferences = [],
   durationRules,
   maxReferenceImages = 4,
+  maxReferenceVideos = 0,
 }: GenerationModalProps) {
   const [selectedType, setSelectedType] = useState<'video' | 'image' | 'img2img'>('video');
   const [prompt, setPrompt] = useState('');
@@ -64,19 +70,64 @@ export default function GenerationModal({
   const [duration, setDuration] = useState(5);
   const [strength, setStrength] = useState(0.7);
   const [negativePrompt, setNegativePrompt] = useState('');
+  const [videoReferences, setVideoReferences] = useState<string[]>([]);
+  const [videoUploadError, setVideoUploadError] = useState<string | null>(null);
+  const [isUploadingVideo, setIsUploadingVideo] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submittingRef = useRef(false);
+  const videoUploadRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (!isOpen) return;
     submittingRef.current = false;
     setIsSubmitting(false);
     setPrompt('');
+    setVideoReferences([...new Set(initialReferences.filter((reference) => reference.type === 'video' && reference.videoUrl).map((reference) => reference.videoUrl!))].slice(0, Math.max(0, maxReferenceVideos)));
+    setVideoUploadError(null);
+    setIsUploadingVideo(false);
+    return () => {
+      videoUploadRef.current?.abort();
+      videoUploadRef.current = null;
+    };
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
     setDuration((current) => normalizeModelDuration(current, durationRules, 1, 15));
   }, [isOpen, durationRules?.managed, durationRules?.minDurationSec, durationRules?.maxDurationSec, JSON.stringify(durationRules?.allowedDurationsSec || [])]);
 
+  const videoReferenceOptions = initialReferences.filter((reference) => reference.type === 'video' && reference.videoUrl);
+
+  const handleVideoUpload = async (files: FileList | null) => {
+    if (!files || maxReferenceVideos <= 0 || videoUploadRef.current) return;
+    const remaining = Math.max(0, maxReferenceVideos - videoReferences.length);
+    const selectedFiles = Array.from(files).filter((file) => file.type.startsWith('video/')).slice(0, remaining);
+    if (!selectedFiles.length) {
+      setVideoUploadError(remaining ? '请选择视频文件' : `该模型最多支持 ${maxReferenceVideos} 个参考视频`);
+      return;
+    }
+    setVideoUploadError(null);
+    setIsUploadingVideo(true);
+    const controller = new AbortController();
+    videoUploadRef.current = controller;
+    try {
+      for (const file of selectedFiles) {
+        const uploaded = await uploadVideoAsset(file, controller.signal);
+        if (controller.signal.aborted) return;
+        setVideoReferences((current) => [...new Set([...current, uploaded])].slice(0, maxReferenceVideos));
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) setVideoUploadError(error instanceof Error ? error.message : '视频上传失败，请重试');
+    } finally {
+      if (videoUploadRef.current === controller) {
+        videoUploadRef.current = null;
+        setIsUploadingVideo(false);
+      }
+    }
+  };
+
   const handleGenerate = () => {
-    if (!prompt.trim() || submittingRef.current) return;
+    if (!prompt.trim() || submittingRef.current || videoUploadRef.current) return;
     submittingRef.current = true;
     setIsSubmitting(true);
     onSelect(selectedType, {
@@ -87,6 +138,7 @@ export default function GenerationModal({
       strength,
       negativePrompt: negativePrompt.trim(),
       referenceNodeIds: initialReferences.map((node) => node.id),
+      videos: selectedType === 'video' ? videoReferences.slice(0, Math.max(0, maxReferenceVideos)) : undefined,
     });
   };
 
@@ -245,6 +297,36 @@ export default function GenerationModal({
                 {mentionableNodes.length > 0 && <div className="mt-1 text-[10px] text-dark-500">输入 @ 可引用画布目标；当前视频模型最多使用 {maxReferenceImages} 张参考图</div>}
               </div>
 
+              {/* 视频参考 */}
+              {selectedType === 'video' && (
+                <div className="space-y-2 rounded-xl border border-violet-500/25 bg-violet-500/5 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <label className="text-sm font-medium text-dark-200">视频参考</label>
+                      <p className="mt-1 text-[10px] text-dark-400">
+                        {maxReferenceVideos > 0 ? `可上传或选择，最多 ${maxReferenceVideos} 个` : '当前模型未开启视频参考'}
+                      </p>
+                    </div>
+                    <label className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg border px-3 py-2 text-xs transition-colors focus-within:ring-2 focus-within:ring-primary-400 ${maxReferenceVideos > videoReferences.length && !isUploadingVideo ? 'cursor-pointer border-violet-500/50 text-violet-200 hover:bg-violet-500/15' : 'cursor-not-allowed border-dark-700 text-dark-500'}`}>
+                      <Upload className="h-3.5 w-3.5" />
+                      {isUploadingVideo ? '上传中…' : '上传视频'}
+                      <input aria-label="上传参考视频" type="file" accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov" multiple className="sr-only" disabled={maxReferenceVideos <= videoReferences.length || isUploadingVideo} onChange={(event) => { void handleVideoUpload(event.target.files); event.currentTarget.value = ''; }} />
+                    </label>
+                  </div>
+                  {videoReferenceOptions.length > 0 && (
+                    <div className="space-y-1.5">
+                      {videoReferenceOptions.map((reference) => {
+                        const url = reference.videoUrl!;
+                        const selected = videoReferences.includes(url);
+                        return <button key={reference.id} type="button" aria-pressed={selected} disabled={isUploadingVideo || (!selected && (maxReferenceVideos <= 0 || videoReferences.length >= maxReferenceVideos))} onClick={() => setVideoReferences((current) => selected ? current.filter((item) => item !== url) : [...current, url])} className={`flex w-full items-center justify-between gap-2 rounded-lg border px-3 py-2 text-left text-xs transition-colors ${selected ? 'border-violet-400/70 bg-violet-500/15 text-violet-100' : 'border-dark-600 bg-dark-800/60 text-dark-300 hover:border-violet-500/50'} disabled:cursor-not-allowed disabled:opacity-50`}><span className="flex min-w-0 items-center gap-2"><Film className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{reference.label}</span></span><span className="shrink-0">{selected ? '已选择' : '选择'}</span></button>;
+                      })}
+                    </div>
+                  )}
+                  {videoReferences.filter((url) => !videoReferenceOptions.some((reference) => reference.videoUrl === url)).map((url, index) => <div key={url} className="flex items-center justify-between rounded-lg border border-dark-600 bg-dark-800/60 px-3 py-2 text-xs text-dark-300"><span className="flex min-w-0 items-center gap-2"><Film className="h-3.5 w-3.5 shrink-0 text-violet-300" /><span className="truncate">已上传视频 {index + 1}</span></span><button type="button" aria-label={`移除已上传视频 ${index + 1}`} onClick={() => setVideoReferences((current) => current.filter((item) => item !== url))} className="text-dark-400 hover:text-white"><XCircle className="h-4 w-4" /></button></div>)}
+                  {videoUploadError && <p role="alert" className="text-xs text-red-300">{videoUploadError}</p>}
+                </div>
+              )}
+
               {/* 反向提示词 */}
               <div className="space-y-2">
                 <label className="text-sm font-medium text-dark-200">
@@ -334,10 +416,10 @@ export default function GenerationModal({
                 </button>
                 <button
                   onClick={handleGenerate}
-                  disabled={!prompt.trim() || isSubmitting}
+                  disabled={!prompt.trim() || isSubmitting || isUploadingVideo}
                   className={`
                     px-6 py-2.5 rounded-xl font-medium transition-all flex items-center gap-2
-                    ${prompt.trim() && !isSubmitting
+                    ${prompt.trim() && !isSubmitting && !isUploadingVideo
                       ? `bg-gradient-to-r ${
                           selectedType === 'video'
                             ? 'from-orange-500 to-red-500'
