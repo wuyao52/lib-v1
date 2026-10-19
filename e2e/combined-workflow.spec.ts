@@ -277,3 +277,107 @@ test('旧项目、画布保存、历史、系统控制台和重登可联合使�
   await expect.poll(() => imageAfterRefresh.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
   expect(browserErrors).toEqual([]);
 });
+
+test('视频引用可上传、取消选择、按模型限量，并在重进项目后保留', async ({ page }, testInfo) => {
+  test.setTimeout(60_000);
+  const model = {
+    id: 'fixture-video-price', apiId: 'fixture-video-api', name: '视频引用验证模型',
+    provider: 'fixture', modelId: 'reference-video', baseUrl: '/api/system-ai/fixture-video-api',
+    apiKey: '', managed: true, category: 'video', minDurationSec: 1, maxDurationSec: 15,
+    maxReferenceVideos: 2, maxReferenceImages: 4, parameters: {},
+  };
+  let savedProject: any;
+  const submissions: any[] = [];
+  await page.route('**/api/catalog/models', (route) => route.fulfill({ json: { models: [model] } }));
+  await page.route('**/api/projects/browser-project', async (route) => {
+    if (route.request().method() === 'PUT') {
+      savedProject = route.request().postDataJSON().project;
+      savedProject.version = Number(savedProject.version || 0) + 1;
+      return route.fulfill({ json: { project: savedProject } });
+    }
+    if (!savedProject) {
+      const original = await (await route.fetch()).json();
+      savedProject = {
+        ...original.project,
+        settings: { ...original.project.settings, multiModel: { videoModel: model } },
+        nodes: [{
+          id: 'reference-video', type: 'sceneNode', position: { x: 100, y: 100 },
+          data: { label: '已生成的参考视频', type: 'video', prompt: '海面', content: '',
+            generatedContent: '/api/generated-media/reference-clip', duration: 5, settings: {}, status: 'completed' },
+        }],
+        edges: [],
+      };
+    }
+    return route.fulfill({ json: { project: savedProject } });
+  });
+  await page.route('**/api/generated-media/reference-clip/playback-url', (route) => route.fulfill({
+    json: { url: 'https://media.example.test/reference.mp4' },
+  }));
+  await page.route('**/api/assets/*/signed-url', (route) => route.fulfill({
+    json: { url: 'https://media.example.test/uploaded.mp4' },
+  }));
+  await page.route('https://media.example.test/**', (route) => route.fulfill({ status: 204, contentType: 'video/mp4' }));
+  await page.route('**/api/system-ai/fixture-video-api/v1/videos', (route) => {
+    submissions.push(route.request().postDataJSON());
+    return route.fulfill({ json: { status: 'completed', result: { videoUrl: 'https://media.example.test/result.mp4' } } });
+  });
+  await page.goto('/__e2e/login');
+  await page.getByTestId('project-browser-project').click();
+  const openModal = async () => {
+    await page.locator('.react-flow__controls-fitview').click();
+    const handle = await page.locator('.react-flow__node[data-id="reference-video"] .react-flow__handle-right').boundingBox();
+    const pane = await page.locator('.react-flow__pane').boundingBox();
+    expect(handle).not.toBeNull();
+    expect(pane).not.toBeNull();
+    await page.mouse.move(handle!.x + handle!.width / 2, handle!.y + handle!.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(pane!.x + pane!.width - 60, pane!.y + pane!.height - 60, { steps: 12 });
+    await page.mouse.up();
+    await expect(page.getByText('AI 内容生成', { exact: true })).toBeVisible();
+  };
+  await openModal();
+  const selection = page.getByRole('button', { name: '已生成的参考视频 已选择' });
+  await expect(selection).toHaveAttribute('aria-pressed', 'true');
+  const prompt = page.getByRole('textbox', { name: '提示词' });
+  await prompt.fill('延续参考视频中的海面镜头');
+  // Block the real fixture upload to verify that generation cannot race it.
+  let releaseUpload!: () => void;
+  const uploadGate = new Promise<void>((resolve) => { releaseUpload = resolve; });
+  await page.route('**/__e2e/oss-upload**', async (route) => {
+    await uploadGate;
+    await route.continue();
+  });
+  await page.getByLabel('上传参考视频').setInputFiles({
+    name: 'reference.mp4', mimeType: 'video/mp4', buffer: Buffer.from('local reference fixture'),
+  });
+  const generate = page.getByRole('button', { name: '生成视频', exact: true });
+  await expect(generate).toBeDisabled();
+  releaseUpload();
+  await expect(page.getByText('已上传视频 1', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('上传参考视频')).toBeDisabled();
+  await expect(generate).toBeEnabled();
+  await page.screenshot({ path: testInfo.outputPath('video-references-desktop.png') });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: testInfo.outputPath('video-references-mobile.png') });
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await generate.click();
+  await expect.poll(() => submissions.length).toBe(1);
+  expect(submissions[0].videos).toEqual(['https://media.example.test/reference.mp4', 'https://media.example.test/uploaded.mp4']);
+  await expect(page.locator('.react-flow__node')).toHaveCount(2);
+  await expect.poll(() => savedProject.nodes.length).toBe(2);
+  const resultId = savedProject.nodes.find((node: any) => node.id !== 'reference-video').id;
+  expect(savedProject.edges).toHaveLength(1);
+  expect(savedProject.nodes.find((node: any) => node.id === resultId).data.settings.referenceVideos).toHaveLength(1);
+  await page.getByTestId('close-project').click();
+  await page.getByTestId('project-browser-project').click();
+  await page.locator(`.react-flow__node[data-id="${resultId}"]`).getByTitle('重新生成', { exact: true }).click();
+  await expect.poll(() => submissions.length).toBe(2);
+  expect(submissions[1].videos).toEqual(submissions[0].videos);
+  await expect.poll(() => savedProject.nodes.find((node: any) => node.id === resultId).data.status).toBe('completed');
+  await openModal();
+  await page.getByRole('button', { name: '已生成的参考视频 已选择' }).click();
+  await prompt.fill('不使用参考视频生成');
+  await generate.click();
+  await expect.poll(() => submissions.length).toBe(3);
+  expect(submissions[2]).not.toHaveProperty('videos');
+});
