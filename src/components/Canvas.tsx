@@ -638,10 +638,11 @@ export default function Canvas() {
         onSelect={handleGenerationSelect}
         sourceImageUrl={sourceImageNode?.data?.generatedContent}
         sourceNodeType={sourceNode?.data?.type}
-        initialReferences={generationSourceNodes.map((node) => ({ id: node.id, label: node.data.label, type: node.data.type, imageUrl: node.data.type === 'image' ? node.data.generatedContent : undefined }))}
+        initialReferences={generationSourceNodes.map((node) => ({ id: node.id, label: node.data.label, type: node.data.type, imageUrl: node.data.type === 'image' ? node.data.generatedContent : undefined, videoUrl: node.data.type === 'video' ? node.data.generatedContent : undefined }))}
         mentionableNodes={generationMentionableNodes}
         durationRules={{ managed: configuredVideoModel.managed, minDurationSec: configuredVideoModel.minDurationSec, maxDurationSec: configuredVideoModel.maxDurationSec, allowedDurationsSec: configuredVideoModel.allowedDurationsSec }}
         maxReferenceImages={Number.isInteger(configuredVideoModel.maxReferenceImages) ? configuredVideoModel.maxReferenceImages : 4}
+        maxReferenceVideos={Number.isInteger(configuredVideoModel.maxReferenceVideos) ? configuredVideoModel.maxReferenceVideos : 0}
       />
 
       <AIImageGenerationModal
