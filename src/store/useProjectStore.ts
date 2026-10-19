@@ -20,7 +20,7 @@ import {
 } from '@/types';
 import { createAIService, prepareReferenceImages, SeedanceService } from '@/services/aiService';
 import { ApiError, apiRequest } from '@/services/apiClient';
-import { archiveGeneratedImageBestEffort, getSignedAssetUrl, materializeReferenceImages } from '@/services/assetService';
+import { archiveGeneratedImageBestEffort, getPlayableMediaUrl, getSignedAssetUrl, materializeReferenceImages } from '@/services/assetService';
 import { planGenerationTarget } from './generationPolicy';
 import { normalizeModelDuration, videoDurationRules } from '@/services/modelDuration';
 import { refreshManagedModel } from '@/services/managedModelCatalog';
@@ -315,6 +315,41 @@ function collectReferenceImages(
     .slice(0, Math.max(0, limit));
 }
 
+function collectReferenceVideos(
+  project: DramaProject,
+  node: Node<SceneNodeData>,
+  additionalNodeIds: string[] = [],
+  targetNodeId = node.id,
+  limit = 0,
+): string[] {
+  if (limit <= 0) return [];
+  const incomingIds = new Set(project.edges.filter((edge) => edge.target === targetNodeId).map((edge) => edge.source));
+  const orderedIds: string[] = [];
+  const addIfIncoming = (candidateId: string) => {
+    if (incomingIds.has(candidateId) && !orderedIds.includes(candidateId)) orderedIds.push(candidateId);
+  };
+  for (const candidateId of additionalNodeIds) addIfIncoming(candidateId);
+  for (const candidate of project.nodes) addIfIncoming(candidate.id);
+  if (node.data.type === 'video' && node.data.generatedContent) addIfIncoming(node.id);
+  return orderedIds
+    .map((id) => project.nodes.find((candidate) => candidate.id === id))
+    .filter((candidate): candidate is Node<SceneNodeData> => Boolean(candidate) && candidate.data.type === 'video' && Boolean(candidate.data.generatedContent))
+    .map((candidate) => String(candidate.data.generatedContent))
+    .slice(0, limit);
+}
+
+async function materializeReferenceVideos(videos: string[], signal: AbortSignal): Promise<string[]> {
+  const unique = [...new Set(videos.map((value) => String(value || '').trim()).filter(Boolean))];
+  return Promise.all(unique.map(async (video) => {
+    const resolved = await (/\/api\/generated-media\//i.test(video)
+      ? getPlayableMediaUrl(video, signal)
+      : getSignedAssetUrl(video, signal)
+    );
+    if (!/^https:\/\//i.test(resolved)) throw new Error('参考视频需要可公开访问的 HTTPS 地址，请检查视频存储配置');
+    return resolved;
+  }));
+}
+
 async function generateVideoWithFallback(
   videoService: ReturnType<typeof createAIService>,
   imageModel: AIModelConfig,
@@ -399,6 +434,7 @@ interface ProjectStore {
       strength?: number;
       negativePrompt?: string;
       referenceNodeIds?: string[];
+      videos?: string[];
     },
     position?: { x: number; y: number }
   ) => void;
@@ -968,6 +1004,13 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
           mood: '',
           camera: '',
           lighting: '',
+          ...(type === 'video' && settings.videos ? {
+            // Node references are retained by edges. Keep uploaded references
+            // separately so generating again after reopening uses the same files.
+            referenceVideos: settings.videos.filter((url) => !project.nodes.some((candidate) =>
+              candidate.data.type === 'video' && candidate.data.generatedContent === url
+              && [nodeId, ...(settings.referenceNodeIds || [])].includes(candidate.id))),
+          } : {}),
         },
         status: 'generating',
         progress: 0,
@@ -979,7 +1022,9 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
 
     // 添加连接边
     const sourceNodeIds = [...new Set([nodeId, ...(settings.referenceNodeIds || [])])]
-      .filter((sourceId) => project.nodes.some((candidate) => candidate.id === sourceId));
+      .filter((sourceId) => project.nodes.some((candidate) => candidate.id === sourceId
+        && (type !== 'video' || settings.videos === undefined || candidate.data.type !== 'video'
+          || settings.videos.includes(String(candidate.data.generatedContent)))));
     const newEdges: Edge[] = sourceNodeIds.map((sourceId) => ({
       id: `edge-${sourceId}-${newNodeId}`,
       source: sourceId,
@@ -1006,6 +1051,7 @@ const useProjectStore = create<ProjectStore>((set, get) => ({
       style: settings.style,
       duration: settings.duration,
       referenceNodeIds: settings.referenceNodeIds,
+      videos: settings.videos,
       strength: settings.strength,
       negativePrompt: settings.negativePrompt,
       generateInPlace: false,
@@ -1285,6 +1331,7 @@ type GenerationExecution = {
   style?: string;
   duration?: number;
   referenceNodeIds?: string[];
+  videos?: string[];
   strength?: number;
   negativePrompt?: string;
   generateInPlace: boolean;
@@ -1387,6 +1434,16 @@ function launchGenerationTask(
         controller.signal,
       );
       if (images.length) generationSettings.images = images;
+      if (!isImage) {
+        const maxVideos = Number.isInteger(Number(effectiveModel.maxReferenceVideos)) ? Number(effectiveModel.maxReferenceVideos) : 0;
+        const savedVideos = latestProject.nodes.find((candidate) => candidate.id === execution.targetNodeId)?.data.settings?.referenceVideos;
+        const references = execution.videos ?? [
+          ...collectReferenceVideos(latestProject, execution.sourceNode, execution.referenceNodeIds, execution.targetNodeId, maxVideos),
+          ...(Array.isArray(savedVideos) ? savedVideos : []),
+        ];
+        const selectedVideos = [...new Set(references)].slice(0, Math.max(0, maxVideos));
+        if (selectedVideos.length) generationSettings.videos = await materializeReferenceVideos(selectedVideos, controller.signal);
+      }
       if (!isCurrentSession()) return;
       get().updateNodeData(execution.targetNodeId, { progress: 30, ...(execution.generateInPlace ? {} : { content: '正在生成内容...' }) });
 
