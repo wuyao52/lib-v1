@@ -18,6 +18,8 @@ test('repeated admin balance requests with the same idempotency key adjust funds
   assert.equal(responses.every((response) => response.status === 200), true);
   assert.equal(db.read('users').find((user) => user.id === target.user.id).balanceCents, 250);
   assert.equal(db.read('balanceTransactions').filter((item) => item.userId === target.user.id && item.type === 'admin_adjustment').length, 1);
+  assert.equal(db.read('balanceAdjustmentHistory').length, 1);
+  assert.equal(db.read('balanceAdjustmentHistory')[0].balanceAfterCents, 250);
   const invalidKey = await fetch(`${origin}/api/admin/users/${target.user.id}/balance`, { method: 'POST', headers: { cookie: admin.cookie, 'content-type': 'application/json', 'idempotency-key': 'bad' }, body: JSON.stringify({ amountCents: 100, currentPassword: 'abuse-resilience-password' }) });
   assert.equal(invalidKey.status, 400);
 });
