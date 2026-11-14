@@ -1,4 +1,5 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { createBalanceAdjustmentRecord, retainBalanceAdjustmentHistory } from './balance-adjustment-history.js';
 import { discoverSystemApi, knownVideoResolutions } from './api-discovery.js';
 import { verifyPassword } from './auth.js';
 import { runBackupDrill } from './backup-drill.js';
@@ -535,33 +536,42 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
     if (!(await requireCurrentPassword(req, res, 'user_balance_adjusted', 'user', req.params.id))) return;
     const suppliedKey = String(req.get('idempotency-key') || '').trim();
     if (suppliedKey && !/^[A-Za-z0-9_-]{16,100}$/.test(suppliedKey)) return res.status(400).json({ error: 'INVALID_IDEMPOTENCY_KEY', message: '幂等键无效' });
-    const referenceId = suppliedKey ? `admin-balance:${req.user.id}:${req.params.id}:${suppliedKey}` : null;
-    const existingTransaction = referenceId && db.read('balanceTransactions').find((item) => item.referenceId === referenceId && item.type === 'admin_adjustment');
+    // Keep the composite key within the ledger's VARCHAR(100), including UUID user IDs.
+    const referenceId = suppliedKey ? `admin-balance:${createHash('sha256').update(`${req.user.id}:${req.params.id}:${suppliedKey}`).digest('hex')}` : null;
+    const legacyReferenceId = suppliedKey ? `admin-balance:${req.user.id}:${req.params.id}:${suppliedKey}` : null;
+    const existingTransaction = referenceId && db.read('balanceTransactions').find((item) => [referenceId, legacyReferenceId].includes(item.referenceId) && item.type === 'admin_adjustment');
     if (existingTransaction) {
       const user = db.read('users').find((item) => item.id === req.params.id);
       return res.json({ user: safeUser(user || { id: req.params.id, balanceCents: 0 }), transaction: existingTransaction, replayed: true });
     }
     if (db.changeBalanceAtomic) {
-      const result = await db.changeBalanceAtomic({ userId: req.params.id, amountCents, type: 'admin_adjustment', description: String(req.body.description || '系统用户调整余额').slice(0, 300), referenceId, createdBy: req.user.id });
+      const result = await db.changeBalanceAtomic({ userId: req.params.id, amountCents, type: 'admin_adjustment', description: String(req.body.description || '系统用户调整余额').slice(0, 300), referenceId, legacyReferenceId, createdBy: req.user.id, adjustmentNames: { actorUsername: req.user.username || req.user.name, targetUsername: target.username || target.name } });
       if (result.failure === 'USER_NOT_FOUND') return res.status(404).json({ error: result.failure, message: '用户不存在' });
       if (result.failure) return res.status(409).json({ error: result.failure, message: '余额不能小于零' });
       const user = db.read('users').find((item) => item.id === req.params.id);
-      await audit(req, 'user_balance_adjusted', 'user', req.params.id, { amountCents, transactionId: result.transaction?.id || null });
-      return res.json({ user: safeUser(user || { id: req.params.id, balanceCents: result.balance }), transaction: result.transaction });
+      if (!result.replayed) await audit(req, 'user_balance_adjusted', 'user', req.params.id, { amountCents, transactionId: result.transaction?.id || null });
+      return res.json({ user: safeUser(user || { id: req.params.id, balanceCents: result.balance }), transaction: result.transaction, replayed: Boolean(result.replayed) });
     }
-    let updated; let transaction; let failure;
+    let updated; let transaction; let failure; let replayed = false;
     await db.mutate((data) => {
       const user = data.users.find((item) => item.id === req.params.id);
       if (!user) { failure = 'USER_NOT_FOUND'; return; }
+      const existing = referenceId && data.balanceTransactions.find((item) => [referenceId, legacyReferenceId].includes(item.referenceId) && item.type === 'admin_adjustment');
+      if (existing) { transaction = existing; updated = safeUser(user); replayed = true; return; }
       if (Number(user.balanceCents || 0) + amountCents < 0) { failure = 'INSUFFICIENT_BALANCE'; return; }
+      const balanceBeforeCents = Number(user.balanceCents || 0);
       user.balanceCents = Number(user.balanceCents || 0) + amountCents;
       transaction = { id: randomUUID(), userId: user.id, amountCents, type: 'admin_adjustment', description: String(req.body.description || '系统用户调整余额').slice(0, 300), referenceId, createdBy: req.user.id, createdAt: nowIso() };
       data.balanceTransactions.push(transaction); updated = safeUser(user);
+      data.balanceAdjustmentHistory = retainBalanceAdjustmentHistory([
+        ...data.balanceAdjustmentHistory,
+        createBalanceAdjustmentRecord(transaction, balanceBeforeCents, { actorUsername: req.user.username || req.user.name, targetUsername: user.username || user.name }),
+      ]);
     });
     if (failure === 'USER_NOT_FOUND') return res.status(404).json({ error: failure, message: '用户不存在' });
     if (failure) return res.status(409).json({ error: failure, message: '余额不能小于零' });
-    await audit(req, 'user_balance_adjusted', 'user', req.params.id, { amountCents, transactionId: transaction?.id || null });
-    return res.json({ user: updated, transaction });
+    if (!replayed) await audit(req, 'user_balance_adjusted', 'user', req.params.id, { amountCents, transactionId: transaction?.id || null });
+    return res.json({ user: updated, transaction, replayed });
   });
 
   router.get('/system-apis', (_req, res) => res.json({ apis: db.read('systemApis').map((api) => exposedApi(api, vault)) }));
@@ -702,10 +712,24 @@ export function registerAdminRoutes(router, { db, requireSystem, vault, fetchImp
     return found ? res.status(204).end() : res.status(404).json({ error: 'PRICING_NOT_FOUND', message: '模型定价不存在' });
   });
 
-  router.get('/recharges', (_req, res) => {
+  router.get('/recharges', (req, res) => {
     const users = new Map(db.read('users').map((user) => [user.id, safeUser(user)]));
     const recharges = db.read('rechargeRequests').map((item) => ({ ...item, user: users.get(item.userId) || null })).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    return res.json({ recharges });
+    return res.json({ recharges, balanceAdjustmentHistory: retainBalanceAdjustmentHistory(db.read('balanceAdjustmentHistory')).reverse(), canDeleteBalanceAdjustments: isHighestSystemUser(req.user) });
+  });
+  router.delete('/balance-adjustments/:id', async (req, res) => {
+    if (!isHighestSystemUser(req.user)) return res.status(403).json({ error: 'HIGHEST_SYSTEM_USER_REQUIRED', message: '只有最高系统用户可以删除余额修改记录' });
+    if (!(await requireCurrentPassword(req, res, 'balance_adjustment_history_deleted', 'balance_adjustment', req.params.id))) return;
+    let deleted;
+    const remove = (data) => {
+      deleted = data.balanceAdjustmentHistory.find((item) => item.id === req.params.id);
+      data.balanceAdjustmentHistory = data.balanceAdjustmentHistory.filter((item) => item.id !== req.params.id);
+    };
+    if (db.mutateCollections) await db.mutateCollections(['balanceAdjustmentHistory'], remove);
+    else await db.mutate(remove);
+    if (!deleted) return res.status(404).json({ error: 'BALANCE_ADJUSTMENT_NOT_FOUND', message: '余额修改记录不存在或已被清理' });
+    await audit(req, 'balance_adjustment_history_deleted', 'balance_adjustment', deleted.id, { userId: deleted.userId, amountCents: deleted.amountCents });
+    return res.status(204).end();
   });
   router.post('/recharges/:id/review', async (req, res) => {
     const decision = String(req.body.decision || '');
