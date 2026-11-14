@@ -66,9 +66,9 @@ function collectionsForRequest(pathname) {
       'video-queue': ['generationJobs'], metrics: ['generationJobs', 'balanceTransactions', 'generatedMedia'],
       'operations-alerts': ['generationJobs', 'auditLogs'], 'security-alerts': ['auditLogs'], backups: ['auditLogs'],
       'storage-usage': ['assets', 'generatedMedia'], 'storage-cleanup': ['assets', 'generatedMedia', 'projects', 'auditLogs'],
-      'storage-quarantine': ['storageQuarantine', 'assets', 'generatedMedia', 'projects', 'auditLogs'], users: ['balanceTransactions', 'auditLogs'],
+      'storage-quarantine': ['storageQuarantine', 'assets', 'generatedMedia', 'projects', 'auditLogs'], users: ['balanceTransactions', 'balanceAdjustmentHistory', 'auditLogs'],
       'audit-logs': ['auditLogs'], 'system-apis': ['systemApis', 'modelPricing', 'auditLogs'], pricing: ['modelPricing', 'systemApis', 'auditLogs'], 'user-model-access': ['userModelAccess', 'modelPricing', 'auditLogs'],
-      recharges: ['rechargeRequests', 'balanceTransactions', 'auditLogs'], 'payment-reconciliation': ['paymentOrders', 'balanceTransactions'],
+      recharges: ['rechargeRequests', 'balanceTransactions', 'balanceAdjustmentHistory', 'auditLogs'], 'balance-adjustments': ['balanceAdjustmentHistory', 'auditLogs'], 'payment-reconciliation': ['paymentOrders', 'balanceTransactions'],
     };
     if (adminByRoute[route]) return [...common, ...adminByRoute[route]];
   }
@@ -76,7 +76,7 @@ function collectionsForRequest(pathname) {
     auth: ['emailVerifications', 'imageCaptchas'], health: ['generationJobs', 'auditLogs'], director: [], skills: ['skills'], projects: ['projects', 'generationJobs'],
     assets: ['assets', 'projects'], 'generated-media': ['generatedMedia'], 'generation-history': ['generationHistory', 'generationJobs'],
     billing: ['balanceTransactions', 'rechargeRequests'], catalog: ['systemApis', 'modelPricing', 'userModelAccess'],
-    admin: ['systemApis', 'modelPricing', 'userModelAccess', 'balanceTransactions', 'rechargeRequests', 'generationJobs', 'generatedMedia', 'storageQuarantine', 'auditLogs', 'paymentOrders', 'paymentEvents'],
+    admin: ['systemApis', 'modelPricing', 'userModelAccess', 'balanceTransactions', 'balanceAdjustmentHistory', 'rechargeRequests', 'generationJobs', 'generatedMedia', 'storageQuarantine', 'auditLogs', 'paymentOrders', 'paymentEvents'],
     'system-ai': ['systemApis', 'modelPricing', 'balanceTransactions', 'generationJobs'],
     'user-api-configs': ['userApiConfigs'], 'user-ai': ['userApiConfigs'],
     payments: ['paymentOrders', 'paymentEvents', 'balanceTransactions'],
