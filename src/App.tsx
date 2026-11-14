@@ -9,22 +9,23 @@ const AuthScreen = lazy(() => import('./components/AuthScreen'));
 
 function AuthenticatedApp() {
   const { user, isLoading } = useAuth();
+  const userId = user?.id || null;
   const currentView = useProjectStore((state) => state.currentView);
   const setUserScope = useProjectStore((state) => state.setUserScope);
   const [readyUserId, setReadyUserId] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
-    if (!user) {
+    if (!userId) {
       setReadyUserId(null);
       return () => { active = false; };
     }
     setReadyUserId(null);
-    Promise.resolve(setUserScope(user.id)).then(() => {
-      if (active) setReadyUserId(user.id);
+    Promise.resolve(setUserScope(userId)).then(() => {
+      if (active) setReadyUserId(userId);
     });
     return () => { active = false; };
-  }, [user, setUserScope]);
+  }, [userId, setUserScope]);
 
   if (isLoading) {
     return <div className="w-screen h-screen bg-dark-950 flex items-center justify-center text-dark-400">正在验证会话...</div>;
