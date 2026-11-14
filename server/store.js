@@ -13,6 +13,7 @@ const EMPTY_DATABASE = {
   modelPricing: [],
   userModelAccess: [],
   balanceTransactions: [],
+  balanceAdjustmentHistory: [],
   rechargeRequests: [],
   generationHistory: [],
   generationJobs: [],
