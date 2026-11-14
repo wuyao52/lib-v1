@@ -1,6 +1,7 @@
 import mysql from 'mysql2/promise';
 import { createHash, randomUUID } from 'node:crypto';
 import { runSchemaMigrations } from './schema-migrations.js';
+import { createBalanceAdjustmentRecord, retainBalanceAdjustmentHistory } from './balance-adjustment-history.js';
 
 const EMPTY_DATABASE = {
   users: [],
@@ -12,6 +13,7 @@ const EMPTY_DATABASE = {
   systemApis: [],
   modelPricing: [],
   balanceTransactions: [],
+  balanceAdjustmentHistory: [],
   rechargeRequests: [],
   generationHistory: [],
   generationJobs: [],
@@ -232,6 +234,24 @@ const TABLES = {
     select: 'SELECT id, user_id AS userId, amount_cents AS amountCents, type, description, reference_id AS referenceId, created_by AS createdBy, created_at AS createdAt FROM balance_transactions',
     insert: 'INSERT INTO balance_transactions (id, user_id, amount_cents, type, description, reference_id, created_by, created_at) VALUES ?',
     values: (row) => [row.id, row.userId, row.amountCents, row.type, row.description, row.referenceId || null, row.createdBy || null, row.createdAt],
+  },
+  balanceAdjustmentHistory: {
+    table: 'balance_adjustment_history',
+    create: `CREATE TABLE IF NOT EXISTS balance_adjustment_history (
+      id CHAR(36) PRIMARY KEY,
+      user_id CHAR(36) NOT NULL,
+      actor_id CHAR(36) NOT NULL,
+      actor_username VARCHAR(160) NOT NULL,
+      target_username VARCHAR(160) NOT NULL,
+      amount_cents BIGINT NOT NULL,
+      balance_before_cents BIGINT NOT NULL,
+      balance_after_cents BIGINT NOT NULL,
+      created_at VARCHAR(35) NOT NULL,
+      INDEX balance_adjustment_history_created_idx (created_at)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+    select: 'SELECT id, user_id AS userId, actor_id AS actorId, actor_username AS actorUsername, target_username AS targetUsername, amount_cents AS amountCents, balance_before_cents AS balanceBeforeCents, balance_after_cents AS balanceAfterCents, created_at AS createdAt FROM balance_adjustment_history',
+    insert: 'INSERT INTO balance_adjustment_history (id, user_id, actor_id, actor_username, target_username, amount_cents, balance_before_cents, balance_after_cents, created_at) VALUES ?',
+    values: (row) => [row.id, row.userId, row.actorId, row.actorUsername, row.targetUsername, row.amountCents, row.balanceBeforeCents, row.balanceAfterCents, row.createdAt],
   },
   rechargeRequests: {
     table: 'recharge_requests',
@@ -651,28 +671,52 @@ export class MySqlDatabase {
     return result;
   }
 
-  async changeBalanceAtomic({ userId, amountCents, type, description, referenceId = null, createdBy = null }) {
+  async changeBalanceAtomic({ userId, amountCents, type, description, referenceId = null, legacyReferenceId = null, createdBy = null, adjustmentNames = {} }) {
     let result = { failure: null, balance: null, transaction: null };
     const operation = this.writeQueue.then(async () => {
-      const connection = await this.pool.getConnection();
-      try {
-        await connection.beginTransaction();
-        if (referenceId && type === 'admin_adjustment') {
-          const [existing] = await connection.query('SELECT id, user_id AS userId, amount_cents AS amountCents, type, description, reference_id AS referenceId, created_by AS createdBy, created_at AS createdAt FROM balance_transactions WHERE reference_id = ? AND type = ? LIMIT 1 FOR UPDATE', [referenceId, type]);
-          if (existing.length) { await connection.commit(); const user = this.data.users.find((item) => item.id === userId); result = { failure: null, balance: Number(user?.balanceCents || 0), transaction: existing[0], replayed: true }; return; }
-        }
-        const [users] = await connection.query('SELECT balance_cents AS balanceCents FROM users WHERE id = ? FOR UPDATE', [userId]);
-        if (!users.length) { result.failure = 'USER_NOT_FOUND'; await connection.rollback(); return; }
-        const next = Number(users[0].balanceCents) + Number(amountCents);
-        if (next < 0) { result.failure = 'INSUFFICIENT_BALANCE'; await connection.rollback(); return; }
-        const transaction = { id: randomUUID(), userId, amountCents: Number(amountCents), type, description, referenceId, createdBy, createdAt: new Date().toISOString() };
-        await connection.query('UPDATE users SET balance_cents = ? WHERE id = ?', [next, userId]);
-        await connection.query(TABLES.balanceTransactions.insert, [[TABLES.balanceTransactions.values(transaction)]]);
-        await connection.commit();
-        const user = this.data.users.find((item) => item.id === userId); if (user) user.balanceCents = next;
-        this.data.balanceTransactions.push(transaction);
-        result = { failure: null, balance: next, transaction };
-      } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+      for (let attempt = 0; ; attempt += 1) {
+        const connection = await this.pool.getConnection();
+        try {
+          await connection.beginTransaction();
+          // Serialize manual adjustments before checking replay or trimming the global history.
+          const history = type === 'admin_adjustment'
+            ? (await connection.query(`${TABLES.balanceAdjustmentHistory.select} ORDER BY created_at, id FOR UPDATE`))[0]
+            : null;
+          if (referenceId && type === 'admin_adjustment') {
+            const references = legacyReferenceId ? [referenceId, legacyReferenceId] : [referenceId];
+            const [existing] = await connection.query('SELECT id, user_id AS userId, amount_cents AS amountCents, type, description, reference_id AS referenceId, created_by AS createdBy, created_at AS createdAt FROM balance_transactions WHERE reference_id IN (?) AND type = ? LIMIT 1 FOR UPDATE', [references, type]);
+            if (existing.length) { await connection.commit(); const user = this.data.users.find((item) => item.id === userId); result = { failure: null, balance: Number(user?.balanceCents || 0), transaction: existing[0], replayed: true }; return; }
+          }
+          const [users] = await connection.query('SELECT balance_cents AS balanceCents FROM users WHERE id = ? FOR UPDATE', [userId]);
+          if (!users.length) { result.failure = 'USER_NOT_FOUND'; await connection.rollback(); return; }
+          const next = Number(users[0].balanceCents) + Number(amountCents);
+          if (next < 0) { result.failure = 'INSUFFICIENT_BALANCE'; await connection.rollback(); return; }
+          const transaction = { id: randomUUID(), userId, amountCents: Number(amountCents), type, description, referenceId, createdBy, createdAt: new Date().toISOString() };
+          await connection.query('UPDATE users SET balance_cents = ? WHERE id = ?', [next, userId]);
+          await connection.query(TABLES.balanceTransactions.insert, [[TABLES.balanceTransactions.values(transaction)]]);
+          let retainedHistory;
+          if (history) {
+            const record = createBalanceAdjustmentRecord(transaction, Number(users[0].balanceCents), adjustmentNames);
+            await connection.query(TABLES.balanceAdjustmentHistory.insert, [[TABLES.balanceAdjustmentHistory.values(record)]]);
+            retainedHistory = retainBalanceAdjustmentHistory([...history, record]);
+            const retainedIds = new Set(retainedHistory.map((item) => item.id));
+            const expiredIds = [...history, record].filter((item) => !retainedIds.has(item.id)).map((item) => item.id);
+            if (expiredIds.length) await connection.query('DELETE FROM balance_adjustment_history WHERE id IN (?)', [expiredIds]);
+          }
+          await connection.commit();
+          const user = this.data.users.find((item) => item.id === userId); if (user) user.balanceCents = next;
+          this.data.balanceTransactions.push(transaction);
+          if (retainedHistory) this.data.balanceAdjustmentHistory = retainedHistory;
+          result = { failure: null, balance: next, transaction };
+          return;
+        } catch (error) {
+          await connection.rollback();
+          // InnoDB can choose a victim when two instances insert the first history row.
+          // A deadlock rolls the transaction back, so retrying cannot duplicate funds.
+          if (type === 'admin_adjustment' && error.code === 'ER_LOCK_DEADLOCK' && attempt < 2) continue;
+          throw error;
+        } finally { connection.release(); }
+      }
     });
     this.writeQueue = operation.catch(() => undefined); await operation; return result;
   }
