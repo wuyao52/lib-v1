@@ -4,6 +4,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createApp } from '../app.js';
+import { JsonDatabase } from '../store.js';
 
 async function setup({ videoQueue = false, videoQueueAutoStart = true, assetStorage } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'ads-billing-'));
@@ -450,6 +451,85 @@ test('recharge approval is single-use and credits the requested user', async (t)
   assert.equal((await approved.json()).user.balanceCents, 2500);
   const duplicate = await context.request(`/api/admin/recharges/${recharge.id}/review`, admin.cookie, { method: 'POST', body: JSON.stringify({ decision: 'approved' }) });
   assert.equal(duplicate.status, 409);
+});
+
+test('manual balance history is system-only and only zhaoyan can delete history without changing funds', async (t) => {
+  const context = await setup();
+  t.after(() => context.server.close());
+  const target = await context.register('history-target');
+  const admin = await context.register('history-admin');
+  const root = await context.register('zhaoyan');
+  await context.db.mutate((data) => {
+    for (const id of [admin.user.id, root.user.id]) data.users.find((item) => item.id === id).role = 'system';
+    // A display name must not grant the protected account's deletion rights.
+    data.users.find((item) => item.id === admin.user.id).name = 'zhaoyan';
+  });
+  const adjust = (actor, amountCents, key, password = 'correct-horse') => context.request(`/api/admin/users/${target.user.id}/balance`, actor.cookie, {
+    method: 'POST', headers: { 'idempotency-key': key }, body: JSON.stringify({ amountCents, currentPassword: password }),
+  });
+  assert.equal((await adjust(admin, 2500, 'history-credit-key-0001')).status, 200);
+  assert.equal((await adjust(root, -500, 'history-debit-key-0002')).status, 200);
+  assert.equal((await adjust(admin, -9999, 'history-underflow-0003')).status, 409);
+  assert.equal((await adjust(admin, 100, 'history-wrongpass-0004', 'wrong')).status, 401);
+  assert.equal((await adjust(admin, 0, 'history-zero-key-0005')).status, 400);
+  assert.equal((await context.request('/api/admin/recharges', target.cookie)).status, 403);
+  assert.equal((await context.request('/api/admin/recharges', '')).status, 401);
+  const listed = await (await context.request('/api/admin/recharges', admin.cookie)).json();
+  assert.equal(listed.canDeleteBalanceAdjustments, false);
+  assert.equal(listed.balanceAdjustmentHistory.length, 2);
+  const [debit, credit] = listed.balanceAdjustmentHistory;
+  assert.deepEqual([credit.actorUsername, credit.targetUsername, credit.amountCents, credit.balanceBeforeCents, credit.balanceAfterCents], ['history-admin', 'history-target', 2500, 0, 2500]);
+  assert.deepEqual([debit.actorUsername, debit.amountCents, debit.balanceBeforeCents, debit.balanceAfterCents], ['zhaoyan', -500, 2500, 2000]);
+  assert.equal(Number.isNaN(Date.parse(credit.createdAt)), false);
+  assert.equal(context.db.read('balanceTransactions').every((item) => item.referenceId.length <= 100), true);
+  const billing = await (await context.request('/api/billing/me', target.cookie)).json();
+  assert.equal(Object.hasOwn(billing, 'balanceAdjustmentHistory'), false);
+  assert.equal((await (await context.request('/api/admin/recharges', root.cookie)).json()).canDeleteBalanceAdjustments, true);
+  const remove = (actor, password = 'correct-horse', id = credit.id) => context.request(`/api/admin/balance-adjustments/${id}`, actor.cookie, { method: 'DELETE', body: JSON.stringify({ currentPassword: password }) });
+  assert.equal((await remove(target)).status, 403);
+  assert.equal((await remove(admin)).status, 403);
+  assert.equal((await remove(root, 'wrong')).status, 401);
+  assert.equal(context.db.read('balanceAdjustmentHistory').length, 2);
+  const ledgerBefore = structuredClone(context.db.read('balanceTransactions'));
+  assert.equal((await remove(root)).status, 204);
+  assert.equal((await remove(root)).status, 404);
+  assert.equal(context.db.read('users').find((item) => item.id === target.user.id).balanceCents, 2000);
+  assert.deepEqual(context.db.read('balanceTransactions'), ledgerBefore);
+  assert.deepEqual(context.db.read('balanceAdjustmentHistory').map((item) => item.id), [debit.id]);
+  const replay = await adjust(admin, 2500, 'history-credit-key-0001');
+  assert.equal((await replay.json()).replayed, true);
+  assert.equal(context.db.read('balanceAdjustmentHistory').length, 1);
+  assert.equal(context.db.read('users').find((item) => item.id === target.user.id).balanceCents, 2000);
+  // Old JSON deployments used the longer composite key; retries must still replay it.
+  await context.db.mutate((data) => { data.balanceTransactions.find((item) => item.id === credit.id).referenceId = `admin-balance:${admin.user.id}:${target.user.id}:history-credit-key-0001`; });
+  assert.equal((await (await adjust(admin, 2500, 'history-credit-key-0001')).json()).replayed, true);
+  assert.equal(context.db.read('balanceAdjustmentHistory').length, 1);
+  assert.equal(context.db.read('users').find((item) => item.id === target.user.id).balanceCents, 2000);
+});
+
+test('manual balance history retains the newest 50 globally and survives reopening the JSON store', async (t) => {
+  const context = await setup();
+  t.after(() => context.server.close());
+  const first = await context.register('retention-first');
+  const second = await context.register('retention-second');
+  const admin = await context.register('retention-admin');
+  await context.db.mutate((data) => { data.users.find((item) => item.id === admin.user.id).role = 'system'; });
+  const ids = [];
+  for (let index = 0; index < 52; index += 1) {
+    const response = await context.request(`/api/admin/users/${index % 2 ? first.user.id : second.user.id}/balance`, admin.cookie, {
+      method: 'POST', body: JSON.stringify({ amountCents: 100, currentPassword: 'correct-horse' }),
+    });
+    assert.equal(response.status, 200);
+    ids.push((await response.json()).transaction.id);
+  }
+  const result = await (await context.request('/api/admin/recharges', admin.cookie)).json();
+  assert.equal(result.balanceAdjustmentHistory.length, 50);
+  assert.deepEqual(result.balanceAdjustmentHistory.map((item) => item.id), ids.slice(2).reverse());
+  assert.equal(new Set(result.balanceAdjustmentHistory.map((item) => item.userId)).size, 2);
+  assert.equal(context.db.read('balanceTransactions').length, 52);
+  for (const target of [first, second]) assert.equal(context.db.read('users').find((item) => item.id === target.user.id).balanceCents, 2600);
+  const reopened = await new JsonDatabase(context.db.filePath).init();
+  assert.deepEqual(reopened.read('balanceAdjustmentHistory'), context.db.read('balanceAdjustmentHistory'));
 });
 
 test('sensitive admin balance and role changes require the current system password', async (t) => {
