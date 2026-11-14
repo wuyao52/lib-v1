@@ -5,6 +5,8 @@ import { useAuth, type AuthUser } from '@/auth/AuthContext';
 
 type Transaction = { id: string; amountCents: number; type: string; description: string; createdAt: string };
 type Recharge = { id: string; amountCents: number; status: string; note: string; createdAt: string; user?: AuthUser };
+type BalanceAdjustment = { id: string; actorUsername: string; targetUsername: string; amountCents: number; balanceBeforeCents: number; balanceAfterCents: number; createdAt: string };
+type BalanceAdjustmentHistoryProps = { records: BalanceAdjustment[]; canDelete: boolean; currentPassword: string; act: (job: () => Promise<unknown>, success: string) => Promise<void> };
 type PaymentOrder = { id: string; userId?: string; provider: 'alipay' | 'wechat'; amountCents: number; status: string; payUrl: string; createdAt: string; paidAt?: string | null };
 type TextProtocol = 'auto' | 'openai-chat' | 'openai-responses' | 'anthropic-messages';
 type SystemApi = { id: string; name: string; provider: string; textProtocol: TextProtocol; baseUrl: string; apiKey: string; enabled: boolean };
@@ -32,7 +34,7 @@ type QuarantinePreview = { previewId: string; expiresAt: string; summary: { cand
 type QuarantineRecord = { id: string; objectType: 'asset' | 'generated_video'; objectSize: number; status: string; quarantinedAt: string; deleteAfter: string; restoredAt?: string | null; deletedAt?: string | null; errorCode?: string | null };
 type ProviderFlags = Record<'alipay' | 'wechat', boolean>;
 type BillingProps = { balance: number; transactions: Transaction[]; recharges: Recharge[]; amount: string; setAmount: (value: string) => void; providers: ProviderFlags; provider: 'alipay' | 'wechat'; setProvider: (value: 'alipay' | 'wechat') => void; orders: PaymentOrder[]; startPayment: () => void };
-type AdminUsersProps = { users: AuthUser[]; currentUserId?: string; recharges: Recharge[]; pricing: Pricing[]; accessUserId: string | null; accessDraft: Record<string, { enabled: boolean; price: string }>; balanceAdjustments: Record<string, string>; setBalanceAdjustments: (value: Record<string, string>) => void; setAccessDraft: (value: Record<string, { enabled: boolean; price: string }> | ((current: Record<string, { enabled: boolean; price: string }>) => Record<string, { enabled: boolean; price: string }>)) => void; currentPassword: string; act: (job: () => Promise<unknown>, success: string) => Promise<void>; loadModelAccess: (userId: string) => Promise<void>; saveModelAccess: () => Promise<void> };
+type AdminUsersProps = { users: AuthUser[]; currentUserId?: string; recharges: Recharge[]; balanceAdjustmentHistory: BalanceAdjustment[]; canDeleteBalanceAdjustments: boolean; pricing: Pricing[]; accessUserId: string | null; accessDraft: Record<string, { enabled: boolean; price: string }>; balanceAdjustments: Record<string, string>; setBalanceAdjustments: (value: Record<string, string>) => void; setAccessDraft: (value: Record<string, { enabled: boolean; price: string }> | ((current: Record<string, { enabled: boolean; price: string }>) => Record<string, { enabled: boolean; price: string }>)) => void; currentPassword: string; act: (job: () => Promise<unknown>, success: string) => Promise<void>; loadModelAccess: (userId: string) => Promise<void>; saveModelAccess: () => Promise<void> };
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : '请求失败';
 
 const yuan = (cents: number) => `¥${(Number(cents || 0) / 100).toFixed(2)}`;
@@ -45,6 +47,8 @@ function AccountCenterContent({ mode, onClose }: { mode: 'billing' | 'admin'; on
   const [balance, setBalance] = useState(0);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [recharges, setRecharges] = useState<Recharge[]>([]);
+  const [balanceAdjustmentHistory, setBalanceAdjustmentHistory] = useState<BalanceAdjustment[]>([]);
+  const [canDeleteBalanceAdjustments, setCanDeleteBalanceAdjustments] = useState(false);
   const [apis, setApis] = useState<SystemApi[]>([]);
   const [pricing, setPricing] = useState<Pricing[]>([]);
   const [priceDrafts, setPriceDrafts] = useState<Record<string, string>>({});
@@ -100,7 +104,7 @@ function AccountCenterContent({ mode, onClose }: { mode: 'billing' | 'admin'; on
       apiRequest<{ apis: SystemApi[] }>('/api/admin/system-apis'),
       apiRequest<{ pricing: Pricing[] }>('/api/admin/pricing'),
       apiRequest<{ users: AuthUser[] }>('/api/admin/users'),
-      apiRequest<{ recharges: Recharge[] }>('/api/admin/recharges'),
+      apiRequest<{ recharges: Recharge[]; balanceAdjustmentHistory: BalanceAdjustment[]; canDeleteBalanceAdjustments: boolean }>('/api/admin/recharges'),
       apiRequest<QueueOverview>('/api/admin/video-queue'),
       apiRequest<{ orders: PaymentOrder[] }>('/api/payments/admin/orders'),
     ]);
@@ -108,6 +112,8 @@ function AccountCenterContent({ mode, onClose }: { mode: 'billing' | 'admin'; on
     const nextPricing = Array.isArray(priceData.pricing) ? priceData.pricing : [];
     const nextUsers = Array.isArray(userData.users) ? userData.users : [];
     const nextRecharges = Array.isArray(rechargeData.recharges) ? rechargeData.recharges : [];
+    setBalanceAdjustmentHistory(Array.isArray(rechargeData.balanceAdjustmentHistory) ? rechargeData.balanceAdjustmentHistory : []);
+    setCanDeleteBalanceAdjustments(rechargeData.canDeleteBalanceAdjustments === true);
     setApis(nextApis); setPricing(nextPricing); setPriceDrafts(Object.fromEntries(nextPricing.map((item) => [item.id, String(item.unitPriceCents / 100)]))); setUsers(nextUsers); setRecharges(nextRecharges);
     setQueue({
       counts: queueData && typeof queueData.counts === 'object' ? queueData.counts : { queued: 0, submitting: 0, processing: 0, completed: 0, failed: 0 },
@@ -389,7 +395,7 @@ function AccountCenterContent({ mode, onClose }: { mode: 'billing' | 'admin'; on
           <AdminPaymentOrders orders={paymentOrders} users={users} currentPassword={adminPassword} act={act} />
           <style>{`section.mb-6 + section.grid > div:first-child > div.divide-y > div > div.flex > select { display: none; }`}</style>
           <UserIdentityControls users={users} currentUserId={user?.id} currentUsername={user?.username} onChangeIdentity={changeUserIdentity} />
-          <AdminUsers users={users} currentUserId={user?.id} currentUsername={user?.username} recharges={recharges} pricing={pricing} accessUserId={accessUserId} accessDraft={accessDraft} setAccessDraft={setAccessDraft} balanceAdjustments={balanceAdjustments} setBalanceAdjustments={setBalanceAdjustments} currentPassword={adminPassword} act={act} loadModelAccess={loadModelAccess} saveModelAccess={saveModelAccess} />
+          <AdminUsers users={users} currentUserId={user?.id} currentUsername={user?.username} recharges={recharges} balanceAdjustmentHistory={balanceAdjustmentHistory} canDeleteBalanceAdjustments={canDeleteBalanceAdjustments} pricing={pricing} accessUserId={accessUserId} accessDraft={accessDraft} setAccessDraft={setAccessDraft} balanceAdjustments={balanceAdjustments} setBalanceAdjustments={setBalanceAdjustments} currentPassword={adminPassword} act={act} loadModelAccess={loadModelAccess} saveModelAccess={saveModelAccess} />
         </>}
       </div>
     </section>
@@ -419,6 +425,8 @@ class AccountCenterBoundary extends Component<AccountCenterBoundaryProps, Accoun
 }
 
 export default function AccountCenter(props: AccountCenterBoundaryProps) {
+  const { user } = useAuth();
+  if (props.mode === 'admin' && user?.role !== 'system') return null;
   return <AccountCenterBoundary {...props} />;
 }
 
@@ -509,8 +517,51 @@ function UserIdentityControls({ users, currentUserId, currentUsername, onChangeI
   return <section className="mb-6 rounded border border-dark-600 bg-dark-900/30 p-4"><h3 className="text-sm font-medium text-white">用户身份设置</h3><p className="mt-1 mb-3 text-xs text-dark-400">新注册用户默认为特殊用户且没有模型权限。特殊用户需单独授权；普通用户自动使用全部已发布模型。身份切换会即时同步到下方用户列表，无需刷新页面。</p><div className="grid gap-2 sm:grid-cols-2">{users.map((item) => { const protectedUser = String(item.username || '').trim().toLowerCase() === 'zhaoyan'; return <label key={item.id} className="flex items-center justify-between gap-3 rounded border border-dark-700 bg-dark-900 px-3 py-2 text-xs"><span className="min-w-0"><span className="block truncate text-dark-200">{item.username}</span><span className="block truncate text-dark-500">{item.email}</span></span><select aria-label={`${item.username}用户身份`} className="shrink-0 rounded border border-dark-600 bg-dark-800 px-2 py-1 text-dark-200" disabled={item.id === currentUserId || (item.role === 'system' && (!highestUser || protectedUser))} value={item.role === 'system' ? 'system' : (item.accountType || 'special')} onChange={(event) => { void onChangeIdentity(item.id, event.target.value as 'user' | 'special' | 'system'); }}><option value="special">特殊用户</option><option value="user">普通用户</option><option value="system">系统用户</option></select></label>; })}</div></section>;
 }
 
-function AdminUsers({ users, currentUserId, currentUsername, recharges, pricing, accessUserId, accessDraft, setAccessDraft, balanceAdjustments, setBalanceAdjustments, currentPassword, act, loadModelAccess, saveModelAccess }: AdminUsersProps & { currentUsername?: string }) {
+function BalanceAdjustmentHistory({ records, canDelete, currentPassword, act }: BalanceAdjustmentHistoryProps) {
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const remove = async (id: string) => {
+    if (deleting) return;
+    setDeleting(true);
+    try {
+      await act(async () => {
+        await apiRequest(`/api/admin/balance-adjustments/${id}`, { method: 'DELETE', body: JSON.stringify({ currentPassword }) });
+        setConfirmId(null);
+      }, '余额修改记录已删除');
+    } finally { setDeleting(false); }
+  };
+  return <div className="mt-5 border-t border-dark-700 pt-4">
+    <div className="flex items-center justify-between gap-2">
+      <h4 className="text-sm font-medium text-white">余额修改记录</h4>
+      <span className="text-xs text-dark-400">{records.length} / 50 条</span>
+    </div>
+    <p className="mt-1 text-xs text-dark-400">保留全站最近 50 条人工余额修改记录。</p>
+    {records.length === 0 ? <p className="py-4 text-sm text-dark-400">暂无余额修改记录</p> : <ul className="mt-2 max-h-96 overflow-y-auto divide-y divide-dark-700">
+      {records.map((record) => <li key={record.id} className="py-3 text-sm">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="break-words text-dark-200"><span className="font-medium">{record.actorUsername}</span> 给 <span className="font-medium">{record.targetUsername}</span></p>
+            <p className={record.amountCents > 0 ? 'text-green-400' : 'text-red-400'}>{record.amountCents > 0 ? '增加' : '减少'} {yuan(Math.abs(record.amountCents))}</p>
+            <p className="mt-1 text-xs text-dark-400">余额 {yuan(record.balanceBeforeCents)} → {yuan(record.balanceAfterCents)}</p>
+            <time className="text-xs text-dark-400" dateTime={record.createdAt}>{new Date(record.createdAt).toLocaleString()}</time>
+          </div>
+          {canDelete && <button type="button" aria-label={`删除 ${record.actorUsername} 给 ${record.targetUsername} 的余额修改记录`} disabled={deleting} onClick={() => setConfirmId(record.id)} className="shrink-0 rounded p-2 text-dark-400 hover:bg-dark-700 hover:text-red-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-400 disabled:opacity-50"><Trash2 className="h-4 w-4" /></button>}
+        </div>
+        {canDelete && confirmId === record.id && <div className="mt-2 rounded border border-dark-600 bg-dark-900 p-3">
+          <p className="text-xs text-dark-200">确定删除这条记录？删除后无法恢复，余额和账务流水不受影响。</p>
+          <p className="mt-1 text-xs text-dark-400">请先在上方填写当前系统账号密码。</p>
+          <div className="mt-2 flex justify-end gap-2">
+            <button type="button" disabled={deleting} onClick={() => setConfirmId(null)} className="rounded px-3 py-1.5 text-xs text-dark-200 hover:bg-dark-700 disabled:opacity-50">取消</button>
+            <button type="button" disabled={deleting || !currentPassword} onClick={() => void remove(record.id)} className="rounded bg-red-600 px-3 py-1.5 text-xs text-white hover:bg-red-500 disabled:opacity-50">{deleting ? '正在删除…' : '确认删除'}</button>
+          </div>
+        </div>}
+      </li>)}
+    </ul>}
+  </div>;
+}
+
+function AdminUsers({ users, currentUserId, currentUsername, recharges, balanceAdjustmentHistory, canDeleteBalanceAdjustments, pricing, accessUserId, accessDraft, setAccessDraft, balanceAdjustments, setBalanceAdjustments, currentPassword, act, loadModelAccess, saveModelAccess }: AdminUsersProps & { currentUsername?: string }) {
   const selectedUser = users.find((item) => item.id === accessUserId);
   const highestUser = String(currentUsername || '').trim().toLowerCase() === 'zhaoyan';
-  return <section className="grid lg:grid-cols-2 gap-6"><div><h3 className="text-sm font-medium text-white mb-2">用户、权限与余额</h3><div className="divide-y divide-dark-700">{users.map((item) => <div key={item.id} className={`py-2 grid grid-cols-[1fr_auto] gap-2 items-center text-sm ${item.id === accessUserId ? 'bg-primary-500/10 border-l-2 border-primary-400 pl-2' : ''}`}><span className="text-dark-200">{item.username}{item.id === accessUserId && <span className="ml-2 text-[10px] text-primary-300">当前配置中</span>}<small className="block text-dark-500">{item.email} · {yuan(item.balanceCents)} · {item.accountType === 'special' ? '特殊用户' : item.role === 'system' ? '系统用户' : '普通用户'}</small></span><div className="flex gap-2"><button className={`px-2 py-1 border ${item.id === accessUserId ? 'border-primary-300 bg-primary-500/20 text-white' : 'border-primary-500 text-primary-300'}`} onClick={() => void loadModelAccess(item.id)}>{item.id === accessUserId ? '正在配置' : '模型权限'}</button><div className="flex"><input className="w-24 px-2 py-1 bg-dark-900 border border-dark-600 rounded-l text-white" type="number" step="0.01" value={balanceAdjustments[item.id] || ''} onChange={(event) => setBalanceAdjustments({ ...balanceAdjustments, [item.id]: event.target.value })} placeholder="增减元" /><button title="调整余额" className="px-2 bg-dark-700 border border-dark-600 rounded-r text-green-400" onClick={() => act(() => apiRequest(`/api/admin/users/${item.id}/balance`, { method: 'POST', body: JSON.stringify({ amountCents: Math.round(Number(balanceAdjustments[item.id]) * 100), description: '系统后台调整余额', currentPassword }) }), '用户余额已调整')}><Coins className="w-4 h-4" /></button></div><select className="bg-dark-900 border border-dark-600 rounded px-2 py-1 text-dark-200" disabled={item.id === currentUserId || (item.role === 'system' && (!highestUser || String(item.username || '').trim().toLowerCase() === 'zhaoyan'))} value={item.role} onChange={(event) => act(() => apiRequest(`/api/admin/users/${item.id}/role`, { method: 'PATCH', body: JSON.stringify({ role: event.target.value, currentPassword }) }), '用户角色已更新')}><option value="user">普通用户</option><option value="system">系统用户</option></select></div></div>)}</div>{accessUserId && <div className="mt-4 border border-primary-500/40 p-3 space-y-2"><div><div className="text-sm text-white">特殊用户模型权限</div><div className="text-xs text-primary-300">当前用户：{selectedUser?.username || '未知用户'} · {selectedUser?.email || '未知邮箱'}</div><div className="mt-1 text-[10px] text-dark-400">这里仅授权可见模型和专属价格；用户仍需在自己的“AI 模型配置”中自行选择要使用的模型。</div></div>{pricing.map((item) => { const draft = accessDraft[item.id] || { enabled: false, price: String(item.unitPriceCents / 100) }; return <label key={item.id} className={`flex items-center gap-2 text-xs ${draft.enabled ? 'text-white' : 'text-dark-500'}`}><input type="checkbox" checked={draft.enabled} onChange={(event) => setAccessDraft((current) => ({ ...current, [item.id]: { ...draft, enabled: event.target.checked } }))} /><span className="flex-1">{item.displayName}</span><span className={draft.enabled ? 'text-green-300' : 'text-dark-600'}>{draft.enabled ? '已授权' : '未授权'}</span><input aria-label={`${item.displayName}专属价格`} className="w-20 px-1 py-1 bg-dark-900 border border-dark-600 text-white" type="number" min="0" step="0.01" value={draft.price} onChange={(event) => setAccessDraft((current) => ({ ...current, [item.id]: { ...draft, price: event.target.value } }))} /><span className="text-dark-500">元</span></label>; })}<div className="flex items-center justify-between pt-1"><span className="text-[10px] text-amber-300">授权和价格修改后，请点击保存才会生效</span><button onClick={() => void saveModelAccess()} className="px-3 py-1.5 bg-primary-600 text-white text-xs">保存模型权限</button></div></div>}</div><div><h3 className="text-sm font-medium text-white mb-2">充值审核</h3><div className="divide-y divide-dark-700">{recharges.filter((item) => item.status === 'pending').map((item) => <div key={item.id} className="py-2 flex justify-between items-center text-sm"><span className="text-dark-200">{item.user?.username || item.user?.email}<small className="block text-dark-500">{yuan(item.amountCents)} · {item.note || '无备注'}</small></span><div className="flex gap-1"><button title="通过并入账" className="p-2 text-green-400" onClick={() => act(() => apiRequest(`/api/admin/recharges/${item.id}/review`, { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }), '充值已入账')}><Check className="w-4 h-4" /></button><button title="拒绝" className="p-2 text-red-400" onClick={() => act(() => apiRequest(`/api/admin/recharges/${item.id}/review`, { method: 'POST', body: JSON.stringify({ decision: 'rejected' }) }), '充值申请已拒绝')}><X className="w-4 h-4" /></button></div></div>)}</div></div></section>;
+  return <section className="grid lg:grid-cols-2 gap-6"><div><h3 className="text-sm font-medium text-white mb-2">用户、权限与余额</h3><div className="divide-y divide-dark-700">{users.map((item) => <div key={item.id} className={`py-2 grid grid-cols-[1fr_auto] gap-2 items-center text-sm ${item.id === accessUserId ? 'bg-primary-500/10 border-l-2 border-primary-400 pl-2' : ''}`}><span className="text-dark-200">{item.username}{item.id === accessUserId && <span className="ml-2 text-[10px] text-primary-300">当前配置中</span>}<small className="block text-dark-500">{item.email} · {yuan(item.balanceCents)} · {item.accountType === 'special' ? '特殊用户' : item.role === 'system' ? '系统用户' : '普通用户'}</small></span><div className="flex gap-2"><button className={`px-2 py-1 border ${item.id === accessUserId ? 'border-primary-300 bg-primary-500/20 text-white' : 'border-primary-500 text-primary-300'}`} onClick={() => void loadModelAccess(item.id)}>{item.id === accessUserId ? '正在配置' : '模型权限'}</button><div className="flex"><input className="w-24 px-2 py-1 bg-dark-900 border border-dark-600 rounded-l text-white" type="number" step="0.01" value={balanceAdjustments[item.id] || ''} onChange={(event) => setBalanceAdjustments({ ...balanceAdjustments, [item.id]: event.target.value })} placeholder="增减元" /><button title="调整余额" className="px-2 bg-dark-700 border border-dark-600 rounded-r text-green-400" onClick={() => act(() => apiRequest(`/api/admin/users/${item.id}/balance`, { method: 'POST', body: JSON.stringify({ amountCents: Math.round(Number(balanceAdjustments[item.id]) * 100), description: '系统后台调整余额', currentPassword }) }), '用户余额已调整')}><Coins className="w-4 h-4" /></button></div><select className="bg-dark-900 border border-dark-600 rounded px-2 py-1 text-dark-200" disabled={item.id === currentUserId || (item.role === 'system' && (!highestUser || String(item.username || '').trim().toLowerCase() === 'zhaoyan'))} value={item.role} onChange={(event) => act(() => apiRequest(`/api/admin/users/${item.id}/role`, { method: 'PATCH', body: JSON.stringify({ role: event.target.value, currentPassword }) }), '用户角色已更新')}><option value="user">普通用户</option><option value="system">系统用户</option></select></div></div>)}</div>{accessUserId && <div className="mt-4 border border-primary-500/40 p-3 space-y-2"><div><div className="text-sm text-white">特殊用户模型权限</div><div className="text-xs text-primary-300">当前用户：{selectedUser?.username || '未知用户'} · {selectedUser?.email || '未知邮箱'}</div><div className="mt-1 text-[10px] text-dark-400">这里仅授权可见模型和专属价格；用户仍需在自己的“AI 模型配置”中自行选择要使用的模型。</div></div>{pricing.map((item) => { const draft = accessDraft[item.id] || { enabled: false, price: String(item.unitPriceCents / 100) }; return <label key={item.id} className={`flex items-center gap-2 text-xs ${draft.enabled ? 'text-white' : 'text-dark-500'}`}><input type="checkbox" checked={draft.enabled} onChange={(event) => setAccessDraft((current) => ({ ...current, [item.id]: { ...draft, enabled: event.target.checked } }))} /><span className="flex-1">{item.displayName}</span><span className={draft.enabled ? 'text-green-300' : 'text-dark-600'}>{draft.enabled ? '已授权' : '未授权'}</span><input aria-label={`${item.displayName}专属价格`} className="w-20 px-1 py-1 bg-dark-900 border border-dark-600 text-white" type="number" min="0" step="0.01" value={draft.price} onChange={(event) => setAccessDraft((current) => ({ ...current, [item.id]: { ...draft, price: event.target.value } }))} /><span className="text-dark-500">元</span></label>; })}<div className="flex items-center justify-between pt-1"><span className="text-[10px] text-amber-300">授权和价格修改后，请点击保存才会生效</span><button onClick={() => void saveModelAccess()} className="px-3 py-1.5 bg-primary-600 text-white text-xs">保存模型权限</button></div></div>}</div><div><h3 className="text-sm font-medium text-white mb-2">充值审核</h3><div className="divide-y divide-dark-700">{recharges.filter((item) => item.status === 'pending').map((item) => <div key={item.id} className="py-2 flex justify-between items-center text-sm"><span className="text-dark-200">{item.user?.username || item.user?.email}<small className="block text-dark-500">{yuan(item.amountCents)} · {item.note || '无备注'}</small></span><div className="flex gap-1"><button title="通过并入账" className="p-2 text-green-400" onClick={() => act(() => apiRequest(`/api/admin/recharges/${item.id}/review`, { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }), '充值已入账')}><Check className="w-4 h-4" /></button><button title="拒绝" className="p-2 text-red-400" onClick={() => act(() => apiRequest(`/api/admin/recharges/${item.id}/review`, { method: 'POST', body: JSON.stringify({ decision: 'rejected' }) }), '充值申请已拒绝')}><X className="w-4 h-4" /></button></div></div>)}</div><BalanceAdjustmentHistory records={balanceAdjustmentHistory} canDelete={canDeleteBalanceAdjustments} currentPassword={currentPassword} act={act} /></div></section>;
 }
