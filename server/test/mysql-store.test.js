@@ -17,6 +17,122 @@ function databaseWithRecordedSql() {
   return { db, statements };
 }
 
+test('MySQL manual adjustment saves history and trims globally within the balance transaction', async () => {
+  const { db, statements } = databaseWithRecordedSql();
+  db.data.users.push({ id: 'target', balanceCents: 1000 });
+  const history = Array.from({ length: 50 }, (_, index) => ({
+    id: `old-${index}`, userId: `other-${index}`, actorId: 'admin', actorUsername: 'admin', targetUsername: 'other',
+    amountCents: 100, balanceBeforeCents: 0, balanceAfterCents: 100, createdAt: new Date(index * 1000).toISOString(),
+  }));
+  db.pool.getConnection = async () => ({
+    beginTransaction: async () => statements.push('BEGIN'), commit: async () => statements.push('COMMIT'),
+    rollback: async () => statements.push('ROLLBACK'), release() {},
+    async query(sql, params) {
+      statements.push({ sql, params });
+      if (/FROM balance_adjustment_history/.test(sql) && sql.startsWith('SELECT')) return [history];
+      if (/FROM balance_transactions/.test(sql)) return [[]];
+      if (/FROM users/.test(sql)) return [[{ balanceCents: 1000 }]];
+      return [{ affectedRows: 1 }];
+    },
+  });
+  const result = await db.changeBalanceAtomic({ userId: 'target', amountCents: -500, type: 'admin_adjustment', description: 'test', referenceId: 'test-ref', createdBy: 'admin', adjustmentNames: { actorUsername: 'operator', targetUsername: 'customer' } });
+  assert.equal(result.balance, 500);
+  assert.equal(db.data.users[0].balanceCents, 500);
+  assert.equal(db.data.balanceAdjustmentHistory.length, 50);
+  const record = db.data.balanceAdjustmentHistory.at(-1);
+  assert.deepEqual([record.id, record.actorUsername, record.targetUsername, record.amountCents, record.balanceBeforeCents, record.balanceAfterCents], [result.transaction.id, 'operator', 'customer', -500, 1000, 500]);
+  const queries = statements.filter((item) => typeof item === 'object');
+  assert.match(queries[0].sql, /balance_adjustment_history.*FOR UPDATE/);
+  assert.deepEqual(queries.find((item) => /^DELETE FROM balance_adjustment_history/.test(item.sql)).params, [['old-0']]);
+  assert.equal(statements.at(-1), 'COMMIT');
+  assert.equal(statements.includes('ROLLBACK'), false);
+  assert.equal(queries.some((item) => /^DELETE FROM balance_transactions/.test(item.sql)), false);
+});
+
+test('MySQL failed history write rolls back balance and ledger and leaves the cache untouched', async () => {
+  const { db, statements } = databaseWithRecordedSql();
+  db.data.users.push({ id: 'target', balanceCents: 1000 });
+  db.pool.getConnection = async () => ({
+    beginTransaction: async () => statements.push('BEGIN'), commit: async () => statements.push('COMMIT'),
+    rollback: async () => statements.push('ROLLBACK'), release() {},
+    async query(sql) {
+      statements.push({ sql });
+      if (sql.startsWith('SELECT') && /balance_adjustment_history/.test(sql)) return [[]];
+      if (/FROM users/.test(sql)) return [[{ balanceCents: 1000 }]];
+      if (/INSERT INTO balance_adjustment_history/.test(sql)) throw new Error('history write failed');
+      return [{ affectedRows: 1 }];
+    },
+  });
+  await assert.rejects(db.changeBalanceAtomic({ userId: 'target', amountCents: 100, type: 'admin_adjustment', description: 'test', createdBy: 'admin' }), /history write failed/);
+  assert.equal(statements.at(-1), 'ROLLBACK');
+  assert.equal(statements.includes('COMMIT'), false);
+  assert.equal(db.data.users[0].balanceCents, 1000);
+  assert.deepEqual(db.data.balanceTransactions, []);
+  assert.deepEqual(db.data.balanceAdjustmentHistory, []);
+});
+
+test('MySQL manual adjustment replay does not recreate deleted history or write funds again', async () => {
+  const { db, statements } = databaseWithRecordedSql();
+  db.data.users.push({ id: 'target', balanceCents: 1000 });
+  const original = { id: 'existing-transaction', amountCents: 100 };
+  db.pool.getConnection = async () => ({
+    beginTransaction: async () => {}, commit: async () => {}, rollback: async () => {}, release() {},
+    async query(sql) {
+      statements.push({ sql });
+      if (/balance_adjustment_history/.test(sql)) return [[]];
+      if (/balance_transactions/.test(sql)) return [[original]];
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  });
+  const result = await db.changeBalanceAtomic({ userId: 'target', amountCents: 100, type: 'admin_adjustment', description: 'test', referenceId: 'replayed-ref', createdBy: 'admin' });
+  assert.equal(result.replayed, true);
+  assert.equal(result.transaction.id, original.id);
+  assert.equal(db.data.users[0].balanceCents, 1000);
+  assert.deepEqual(db.data.balanceAdjustmentHistory, []);
+  assert.equal(statements.every((item) => item.sql.startsWith('SELECT')), true);
+});
+
+test('MySQL retries a rolled-back history deadlock without duplicating the ledger', async () => {
+  const { db, statements } = databaseWithRecordedSql();
+  db.data.users.push({ id: 'target', balanceCents: 1000 });
+  let attempts = 0;
+  db.pool.getConnection = async () => ({
+    beginTransaction: async () => { attempts += 1; }, commit: async () => statements.push('COMMIT'),
+    rollback: async () => statements.push('ROLLBACK'), release() {},
+    async query(sql) {
+      statements.push({ sql });
+      if (sql.startsWith('SELECT') && /balance_adjustment_history/.test(sql)) return [[]];
+      if (/FROM users/.test(sql)) return [[{ balanceCents: 1000 }]];
+      if (attempts === 1 && /INSERT INTO balance_adjustment_history/.test(sql)) throw Object.assign(new Error('deadlock victim'), { code: 'ER_LOCK_DEADLOCK' });
+      return [{ affectedRows: 1 }];
+    },
+  });
+  const result = await db.changeBalanceAtomic({ userId: 'target', amountCents: 100, type: 'admin_adjustment', description: 'test', createdBy: 'admin' });
+  assert.equal(result.balance, 1100);
+  assert.equal(attempts, 2);
+  assert.equal(statements.filter((item) => item === 'ROLLBACK').length, 1);
+  assert.equal(statements.filter((item) => item === 'COMMIT').length, 1);
+  assert.equal(db.data.balanceTransactions.length, 1);
+  assert.equal(db.data.balanceAdjustmentHistory.length, 1);
+});
+
+test('MySQL model usage keeps its existing balance path without writing manual history', async () => {
+  const { db, statements } = databaseWithRecordedSql();
+  db.data.users.push({ id: 'target', balanceCents: 1000 });
+  db.pool.getConnection = async () => ({
+    beginTransaction: async () => {}, commit: async () => {}, rollback: async () => {}, release() {},
+    async query(sql) {
+      statements.push({ sql });
+      if (/FROM users/.test(sql)) return [[{ balanceCents: 1000 }]];
+      return [{ affectedRows: 1 }];
+    },
+  });
+  const result = await db.changeBalanceAtomic({ userId: 'target', amountCents: -100, type: 'model_usage', description: 'generation' });
+  assert.equal(result.balance, 900);
+  assert.equal(statements.some((item) => /balance_adjustment_history/.test(item.sql)), false);
+  assert.deepEqual(db.data.balanceAdjustmentHistory, []);
+});
+
 test('MySQL generic mutations upsert changed rows without replacing whole tables', async () => {
   const { db, statements } = databaseWithRecordedSql();
   db.data.users.push({
